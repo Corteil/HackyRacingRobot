@@ -392,7 +392,7 @@ class _Camera:
         detector = self._make_detector()
         try:
             while not self._stop.is_set():
-                frame = cam.capture_array()
+                frame = cam.capture_array()[:, :, ::-1]  # BGR → RGB
                 frame = self._rotate(frame, cv2)
                 aruco_state = None
                 if detector is not None and self._aruco_enabled:
@@ -507,13 +507,6 @@ class _Lidar:
     def get_scan(self) -> LidarScan:
         s = self._driver.get_scan()
         return LidarScan(angles=s.angles, distances=s.distances)
-
-    @property
-    def ok(self):
-        return self._ok
-
-    def stop(self):
-        self._stop.set()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1101,8 +1094,9 @@ class Robot:
         dt        = 1.0 / self._control_hz
         last_left  = None
         last_right = None
-        last_mode  = None
-        last_led_b = None   # track last LED B state to avoid redundant serial writes
+        last_mode      = None
+        last_auto_type = None
+        last_led_b     = None   # track last LED B state to avoid redundant serial writes
 
         while not self._stop_evt.is_set():
             t0 = time.monotonic()
@@ -1126,14 +1120,16 @@ class Robot:
                     self.bookmark_gps()
                 self._prev_bookmark_ch = bm_val
 
-            # Auto-enable ArUco when AUTO + Camera or Cam+GPS; disable otherwise
-            if self._camera:
+            # Auto-enable ArUco on mode/type transitions only, so the T-key
+            # toggle is not overridden every tick.
+            if self._camera and (mode is not last_mode or
+                                 self._auto_type is not last_auto_type):
                 want_aruco = (mode is RobotMode.AUTO and
                               self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS))
-                if self._camera.get_aruco_enabled() != want_aruco:
-                    self._camera.set_aruco_enabled(want_aruco)
-                    log.info(f"ArUco {'ON' if want_aruco else 'OFF'} "
-                             f"(mode={mode.name} type={self._auto_type.label})")
+                self._camera.set_aruco_enabled(want_aruco)
+                log.info(f"ArUco {'ON' if want_aruco else 'OFF'} "
+                         f"(mode={mode.name} type={self._auto_type.label})")
+                last_auto_type = self._auto_type
 
             if self._yukon:
                 # LED A: on = AUTO, off = MANUAL/ESTOP

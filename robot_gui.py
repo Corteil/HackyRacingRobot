@@ -30,6 +30,7 @@ import configparser
 import logging
 import math
 import os
+import re
 import sys
 
 import pygame
@@ -307,9 +308,152 @@ def _badge(surf, text, color, x, y):
     return x + t.get_width() + 20
 
 
+# Ordered list of every editable config field, grouped into two display columns.
+_CFG_FIELDS = [
+    # (section,  [key, ...])
+    ("robot",  ["yukon_port", "ibus_port"]),
+    ("rc",     ["throttle_ch", "steer_ch", "mode_ch", "speed_ch",
+                "auto_type_ch", "gps_log_ch", "deadzone",
+                "failsafe_s", "speed_min", "control_hz"]),
+    ("gui",    ["fps"]),
+    # ── right column ──
+    ("camera", ["disabled", "width", "height", "fps", "rotation"]),
+    ("aruco",  ["enabled", "dict"]),
+    ("lidar",  ["disabled", "port"]),
+    ("gps",    ["disabled", "port", "log_dir", "log_hz"]),
+    ("ntrip",  ["disabled", "host", "port", "mount", "user", "password"]),
+    ("rtcm",   ["disabled", "port", "baud"]),
+]
+# First 3 sections go in the left column, the rest in the right.
+_CFG_LEFT_SECTS = 3
+
+
+def _cfg_flat(cfg):
+    """Return a flat list of (section, key, value) for all _CFG_FIELDS."""
+    rows = []
+    for section, keys in _CFG_FIELDS:
+        for key in keys:
+            try:
+                val = cfg.get(section, key).strip()
+            except Exception:
+                val = ""
+            rows.append((section, key, val))
+    return rows
+
+
+def _save_config(path, cfg):
+    """Write cfg back to path preserving comments and whitespace."""
+    with open(path) as f:
+        lines = f.readlines()
+    current_section = None
+    result = []
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r'^\[(\w+)\]', stripped)
+        if m:
+            current_section = m.group(1).lower()
+            result.append(line)
+            continue
+        if (current_section and '=' in stripped
+                and not stripped.startswith('#')):
+            key = stripped.split('=')[0].strip()
+            if cfg.has_option(current_section, key):
+                new_val = cfg.get(current_section, key)
+                indent  = len(line) - len(line.lstrip())
+                result.append(' ' * indent + f"{key:<16}= {new_val}\n")
+                continue
+        result.append(line)
+    with open(path, 'w') as f:
+        f.writelines(result)
+
+
+def _draw_config_overlay(surf, W, H, config_path, cfg,
+                         sel_idx, editing, edit_text, dirty):
+    """Draw the interactive config overlay.  Returns a list of
+    (section, key, pygame.Rect) — one per editable row — in the same
+    order as _cfg_flat(), for use by mouse-click hit detection."""
+    overlay = pygame.Rect(20, 20, W - 40, H - 40)
+    pygame.draw.rect(surf, C_PANEL,  overlay, border_radius=8)
+    pygame.draw.rect(surf, C_BORDER, overlay, width=1, border_radius=8)
+
+    # Title
+    dirty_mark = "  [unsaved]" if dirty else ""
+    title = FONT_BIG.render(
+        f"Config: {os.path.basename(config_path)}{dirty_mark}", True,
+        C_YELLOW if dirty else C_WHITE)
+    surf.blit(title, (overlay.x + 16, overlay.y + 12))
+
+    if editing:
+        hint_txt = "Enter=confirm  Esc=cancel"
+    else:
+        hint_txt = "↑↓=select  ←→=toggle bool  Enter=edit  S=save  C/Esc=close"
+    hint = FONT_TINY.render(hint_txt, True, C_GRAY)
+    surf.blit(hint, (overlay.right - hint.get_width() - 16, overlay.y + 18))
+
+    pygame.draw.line(surf, C_BORDER,
+                     (overlay.x + 10, overlay.y + 44),
+                     (overlay.right - 10, overlay.y + 44), 1)
+
+    ROW_H   = 20
+    GAP     = 8
+    col_w   = (overlay.width - 48) // 2
+    left_x  = overlay.x + 16
+    right_x = left_x + col_w + 16
+    start_y = overlay.y + 54
+    mid_x   = left_x + col_w + 8
+
+    pygame.draw.line(surf, C_BORDER,
+                     (mid_x, start_y - 4), (mid_x, overlay.bottom - 12), 1)
+
+    flat      = _cfg_flat(cfg)
+    item_rects = []   # (section, key, rect) per row
+    flat_idx   = 0    # index into flat[]
+
+    for col_idx, (col_x, sect_range) in enumerate((
+            (left_x,  range(0,                _CFG_LEFT_SECTS)),
+            (right_x, range(_CFG_LEFT_SECTS,  len(_CFG_FIELDS))))):
+        y = start_y
+        for si in sect_range:
+            section, keys = _CFG_FIELDS[si]
+            hdr = FONT_SM.render(section.capitalize(), True, C_CYAN)
+            surf.blit(hdr, (col_x, y))
+            y += ROW_H
+            for key in keys:
+                _, _, val = flat[flat_idx]
+                row_rect = pygame.Rect(col_x, y, col_w, ROW_H - 2)
+
+                # Highlight selected row
+                if flat_idx == sel_idx:
+                    pygame.draw.rect(surf, (45, 45, 70), row_rect, border_radius=3)
+
+                key_color = C_GRAY if flat_idx != sel_idx else C_WHITE
+                surf.blit(FONT_TINY.render(f"  {key}", True, key_color), (col_x, y))
+
+                val_x = col_x + col_w // 2
+                if flat_idx == sel_idx and editing:
+                    # Blinking cursor — show edit_text + cursor bar
+                    cursor = "_" if (pygame.time.get_ticks() // 500) % 2 == 0 else " "
+                    display = edit_text + cursor
+                    surf.blit(FONT_TINY.render(display, True, C_YELLOW), (val_x, y))
+                else:
+                    disp_val = str(val)
+                    if len(disp_val) > 26:
+                        disp_val = disp_val[:23] + "…"
+                    color = C_YELLOW if flat_idx == sel_idx else C_WHITE
+                    surf.blit(FONT_TINY.render(disp_val, True, color), (val_x, y))
+
+                item_rects.append((section, key, row_rect))
+                flat_idx += 1
+                y += ROW_H - 2
+            y += GAP
+
+    return item_rects
+
+
 # ── Main GUI loop ─────────────────────────────────────────────────────────────
 
-def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0):
+def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
+            config_path: str = "", cfg=None):
     global FONT_BIG, FONT_MD, FONT_SM, FONT_TINY
 
     pygame.init()
@@ -324,31 +468,84 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0):
     FONT_TINY = pygame.font.SysFont("monospace", 11)
 
     # Layout constants
-    TITLE_H  = 52
+    TITLE_H  = 72
     PANEL_H  = 190
     PANEL_Y  = TITLE_H + 10
     BODY_Y   = PANEL_Y + PANEL_H + 10
     FOOTER_H = 30
     BODY_H   = H - BODY_Y - FOOTER_H - 8
 
-    running = True
+    running       = True
+    show_config   = False
+    cfg_sel       = 0
+    cfg_editing   = False
+    cfg_edit_text = ""
+    cfg_dirty     = False
+    cfg_n_items   = sum(len(keys) for _, keys in _CFG_FIELDS)
+
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+
             elif event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_q, pygame.K_ESCAPE):
-                    running = False
-                elif event.key == pygame.K_e:
-                    robot.estop()
-                elif event.key == pygame.K_r:
-                    robot.reset_estop()
-                elif event.key == pygame.K_LEFTBRACKET:
-                    robot.set_cam_rotation((robot.get_cam_rotation() - 90) % 360)
-                elif event.key == pygame.K_RIGHTBRACKET:
-                    robot.set_cam_rotation((robot.get_cam_rotation() + 90) % 360)
-                elif event.key == pygame.K_t:
-                    robot.toggle_aruco()
+                if show_config and cfg_editing:
+                    # ── text-input mode ──────────────────────────────────────
+                    if event.key == pygame.K_RETURN:
+                        # Commit the edited value
+                        flat = _cfg_flat(cfg)
+                        section, key, _ = flat[cfg_sel]
+                        cfg.set(section, key, cfg_edit_text)
+                        cfg_dirty   = True
+                        cfg_editing = False
+                    elif event.key == pygame.K_ESCAPE:
+                        cfg_editing = False          # cancel, keep old value
+                    elif event.key == pygame.K_BACKSPACE:
+                        cfg_edit_text = cfg_edit_text[:-1]
+                    else:
+                        if event.unicode and event.unicode.isprintable():
+                            cfg_edit_text += event.unicode
+
+                elif show_config:
+                    # ── config navigation mode ───────────────────────────────
+                    if event.key in (pygame.K_c, pygame.K_ESCAPE):
+                        show_config = False
+                    elif event.key in (pygame.K_UP, pygame.K_DOWN):
+                        delta   = -1 if event.key == pygame.K_UP else 1
+                        cfg_sel = (cfg_sel + delta) % cfg_n_items
+                    elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                        flat = _cfg_flat(cfg)
+                        val  = flat[cfg_sel][2].lower()
+                        if val in ("true", "false"):
+                            section, key, _ = flat[cfg_sel]
+                            cfg.set(section, key, "false" if val == "true" else "true")
+                            cfg_dirty = True
+                    elif event.key == pygame.K_RETURN:
+                        flat = _cfg_flat(cfg)
+                        cfg_edit_text = flat[cfg_sel][2]
+                        cfg_editing   = True
+                    elif event.key == pygame.K_s and cfg is not None and config_path:
+                        _save_config(config_path, cfg)
+                        cfg_dirty = False
+
+                else:
+                    # ── normal mode ──────────────────────────────────────────
+                    if event.key == pygame.K_c:
+                        show_config = True
+                    elif event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif event.key == pygame.K_e:
+                        robot.estop()
+                    elif event.key == pygame.K_r:
+                        robot.reset_estop()
+                    elif event.key == pygame.K_LEFTBRACKET:
+                        robot.set_cam_rotation((robot.get_cam_rotation() - 90) % 360)
+                    elif event.key == pygame.K_RIGHTBRACKET:
+                        robot.set_cam_rotation((robot.get_cam_rotation() + 90) % 360)
+                    elif event.key == pygame.K_t:
+                        robot.toggle_aruco()
 
         state        = robot.get_state()
         frame        = robot.get_frame()
@@ -363,7 +560,7 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0):
         pygame.draw.rect(screen, C_PANEL,     title_rect, border_radius=6)
         pygame.draw.rect(screen, mode_color,  title_rect, width=2, border_radius=6)
 
-        screen.blit(FONT_BIG.render("Yukon Robot Monitor", True, C_WHITE), (22, 16))
+        screen.blit(FONT_BIG.render("Yukon Robot Monitor", True, C_WHITE), (22, 14))
 
         # Speed label from SwB scale
         sc = state.speed_scale
@@ -383,13 +580,14 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0):
 
         # Right-align: Mode … Speed … (right edge)
         rx = W - 22
-        screen.blit(mode_txt, (rx - mode_txt.get_width(), 16)); rx -= mode_txt.get_width()
-        screen.blit(mode_lbl, (rx - mode_lbl.get_width(), 16)); rx -= mode_lbl.get_width() + 30
-        screen.blit(spd_txt,  (rx - spd_txt.get_width(),  16)); rx -= spd_txt.get_width()
-        screen.blit(spd_lbl,  (rx - spd_lbl.get_width(),  16))
+        screen.blit(mode_txt, (rx - mode_txt.get_width(), 14)); rx -= mode_txt.get_width()
+        screen.blit(mode_lbl, (rx - mode_lbl.get_width(), 14)); rx -= mode_lbl.get_width() + 30
+        screen.blit(spd_txt,  (rx - spd_txt.get_width(),  14)); rx -= spd_txt.get_width()
+        screen.blit(spd_lbl,  (rx - spd_lbl.get_width(),  14))
 
-        hint = FONT_TINY.render("E=ESTOP  R=Reset  [/]=Rotate cam  T=ArUco  Q=Quit", True, C_GRAY)
-        screen.blit(hint, (W - hint.get_width() - 22, 46))
+        # Hint row — own line in the lower half of the title bar
+        hint = FONT_SM.render("E=ESTOP  R=Reset  [/]=Cam  T=ArUco  C=Config  Q=Quit", True, C_GRAY)
+        screen.blit(hint, (W // 2 - hint.get_width() // 2, 50))
 
         # ── Status panels ────────────────────────────────────────────────────
         DRIVE_W  = 200
@@ -441,6 +639,14 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0):
             bx = _badge(screen, f"H-err: {g.h_error_m:.3f}m", C_CYAN, bx, fy)
         bx = _badge(screen, f"LOG: {'ON' if state.gps_logging else 'OFF'}",
                     C_CYAN if state.gps_logging else C_GRAY, bx, fy)
+
+        if config_path:
+            cfg_lbl = FONT_SM.render(os.path.basename(config_path), True, C_GRAY)
+            screen.blit(cfg_lbl, (W - cfg_lbl.get_width() - 14, fy))
+
+        if show_config and cfg is not None:
+            _draw_config_overlay(screen, W, H, config_path, cfg,
+                                 cfg_sel, cfg_editing, cfg_edit_text, cfg_dirty)
 
         pygame.display.flip()
         clock.tick(fps)
@@ -521,7 +727,7 @@ def main():
     )
     robot.start()
     try:
-        run_gui(robot, fps=fps)
+        run_gui(robot, fps=fps, config_path=args.config, cfg=cfg)
     finally:
         robot.stop()
         pygame.quit()

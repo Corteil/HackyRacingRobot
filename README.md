@@ -13,6 +13,8 @@ Raspberry Pi–hosted controller for a Pimoroni Yukon robot. A Pi reads an RC tr
 | Right motors | `DualMotorModule` in SLOT5 |
 | RC receiver | FlySky iBUS on GPIO 9 / `/dev/ttyAMA3` (uart3-pi5 overlay) |
 | Host ↔ Yukon | USB serial `/dev/ttyACM0` at 115200 baud |
+| Camera | IMX296 (global shutter, fixed focus) via picamera2 |
+| LiDAR | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 18 |
 
 ---
 
@@ -57,6 +59,102 @@ Channel mapping (transmitter must assign switches in its channel menu):
 | CH4 | Rudder |
 | CH5 | SwA |
 | CH6 | SwB |
+
+### `robot.py` — Robot controller daemon
+
+Manages all Pi-side hardware: camera, LiDAR, GPS/NTRIP, RC receiver and Yukon serial link.
+
+- `SystemState` dataclass: single snapshot of all sensor/status data shared with GUIs
+- `Robot` class: starts/stops subsystem threads; exposes `get_state()`, `get_frame()`, `get_aruco_state()`
+- Camera thread captures frames, rotates, runs ArUco detection; corrects BGR→RGB channel order from picamera2
+- LiDAR (`_Lidar`): reads LD06, exports latest `LidarScan`; PWM motor control via GPIO 18 sysfs
+- GPS (`_GPS`): NMEA parsing, optional NTRIP RTK injection
+- Configuration via `robot.ini` (all sections editable at runtime through `robot_gui.py`)
+
+### `robot_gui.py` — 4-panel pygame monitor
+
+Full-screen robot dashboard.
+
+```
+python3 robot_gui.py [--config robot.ini] [--no-camera] [--no-lidar]
+```
+
+Panels: Drive bars, Telemetry (voltage/current/temps/faults), GPS, Camera+LiDAR.
+
+Key bindings:
+
+| Key | Action |
+|-----|--------|
+| E | Emergency stop |
+| R | Reset |
+| `[` / `]` | Cycle camera |
+| T | Toggle ArUco detection |
+| C | Config overlay (edit `robot.ini` live) |
+| Q / Esc | Quit |
+
+Config overlay: ↑↓ navigate, Enter edit value, Left/Right toggle booleans, S save, Esc cancel.
+
+### `lidar_gui.py` — Standalone LiDAR visualiser
+
+360° polar plot of LD06 scan data.
+
+```
+python3 lidar_gui.py [PORT]    # default /dev/ttyAMA0
+```
+
+| Key | Action |
+|-----|--------|
+| Scroll / `+` / `-` | Zoom (500 mm – 12 m range) |
+| F | Freeze / unfreeze scan |
+| G | Toggle grid |
+| Q / Esc | Quit |
+
+Bottom bar shows RPM, scan rate, point count, range, and nearest obstacle.
+
+### `camera_monitor.py` — Live camera monitor
+
+Focus-assist and colour-mode tool for the IMX296 camera.
+
+```
+python3 camera_monitor.py
+```
+
+| Key | Action |
+|-----|--------|
+| M | Cycle colour mode (Colour / Greyscale / False Colour / Edges / Focus Peak) |
+| S | Cycle capture resolution |
+| R | Rotate 90° |
+| H | Toggle histogram |
+| A | Toggle auto-exposure |
+| ↑ / ↓ | Adjust exposure (manual mode) |
+| `[` / `]` | Adjust gain |
+| T | Toggle ArUco detection |
+| D | Cycle ArUco dictionary |
+| F | Freeze frame (↑↓ scroll tag list while frozen) |
+| Q / Esc | Quit |
+
+Right panel shows detected ArUco tags (ID, distance, bearing, corners). Bottom bar shows sharpness metric (Laplacian variance).
+
+### `ld06.py` — LD06 LiDAR driver
+
+- Parses 47-byte packets: CRC8 (poly 0x4D), 12 points/packet, speed in °/s×100, distances in mm
+- Background reader thread; `get_scan()` returns latest `LidarScan(angles, distances, rpm)`
+- PWM motor speed exported via `/sys/class/pwm/pwmchip0` on GPIO 18 (requires `dtoverlay=pwm,pin=18,func=2`)
+- PWM permissions: install `/etc/udev/rules.d/99-pwm.rules` (see below)
+
+### `test_ld06.py` — LD06 tests and live display
+
+- **Unit tests** (no hardware): 16 tests covering packet structure, CRC, angle interpolation, RPM, zero-intensity clamp, wrap-around
+- **Live display**: 16 compass sectors (22.5° each), min-distance bar graph
+
+```
+python3 test_ld06.py [PORT]        # unit tests + live display
+python3 test_ld06.py -u            # unit tests only
+```
+
+### `aruco_detector.py` — ArUco tag detector
+
+Wraps OpenCV `ArucoDetector`. Returns per-tag corners, ID, estimated distance and bearing. Shared by `robot.py` and `camera_monitor.py`.
 
 ### `test_main.py` — Host-side protocol tester
 
@@ -134,3 +232,32 @@ Response: `ACK` (0x06) on success, `NAK` (0x15) on any error.
 | 4 | Right module temp | raw ÷ 3 → °C |
 | 5 | Left fault | 0 or 1 |
 | 6 | Right fault | 0 or 1 |
+
+---
+
+## Setup Notes
+
+### LiDAR PWM permissions
+
+The LD06 spin motor is driven by hardware PWM on GPIO 18. Add to `/boot/firmware/config.txt`:
+
+```
+dtoverlay=pwm,pin=18,func=2
+```
+
+The kernel creates the sysfs PWM node as `root:root`. Install the following udev rule so the `gpio` group can write to it without `sudo`:
+
+```
+# /etc/udev/rules.d/99-pwm.rules
+SUBSYSTEM=="pwm", KERNEL=="pwmchip[0-9]*", ACTION=="add", \
+    RUN+="/bin/chgrp gpio /sys%p/export /sys%p/unexport", \
+    RUN+="/bin/chmod g+w  /sys%p/export /sys%p/unexport"
+SUBSYSTEM=="pwm", KERNEL=="pwm[0-9]*", ACTION=="add", \
+    RUN+="/bin/sh -c 'chgrp -R gpio /sys%p && chmod -R g+rw /sys%p'"
+```
+
+Then reload: `sudo udevadm control --reload-rules`
+
+### Camera channel order
+
+picamera2 `RGB888` format returns BGR bytes in memory. `robot.py` and `camera_monitor.py` both apply `[:, :, ::-1]` immediately after `capture_array()` to correct this before any processing or display.
