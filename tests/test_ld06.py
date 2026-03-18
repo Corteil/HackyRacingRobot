@@ -15,6 +15,8 @@ Press Ctrl+C to exit.
 
 import struct
 import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 
 from ld06 import LD06, LidarScan, _crc8, _PACKET_LEN, _N_POINTS
