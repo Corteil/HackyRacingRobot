@@ -1,5 +1,5 @@
 import _thread
-from utime import sleep
+from utime import sleep, sleep_ms
 import sys
 import select
 from pimoroni_yukon import Yukon, SLOT2, SLOT5
@@ -14,10 +14,15 @@ UPDATES = 50
 CURRENT_LIMIT = 2
 SENSOR_PERIOD = 1000   # ms between sensor reports
 
+# Bearing-hold proportional gain.
+# Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
+# Tune upward if the robot drifts; tune downward if it oscillates.
+BEARING_KP = 0.4
+
 # Protocol: 5-byte packets, all bytes are printable ASCII — no REPL interference
 #   Host→Device  [SYNC, CMD, V_HIGH, V_LOW, CHK]
 #   SYNC   = 0x7E (126, '~') — unique, never appears in other fields
-#   CMD    = cmd_code + 0x20  → 0x21-0x25 (33-37, '!' to '%')
+#   CMD    = cmd_code + 0x20  → 0x21-0x26 (33-38, '!' to '&')
 #   V_HIGH = (value >> 4) + 0x40 → 0x40-0x4F (64-79, '@' to 'O')
 #   V_LOW  = (value & 0xF) + 0x50 → 0x50-0x5F (80-95, 'P' to '_')
 #   CHK    = CMD ^ V_HIGH ^ V_LOW  (printable, never equals SYNC)
@@ -31,11 +36,12 @@ SYNC = 0x7E
 ACK  = 0x06
 NAK  = 0x15
 
-CMD_LED    = 1   # value: 0=LED_A off, 1=LED_A on, 2=LED_B off, 3=LED_B on
-CMD_LEFT   = 2   # value: motor speed byte
-CMD_RIGHT  = 3
-CMD_KILL   = 4   # value: ignored
-CMD_SENSOR = 5   # value: ignored; replies with sensor data packets then ACK
+CMD_LED     = 1   # value: 0=LED_A off, 1=LED_A on, 2=LED_B off, 3=LED_B on
+CMD_LEFT    = 2   # value: motor speed byte
+CMD_RIGHT   = 3
+CMD_KILL    = 4   # value: ignored
+CMD_SENSOR  = 5   # value: ignored; replies with sensor data packets then ACK
+CMD_BEARING = 6   # value: 0-254 = target bearing (encoded), 255 = disable hold
 
 # Sensor data packet RESP_TYPE IDs (resp_id + 0x30)
 RESP_VOLTAGE = 0   # input voltage × 10  (e.g. 11.2 V → 112)
@@ -46,11 +52,14 @@ RESP_TEMP_R  = 4   # right module temp × 3
 RESP_FAULT_L = 5   # left fault  (0 or 1)
 RESP_FAULT_R = 6   # right fault (0 or 1)
 
-# Shared motor state, protected by a lock
-_lock = _thread.allocate_lock()
-_left_speed = 0.0
-_right_speed = 0.0
-_running = True
+# Shared state, protected by _lock
+_lock            = _thread.allocate_lock()
+_left_speed      = 0.0
+_right_speed     = 0.0
+_bearing_target  = None    # None = disabled; float 0–360 = active target
+_current_heading = 0.0     # updated each loop by imu.update() on core 0
+_running         = True
+
 
 def _ack():
     print(chr(ACK))   # trailing \n triggers MicroPython stdout flush; host ignores it
@@ -76,30 +85,58 @@ def _decode_speed(byte_val):
     return byte_val / 100
 
 
+def _bearing_decode(value):
+    """Decode protocol byte 0–254 → degrees 0–359."""
+    return value * 359.0 / 254.0
+
+
+def _angle_diff(target, current):
+    """Signed shortest-arc difference (target − current), range −180 to +180."""
+    return (target - current + 180.0) % 360.0 - 180.0
+
+
 def motor_core(module_left, module_right):
-    """Core 1: continuously apply latest motor speeds."""
+    """Core 1: continuously apply latest motor speeds with optional bearing hold."""
     global _running
     while _running:
         _lock.acquire()
-        left = _left_speed
-        right = _right_speed
+        left    = _left_speed
+        right   = _right_speed
+        target  = _bearing_target
+        heading = _current_heading
         _lock.release()
+
+        if target is not None:
+            error      = _angle_diff(target, heading)
+            correction = max(-BEARING_KP, min(BEARING_KP,
+                             BEARING_KP * error / 180.0))
+            left  = max(-1.0, min(1.0, left  + correction))
+            right = max(-1.0, min(1.0, right - correction))
 
         for motor in module_left.motors:
             motor.speed(left)
         for motor in module_right.motors:
             motor.speed(-right)
 
-        sleep(0.02)
+        sleep_ms(20)
 
 
 # Hardware setup
-yukon = Yukon()
+yukon   = Yukon()
 module2 = DualMotorModule()   # left motors
 module5 = DualMotorModule()   # right motors
 
 yukon.set_led(LED_A, False)
 yukon.set_led(LED_B, False)
+
+# IMU setup (optional — bearing hold disabled if BNO085 absent)
+imu = None
+try:
+    from bno085 import BNO085
+    imu = BNO085(yukon.i2c)
+    print("IMU OK")
+except Exception as e:
+    print("IMU not available:", e)
 
 try:
     yukon.register_with_slot(module2, SLOT2)
@@ -121,15 +158,25 @@ try:
     # Launch motor control loop on core 1
     _thread.start_new_thread(motor_core, (module2, module5))
 
-    # Core 0: serial comms + Yukon monitoring
-    current_time  = ticks_ms()
-    last_sensor   = ticks_ms()
-    state = 'SYNC'
-    pkt_cmd   = 0
+    # Core 0: IMU updates + serial comms + Yukon monitoring
+    current_time = ticks_ms()
+    last_sensor  = ticks_ms()
+    state    = 'SYNC'
+    pkt_cmd  = 0
     pkt_vhigh = 0
     pkt_vlow  = 0
 
     while not yukon.is_boot_pressed():
+        # Update IMU heading (I2C stays on core 0)
+        if imu is not None:
+            try:
+                imu.update()
+                _lock.acquire()
+                _current_heading = imu.heading()
+                _lock.release()
+            except Exception:
+                pass
+
         ready = select.select([sys.stdin], [], [], 0.01)
         if ready[0]:
             ch = sys.stdin.read(1)
@@ -141,7 +188,7 @@ try:
                 continue
 
             if state == 'CMD':
-                if 0x21 <= b <= 0x25:
+                if 0x21 <= b <= 0x26:
                     pkt_cmd = b
                     state = 'V_HIGH'
                 else:
@@ -198,6 +245,7 @@ try:
                         _lock.acquire()
                         _left_speed = 0.0
                         _right_speed = 0.0
+                        _bearing_target = None
                         _lock.release()
 
                     elif cmd_code == CMD_SENSOR:
@@ -212,6 +260,20 @@ try:
                         except Exception as se:
                             print(f"Sensor error: {se}")
                             _nak()
+                            state = 'SYNC'
+                            continue
+
+                    elif cmd_code == CMD_BEARING:
+                        if value == 255:
+                            _lock.acquire()
+                            _bearing_target = None
+                            _lock.release()
+                        elif imu is not None:
+                            _lock.acquire()
+                            _bearing_target = _bearing_decode(value)
+                            _lock.release()
+                        else:
+                            _nak()   # NAK if no IMU fitted
                             state = 'SYNC'
                             continue
 
@@ -251,7 +313,12 @@ try:
                 tR = module5.read_temperature()
                 fL = module2.read_fault()
                 fR = module5.read_fault()
-                print(f"SENS v={v:.2f} i={i:.3f} t={t:.1f} tL={tL:.1f} tR={tR:.1f} fL={int(fL)} fR={int(fR)}")
+                _lock.acquire()
+                hdg = _current_heading
+                tgt = _bearing_target
+                _lock.release()
+                tgt_str = 'off' if tgt is None else '%.1f' % tgt
+                print(f"SENS v={v:.2f} i={i:.3f} t={t:.1f} tL={tL:.1f} tR={tR:.1f} fL={int(fL)} fR={int(fR)} hdg={hdg:.1f} tgt={tgt_str}")
             except Exception as se:
                 print(f"Sensor error: {se}")
 

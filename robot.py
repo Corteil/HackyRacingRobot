@@ -162,11 +162,12 @@ class _YukonLink:
     ACK  = 0x06
     NAK  = 0x15
 
-    CMD_LED    = 1   # value: 0=LED_A off, 1=LED_A on
-    CMD_LEFT   = 2
-    CMD_RIGHT  = 3
-    CMD_KILL   = 4
-    CMD_SENSOR = 5
+    CMD_LED     = 1   # value: 0=LED_A off, 1=LED_A on
+    CMD_LEFT    = 2
+    CMD_RIGHT   = 3
+    CMD_KILL    = 4
+    CMD_SENSOR  = 5
+    CMD_BEARING = 6   # value: 0–254 = target bearing (0–359°), 255 = disable hold
 
     RESP_IDS = range(7)   # 0..6
 
@@ -290,6 +291,24 @@ class _YukonLink:
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_KILL, 0))
             self._drain(1, timeout=0.5)
+
+    @staticmethod
+    def _bearing_byte(degrees: float) -> int:
+        """Encode a bearing (0–360°) as a 0–254 byte. 255 is reserved for disable."""
+        return min(254, round(degrees * 254.0 / 359.0))
+
+    def set_bearing(self, degrees: float):
+        """Enable bearing hold. Yukon PID will steer toward this heading."""
+        degrees = degrees % 360.0
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_BEARING, self._bearing_byte(degrees)))
+            self._drain(1)
+
+    def clear_bearing(self):
+        """Disable bearing hold. Direct CMD_LEFT/CMD_RIGHT control resumes."""
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_BEARING, 255))
+            self._drain(1)
 
     def query_sensor(self) -> Optional[Telemetry]:
         with self._cmd_lock:

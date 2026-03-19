@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 import cv2
+import numpy as np
 
 # ── ArUco dictionary map ──────────────────────────────────────────────────────
 
@@ -119,15 +120,19 @@ class ArucoDetector:
 
     Parameters
     ----------
-    dict_name : ArUco dictionary to use (default ``"DICT_4X4_1000"``)
-    draw      : Annotate frames in-place (default True)
-    show_fps  : Overlay FPS counter (default True)
+    dict_name  : ArUco dictionary to use (default ``"DICT_4X4_1000"``)
+    draw       : Annotate frames in-place (default True)
+    show_fps   : Overlay FPS counter (default True)
+    calib_file : Path to camera_cal.npz produced by tools/calibrate_camera.py.
+                 When supplied, frames are undistorted before detection so that
+                 markers near the image edges are detected correctly.
     """
 
     def __init__(self,
-                 dict_name: str = "DICT_4X4_1000",
-                 draw:      bool = True,
-                 show_fps:  bool = True):
+                 dict_name:  str  = "DICT_4X4_1000",
+                 draw:       bool = True,
+                 show_fps:   bool = True,
+                 calib_file: str  = None):
         if dict_name not in ARUCO_DICT:
             raise ValueError(
                 f"Unknown ArUco dictionary: {dict_name!r}. "
@@ -139,6 +144,17 @@ class ArucoDetector:
         _parameters    = cv2.aruco.DetectorParameters()
         self._detector = cv2.aruco.ArucoDetector(_dictionary, _parameters)
         self._t_prev   = time.monotonic()
+
+        # Lens undistortion (optional)
+        self._map1 = None
+        self._map2 = None
+        if calib_file is not None:
+            try:
+                cal = np.load(calib_file)
+                self._map1 = cal['map1']
+                self._map2 = cal['map2']
+            except Exception as e:
+                raise ValueError(f"Cannot load calibration file {calib_file!r}: {e}") from e
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -158,6 +174,13 @@ class ArucoDetector:
         dt   = now - self._t_prev
         fps  = 1.0 / dt if dt > 0 else 0.0
         self._t_prev = now
+
+        # Undistort frame before detection if calibration was loaded.
+        # remap() operates on the raw frame (RGB) and writes back in-place so
+        # that any draw annotations also appear on the corrected image.
+        if self._map1 is not None:
+            undistorted = cv2.remap(frame, self._map1, self._map2, cv2.INTER_LINEAR)
+            frame[:] = undistorted
 
         grey = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         corners, ids, _ = self._detector.detectMarkers(grey)
