@@ -32,6 +32,8 @@ Usage
 
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -72,6 +74,9 @@ ARUCO_DICTS = [
     "DICT_6X6_100",
 ]
 
+IMAGE_DIR  = Path(__file__).parent / "saved_images"
+CALIB_FILE = Path(__file__).parent / "camera_cal.npz"
+
 # Exposure steps in µs (range 1–66 666)
 EXP_STEPS = [500, 1000, 2000, 4000, 8000, 16000, 33000, 66000]
 EXP_DEFAULT = 4     # index into EXP_STEPS → 8000 µs
@@ -109,8 +114,11 @@ def _apply_mode(frame_rgb: np.ndarray, mode: str) -> np.ndarray:
 
 
 def _sharpness(gray: np.ndarray) -> float:
-    """Laplacian variance — higher = sharper."""
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    """Laplacian variance — higher = sharper.
+    Downsampled to 640×480 before scoring so the value is
+    resolution-independent and thresholds stay consistent."""
+    small = cv2.resize(gray, (640, 480), interpolation=cv2.INTER_AREA)
+    return float(cv2.Laplacian(small, cv2.CV_64F).var())
 
 
 def _rotate(frame: np.ndarray, degrees: int) -> np.ndarray:
@@ -311,7 +319,7 @@ def run():
 
     # ── State ─────────────────────────────────────────────────────────────
     mode_idx   = 0
-    size_idx   = 0
+    size_idx   = 2          # start at native 1456×1088 (IMX296 global shutter)
     rotation   = 0
     gain_idx   = 0
     exp_idx    = EXP_DEFAULT
@@ -319,8 +327,37 @@ def run():
     show_hist  = False
     show_aruco = False
     dict_idx   = 0
-    frozen     = False
-    tag_scroll = 0
+    frozen        = False
+    tag_scroll    = 0
+    capture_flash = 0.0   # timestamp of last save (for on-screen flash)
+
+    # ── Calibration (optional undistortion) ───────────────────────────────
+    _cal_map1 = _cal_map2 = _cal_size = None
+    use_calib = False
+    if CALIB_FILE.exists():
+        try:
+            _cal = np.load(CALIB_FILE)
+            _cam_mtx  = _cal['camera_matrix']
+            _dist     = _cal['dist_coeffs']
+            _cal_size = tuple(int(v) for v in _cal['frame_size'])
+        except Exception as e:
+            print(f"Warning: could not load calibration: {e}")
+
+    def _get_cal_maps(w, h):
+        """Return (map1, map2) for the given frame size, building lazily."""
+        nonlocal _cal_map1, _cal_map2, _cal_size
+        if _cam_mtx is None:
+            return None, None
+        if (_cal_map1 is None or (_cal_map1.shape[1], _cal_map1.shape[0]) != (w, h)):
+            cal_w, cal_h = _cal_size
+            sx, sy = w / cal_w, h / cal_h
+            mtx = _cam_mtx.copy()
+            mtx[0, 0] *= sx; mtx[1, 1] *= sy
+            mtx[0, 2] *= sx; mtx[1, 2] *= sy
+            new_mtx, _ = cv2.getOptimalNewCameraMatrix(mtx, _dist, (w, h), 1, (w, h))
+            _cal_map1, _cal_map2 = cv2.initUndistortRectifyMap(
+                mtx, _dist, None, new_mtx, (w, h), cv2.CV_16SC2)
+        return _cal_map1, _cal_map2
 
     detector   = ArucoDetector(ARUCO_DICTS[dict_idx], draw=False)
     aruco_state: ArUcoState = ArUcoState()
@@ -402,6 +439,21 @@ def run():
                     frozen = not frozen
                     if not frozen:
                         tag_scroll = 0
+                elif ev.key == pygame.K_k:
+                    if _cam_mtx is not None:
+                        use_calib = not use_calib
+                    else:
+                        print("No calibration file found — run calibrate_camera.py first")
+                elif ev.key == pygame.K_SPACE:
+                    frame_to_save = disp_frame if disp_frame is not None else raw_frame
+                    if frame_to_save is not None:
+                        IMAGE_DIR.mkdir(exist_ok=True)
+                        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        path = IMAGE_DIR / f"capture_{ts}.png"
+                        cv2.imwrite(str(path),
+                                    cv2.cvtColor(frame_to_save, cv2.COLOR_RGB2BGR))
+                        capture_flash = time.time()
+                        print(f"Saved: {path}")
 
         # ── Capture ───────────────────────────────────────────────────────
         if frozen:
@@ -413,7 +465,12 @@ def run():
                 raw = None
 
         if raw is not None:
-            rotated   = _rotate(raw, rotation)
+            rotated = _rotate(raw, rotation)
+            if use_calib:
+                h, w = rotated.shape[:2]
+                m1, m2 = _get_cal_maps(w, h)
+                if m1 is not None:
+                    rotated = cv2.remap(rotated, m1, m2, cv2.INTER_LINEAR)
             gray      = cv2.cvtColor(rotated, cv2.COLOR_RGB2GRAY)
             sharpness = _sharpness(gray)
             raw_frame = rotated
@@ -461,6 +518,11 @@ def run():
                 screen.blit(lbl, (ox + sw // 2 - lbl.get_width() // 2,
                                   oy + sh - lbl.get_height() - 8))
 
+            if time.time() - capture_flash < 2.0:
+                ts_str = datetime.fromtimestamp(capture_flash).strftime("%H:%M:%S")
+                msg = FONT_MD.render(f"Saved  {ts_str}", True, C_GREEN)
+                screen.blit(msg, (ox + 8, oy + 8))
+
         # ── Right panel (always present) ─────────────────────────────────
         panel_rect = pygame.Rect(IMG_W + 4, IMG_Y + 2, PANEL_W - 8, IMG_H - 4)
         _draw_right_panel(screen, panel_rect,
@@ -475,7 +537,7 @@ def run():
         screen.blit(FONT_BIG.render("Camera Monitor", True, C_WHITE), (20, 13))
 
         h1 = FONT_SM.render(
-            "M=mode   S=size   R=rotate   H=histogram   F=freeze   Q=quit",
+            "M=mode   S=size   R=rotate   H=hist   K=calib   Spc=save   F=freeze   Q=quit",
             True, C_GRAY)
         h2 = FONT_SM.render(
             "T=ArUco   D=dict   ↑↓=exposure   [ ]=gain   A=auto-exp",
@@ -498,6 +560,7 @@ def run():
                      + (f"  {len(aruco_state.gates)} gates" if aruco_state.gates else "")
                      if show_aruco else "OFF")
 
+        calib_str = ("ON" if use_calib else "OFF") if _cam_mtx is not None else "none"
         stats = [
             ("Mode",      COLOUR_MODES[mode_idx]),
             ("Size",      f"{cap_w}×{cap_h}"),
@@ -506,13 +569,17 @@ def run():
             ("Gain",      f"{GAINS[gain_idx]:.0f}×"),
             ("FPS",       f"{display_fps:.1f}"),
             ("Sharpness", f"{sharpness:.0f}"),
+            ("Calib",     calib_str),
             ("ArUco",     aruco_str),
         ]
 
         sx = 20
         for label, value in stats:
             lbl_s = FONT_TINY.render(label, True, C_GRAY)
-            color = sharp_color if label == "Sharpness" else C_WHITE
+            color = (sharp_color if label == "Sharpness"
+                     else C_GREEN  if label == "Calib" and value == "ON"
+                     else C_GRAY   if label == "Calib" and value == "none"
+                     else C_WHITE)
             val_s = FONT_MD.render(value, True, color)
             screen.blit(lbl_s, (sx, bot_y))
             screen.blit(val_s, (sx, bot_y + lbl_s.get_height() + 2))

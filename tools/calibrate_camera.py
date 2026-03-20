@@ -84,7 +84,7 @@ class _Cam:
             print("Using picamera2 backend")
             pc2 = Picamera2()
             pc2.configure(pc2.create_video_configuration(
-                main={"size": (1280, 720), "format": "RGB888"}
+                main={"size": (1456, 1088), "format": "RGB888"}
             ))
             pc2.start()
             time.sleep(0.5)   # let AGC settle
@@ -95,8 +95,8 @@ class _Cam:
             cap = cv2.VideoCapture(idx)
             if not cap.isOpened():
                 sys.exit(f"ERROR: cannot open camera {idx}")
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1456)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1088)
             self._cap = cap
 
     def read(self, rotation=0):
@@ -142,6 +142,79 @@ def _label(font, text, colour):
     return font.render(text, True, colour)
 
 
+def _make_zones(fw, fh):
+    """Return a list of (pygame.Rect, label) covering the 3×3 grid.
+
+    Order prioritises calibration quality: corners first, then edges, then
+    centre.  Covering all 9 zones gives good spatial coverage.
+    """
+    cw, ch = fw // 3, fh // 3
+    # (col, row) in 0-based 3×3 grid
+    order = [
+        (0, 0, "TL"),  (2, 0, "TR"),  (0, 2, "BL"),  (2, 2, "BR"),
+        (1, 0, "Top"), (1, 2, "Bot"), (0, 1, "Left"), (2, 1, "Right"),
+        (1, 1, "Ctr"),
+    ]
+    zones = []
+    for col, row, lbl in order:
+        x = col * cw
+        y = row * ch
+        w = fw - x if col == 2 else cw
+        h = fh - y if row == 2 else ch
+        zones.append((pygame.Rect(x, y, w, h), lbl))
+    return zones
+
+
+def _draw_zones(screen, zones, img_points, font, fw=0, mirrored=False):
+    """Overlay coverage zones and captured position dots.
+
+    All zones shown in yellow; green once covered.  Next suggested zone
+    gets a filled highlight and a label.  Coordinates are mirrored when
+    *mirrored* is True so overlays match the flipped display image.
+    """
+    def mx(x):
+        return fw - x if mirrored and fw else x
+
+    def mirror_rect(rect):
+        return pygame.Rect(mx(rect.x + rect.w), rect.y, rect.w, rect.h) if mirrored and fw else rect
+
+    # Determine which zones are covered (always in original coords)
+    covered = set()
+    for pts in img_points:
+        cx = int(np.mean(pts[:, 0, 0]))
+        cy = int(np.mean(pts[:, 0, 1]))
+        for i, (rect, _) in enumerate(zones):
+            if rect.collidepoint(cx, cy):
+                covered.add(i)
+
+    next_zone = next((i for i in range(len(zones)) if i not in covered), None)
+
+    for i, (rect, lbl) in enumerate(zones):
+        drect = mirror_rect(rect)
+        if i in covered:
+            s = pygame.Surface((drect.w, drect.h), pygame.SRCALPHA)
+            s.fill((0, 200, 0, 35))
+            screen.blit(s, drect.topleft)
+            pygame.draw.rect(screen, (0, 180, 0), drect, 2)
+        elif i == next_zone:
+            s = pygame.Surface((drect.w, drect.h), pygame.SRCALPHA)
+            s.fill((255, 200, 0, 35))
+            screen.blit(s, drect.topleft)
+            pygame.draw.rect(screen, (255, 200, 0), drect, 2)
+            hint = font.render(f"hold here  ({lbl})", True, (255, 200, 0))
+            screen.blit(hint, (drect.centerx - hint.get_width() // 2,
+                               drect.centery - hint.get_height() // 2))
+        else:
+            pygame.draw.rect(screen, (180, 150, 0), drect, 1)
+
+    # Cyan dots — mirrored to match display
+    for pts in img_points:
+        cx = int(np.mean(pts[:, 0, 0]))
+        cy = int(np.mean(pts[:, 0, 1]))
+        pygame.draw.circle(screen, _CYAN, (mx(cx), cy), 7)
+        pygame.draw.circle(screen, _BLACK, (mx(cx), cy), 7, 1)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -160,16 +233,24 @@ def main():
     rms           = 0.0
     calibrated    = False
     undistort_on  = False
+    mirrored      = False
     rotation      = ROTATION
     capture_now   = False
     flash_until   = 0.0
 
-    screen = None
+    screen       = None
+    zones        = []
+    auto_capture    = True    # toggled with A
+    stable_since    = None    # monotonic time when board first held in zone
+    STABLE_HOLD     = 1.2     # seconds to hold still before auto-capture
+    AUTO_COOLDOWN   = 2.0     # seconds before capturing again in same zone
+    last_zone       = None    # which zone the board was in last frame
+    last_capture_t  = 0.0     # monotonic time of last auto-capture
 
     print("\nCamera Calibration")
     print(f"  Board   : {COLS}×{ROWS} inner corners, {SQUARE_MM} mm squares")
     print(f"  Output  : {os.path.normpath(CAL_FILE)}")
-    print(f"  Controls: SPACE capture · C calibrate · U undistort · R rotate · Q quit\n")
+    print(f"  Controls: SPACE capture · A auto-capture · C calibrate · U undistort · R rotate · Q quit\n")
 
     clock = pygame.time.Clock()
 
@@ -195,10 +276,19 @@ def main():
                 elif event.key == pygame.K_SPACE:
                     capture_now = True
 
+                elif event.key == pygame.K_a:
+                    auto_capture = not auto_capture
+                    stable_since = None
+                    print(f"  Auto-capture: {'ON' if auto_capture else 'OFF'}")
+
                 elif event.key == pygame.K_r:
                     rotation   = (rotation + 90) % 360
                     frame_size = None  # dimensions may change
                     print(f"  Rotation: {rotation}°")
+
+                elif event.key == pygame.K_m:
+                    mirrored = not mirrored
+                    print(f"  Mirror: {'ON' if mirrored else 'OFF'}")
 
                 elif event.key == pygame.K_c:
                     if len(obj_points) < 6:
@@ -236,6 +326,7 @@ def main():
         if frame_size is None:
             h, w   = frame.shape[:2]
             frame_size = (w, h)
+            zones  = _make_zones(w, h)
             screen = pygame.display.set_mode((w, h))
             pygame.display.set_caption("Camera Calibration")
 
@@ -251,6 +342,32 @@ def main():
         if corners is not None:
             cv2.drawChessboardCorners(display, (COLS, ROWS), corners, True)
 
+        # ── Auto-capture logic ────────────────────────────────────────────────
+        now = time.monotonic()
+        hold_progress = 0.0   # 0.0–1.0 for the progress bar
+
+        if auto_capture and corners is not None and zones:
+            cx = int(np.mean(corners[:, 0, 0]))
+            cy = int(np.mean(corners[:, 0, 1]))
+            current_zone = next((i for i, (rect, _) in enumerate(zones)
+                                 if rect.collidepoint(cx, cy)), None)
+
+            if current_zone != last_zone:
+                stable_since = now   # board moved — reset hold timer
+                last_zone    = current_zone
+
+            # Capture if held still long enough AND cooldown has passed
+            if stable_since is not None and current_zone is not None:
+                elapsed = now - stable_since
+                hold_progress = min(elapsed / STABLE_HOLD, 1.0)
+                if elapsed >= STABLE_HOLD and now - last_capture_t >= AUTO_COOLDOWN:
+                    capture_now     = True
+                    stable_since    = now    # reset so it can capture again after cooldown
+                    last_capture_t  = now
+        else:
+            stable_since  = None
+            last_zone     = None
+
         # ── Capture sample ────────────────────────────────────────────────────
         if capture_now:
             if corners is None:
@@ -258,11 +375,13 @@ def main():
             else:
                 obj_points.append(_OBJP.copy())
                 img_points.append(corners)
-                flash_until = time.monotonic() + 0.2
+                flash_until    = now + 0.2
+                last_capture_t = now
                 print(f"  Captured sample {len(obj_points)}")
 
         # ── Draw ──────────────────────────────────────────────────────────────
-        screen.blit(_to_surface(display), (0, 0))
+        render = cv2.flip(display, 1) if mirrored else display
+        screen.blit(_to_surface(render), (0, 0))
 
         # Green flash on capture
         if time.monotonic() < flash_until:
@@ -270,12 +389,9 @@ def main():
             flash.fill((0, 255, 0, 70))
             screen.blit(flash, (0, 0))
 
-        # Coverage dots
-        for pts in img_points:
-            cx = int(np.mean(pts[:, 0, 0]))
-            cy = int(np.mean(pts[:, 0, 1]))
-            pygame.draw.circle(screen, _CYAN, (cx, cy), 7)
-            pygame.draw.circle(screen, _BLACK, (cx, cy), 7, 1)
+        # Coverage zones + captured position dots
+        _draw_zones(screen, zones, img_points, font,
+                    fw=frame_size[0] if frame_size else 0, mirrored=mirrored)
 
         # Board-found indicator (top-right)
         if corners is not None:
@@ -308,9 +424,20 @@ def main():
             msg  = f"Need {need} more sample{'s' if need != 1 else ''} before calibrating"
             screen.blit(_label(font, msg, _YELLOW), (130, by))
 
+        # Auto-capture status + hold progress bar
+        auto_col = _GREEN if auto_capture else (160, 160, 160)
+        screen.blit(_label(font, f"Auto: {'ON' if auto_capture else 'OFF'}", auto_col),
+                    (frame_size[0] - 120, by))
+        if auto_capture and hold_progress > 0:
+            bar_w = 110
+            bar_x = frame_size[0] - bar_w - 5
+            bar_y = by + 20
+            pygame.draw.rect(screen, (60, 60, 60),   (bar_x, bar_y, bar_w, 10))
+            pygame.draw.rect(screen, (255, 200, 0),  (bar_x, bar_y, int(bar_w * hold_progress), 10))
+
         # Line 2: key hints
-        hints = (f"SPACE=capture  C=calibrate  U=undistort  "
-                 f"R=rotate({rotation}°)  Q=quit")
+        hints = (f"SPACE=capture  A=auto  C=calibrate  U=undistort  "
+                 f"M=mirror  R=rotate({rotation}°)  Q=quit")
         screen.blit(_label(font, hints, (180, 180, 180)), (10, by + 20))
 
         pygame.display.flip()

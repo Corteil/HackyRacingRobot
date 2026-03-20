@@ -10,6 +10,7 @@ Raspberry Pi–hosted controller for a Pimoroni Yukon robot. A Pi reads an RC tr
 - [PROTOCOL.md](PROTOCOL.md) — 5-byte serial protocol specification, command table, motor encoding, sensor response format
 - [SETUP.md](SETUP.md) — Hardware wiring, device tree overlays, udev rules, dependencies, upload instructions
 - [allystar.pdf](allystar.pdf) — Allystar TAU1308 GNSS module datasheet
+- [../tools/README.md](../tools/README.md) — Helper scripts (calibration, ArUco PDF, firmware upload, simulator, I2C scan)
 
 ---
 
@@ -19,8 +20,11 @@ Raspberry Pi–hosted controller for a Pimoroni Yukon robot. A Pi reads an RC tr
 # Run the full robot stack with pygame GUI
 python3 robot_gui.py
 
-# Run the web dashboard
+# Run the desktop web dashboard
 python3 robot_web.py
+
+# Run the mobile web dashboard (port 5001)
+python3 robot_mobile.py
 
 # RC drive only (no GUI)
 python3 rc_drive.py
@@ -28,8 +32,11 @@ python3 rc_drive.py
 # Standalone LiDAR visualiser
 python3 lidar_gui.py
 
-# Camera focus/colour tool
+# Camera focus/ArUco monitor (pygame)
 python3 camera_monitor.py
+
+# Camera web interface (mobile, port 8080)
+python3 camera_web.py
 ```
 
 ---
@@ -55,7 +62,10 @@ python3 camera_monitor.py
 | `main.py` | MicroPython firmware for the Yukon RP2040 |
 | `robot.py` | Pi-side robot daemon (camera, LiDAR, GPS, RC, Yukon serial) |
 | `robot_gui.py` | 4-panel pygame monitor |
-| `robot_web.py` | Flask web dashboard with MJPEG stream |
+| `robot_web.py` | Flask web dashboard with MJPEG stream (port 5000) |
+| `robot_mobile.py` | Mobile-optimised Flask dashboard with tab navigation (port 5001) |
+| `camera_monitor.py` | Pygame camera monitor with ArUco overlay, sharpness, and calibration |
+| `camera_web.py` | Mobile Flask camera interface with MJPEG stream (port 8080) |
 | `rc_drive.py` | Minimal RC-to-motor bridge |
 | `ibus.py` | FlySky iBUS receiver library |
 | `ld06.py` | LD06 LiDAR driver |
@@ -64,4 +74,8 @@ python3 camera_monitor.py
 | `robot.ini` | Runtime configuration |
 | `tools/upload.py` | MicroPython file uploader |
 | `tools/yukon_sim.py` | Yukon serial simulator (PTY) |
+| `tools/calibrate_camera.py` | Interactive camera lens calibration tool (outputs `camera_cal.npz`) |
+| `tools/generate_aruco_tags.py` | Generate ArUco tag PDFs (custom IDs, paper size, dictionary) |
+| `tools/make_checkerboard_pdf.py` | Generate printable checkerboard calibration target PDF |
+| `tools/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
 | `tests/` | Unit tests and live-display tools |
