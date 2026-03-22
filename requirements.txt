@@ -1,0 +1,17 @@
+# Yukon Robot — Python dependencies
+# Install with: pip install -r requirements.txt
+#
+# Note: picamera2 is Raspberry Pi specific and must be installed via apt:
+#   sudo apt install python3-picamera2
+# Note: rplidar-sdk is not required — the LD06 driver is bundled in drivers/ld06.py
+
+# Core dependencies
+pyserial>=3.5
+flask>=2.0
+pygame>=2.0
+
+# Optional: JPEG stream encoding for web dashboards
+pillow>=9.0
+
+# Optional: ArUco marker detection and camera fallback
+opencv-python>=4.5

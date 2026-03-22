@@ -399,7 +399,7 @@ class GpsNavigator:
                 self._arrive_t = now
                 if yukon:
                     try: yukon.clear_bearing()
-                    except Exception: pass
+                    except (AttributeError, OSError): pass
                 self._set_state(GpsNavState.ARRIVED)
                 return self._apply_ramp(0.0, 0.0, dt)
 
@@ -443,7 +443,7 @@ class GpsNavigator:
             # Engage bearing hold for the spin so Yukon PID assists
             if imu_heading is not None and self._imu_target is not None and yukon:
                 try: yukon.set_bearing(self._imu_target)
-                except Exception: pass
+                except (AttributeError, OSError): pass
 
         else:
             # Normal approach — proportional steering
@@ -457,7 +457,7 @@ class GpsNavigator:
             # Engage Yukon bearing hold for straight sections
             if imu_heading is not None and self._imu_target is not None and yukon:
                 try: yukon.set_bearing(self._imu_target)
-                except Exception: pass
+                except (AttributeError, OSError): pass
 
         return self._apply_ramp(target_left, target_right, dt)
 
@@ -475,7 +475,7 @@ class GpsNavigator:
                 log.info("All %d waypoints complete!", len(self._waypoints))
                 if yukon:
                     try: yukon.clear_bearing()
-                    except Exception: pass
+                    except (AttributeError, OSError): pass
                 self._set_state(GpsNavState.COMPLETE)
         else:
             wp = self._waypoints[next_idx]

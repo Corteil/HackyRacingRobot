@@ -939,7 +939,7 @@ def camera_stream():
                     data = _jpeg_encode(frame)
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
-                except Exception:
+                except (OSError, ValueError):
                     pass
             time.sleep(0.05)
     return Response(
@@ -1000,21 +1000,7 @@ def _load_config(path):
     cfg.read(path)
     return cfg
 
-def _cfg(cfg, section, key, fallback, cast=str):
-    try:
-        raw = cfg.get(section, key).strip()
-        return cast(raw) if raw else fallback
-    except Exception:
-        return fallback
-
-def _local_ip():
-    import socket
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(('8.8.8.8', 80))
-            return s.getsockname()[0]
-    except Exception:
-        return 'localhost'
+from robot_utils import _cfg, _local_ip
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
