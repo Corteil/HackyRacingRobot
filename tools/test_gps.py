@@ -49,6 +49,7 @@ parser.add_argument("--height",     default=None,          type=float)
 parser.add_argument("--hz",         default=None,          type=int,   help="Update rate Hz")
 parser.add_argument("--no-config",  action="store_true",               help="Skip module configuration")
 parser.add_argument("--debug",      action="store_true",               help="Debug NMEA/RTCM output")
+parser.add_argument("--dry-run",    action="store_true",               help="Run NMEA parsing tests only — no hardware or GUI required")
 _args = parser.parse_args()
 
 cfg = _load_config(_args.config)
@@ -80,6 +81,75 @@ class args:
     lon           = _arg(_args.lon,        "ntrip", "lon",           0.0,  float)
     height        = _arg(_args.height,     "ntrip", "height",        0.0,  float)
     ntrip_version = _arg(None,             "ntrip", "ntrip_version", 1,    int)
+
+if _args.dry_run:
+    # ── Dry-run: NMEA parsing tests, no hardware, no GUI ──────────────────────
+    from gnss.nmea import (
+        _parse_lat, _parse_lon, _safe_float, _safe_int,
+        _nmea_checksum, _verify_nmea_checksum,
+        FIX_GPS, FIX_RTK_FIXED,
+    )
+    from gnss.base import GNSSBase
+    from gnss.tau1308 import TAU1308
+
+    _p = _f = 0
+    def _chk(name, cond, detail=""):
+        global _p, _f
+        if cond:
+            print(f"  PASS  {name}"); _p += 1
+        else:
+            print(f"  FAIL  {name}" + (f"  ({detail})" if detail else "")); _f += 1
+    def _approx(a, b, tol=1e-4):
+        return a is not None and abs(a - b) <= tol
+
+    print("=" * 54)
+    print("test_gps.py --dry-run: NMEA parsing unit tests")
+    print("=" * 54)
+
+    print("\nNMEA checksum:")
+    body = "GPGGA,092750"
+    cs   = _nmea_checksum(body)
+    _chk("_nmea_checksum returns 2-char hex string", len(cs) == 2)
+    _chk("_verify_nmea_checksum good",  _verify_nmea_checksum(f"${body}*{cs}"))
+    _chk("_verify_nmea_checksum bad",   not _verify_nmea_checksum(f"${body}*00"))
+    _chk("_verify_nmea_checksum no $",  not _verify_nmea_checksum(f"{body}*{cs}"))
+
+    print("\nCoordinate parsing:")
+    _chk("lat N",  _approx(_parse_lat("5321.6802", "N"),  53.36134))
+    _chk("lat S",  _approx(_parse_lat("5321.6802", "S"), -53.36134))
+    _chk("lat empty → None", _parse_lat("", "N") is None)
+    _chk("lon E",  _approx(_parse_lon("00630.3372", "E"),  6.50562))
+    _chk("lon W",  _approx(_parse_lon("00630.3372", "W"), -6.50562))
+
+    print("\nGNSSBase GGA parsing:")
+    g = GNSSBase(None, validate_checksum=False)
+    _chk("initial has_fix = False", not g.has_fix)
+    g._parse_sentence("$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,")
+    _chk("lat parsed",       _approx(g.latitude,    53.36134, 0.0001))
+    _chk("lon parsed",       _approx(g.longitude,   -6.50562, 0.0001))
+    _chk("fix_quality = 1",  g.fix_quality == FIX_GPS)
+    _chk("satellites = 8",   g.satellites  == 8)
+    _chk("has_fix = True",   g.has_fix)
+
+    print("\nGNSSBase RTK fix quality:")
+    g2 = GNSSBase(None, validate_checksum=False)
+    g2._parse_sentence("$GPGGA,092750.000,5321.6802,N,00630.3372,W,4,12,0.5,61.7,M,55.2,M,,")
+    _chk("fix_quality = 4",      g2.fix_quality == FIX_RTK_FIXED)
+    _chk("has_rtk_fixed = True", g2.has_rtk_fixed)
+    _chk("fix_quality_name",     g2.fix_quality_name == "RTK Fixed")
+
+    print("\nTAU1308 driver instantiation:")
+    try:
+        tau = TAU1308(None, validate_checksum=False)
+        _chk("TAU1308(None) constructs without error", True)
+        _chk("TAU1308 has_fix = False", not tau.has_fix)
+    except Exception as e:
+        _chk("TAU1308(None) constructs without error", False, str(e))
+
+    print(f"\n{'=' * 54}")
+    print(f"Dry-run results: {_p} passed, {_f} failed")
+    print(f"{'=' * 54}")
+    sys.exit(0 if _f == 0 else 1)
 
 print("Config: {}".format(_args.config))
 

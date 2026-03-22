@@ -107,13 +107,42 @@ python3 tools/test_gps.py [flags]
 | `--hz N` | from config | GNSS update rate in Hz |
 | `--no-config` | off | Skip module configuration on startup |
 | `--debug` | off | Print raw NMEA / RTCM output |
+| `--dry-run` | off | NMEA parsing unit tests only — no hardware or display required |
 
 **Examples**
 ```
+python3 tools/test_gps.py --dry-run
 python3 tools/test_gps.py
 python3 tools/test_gps.py --port /dev/ttyUSB0 --debug
 python3 tools/test_gps.py --no-config --hz 5
 ```
+
+---
+
+### test_gnss.py
+
+Unit tests for the `gnss/` package — no hardware required.
+Tests NMEA parsing, coordinate conversions, checksum functions, binary helpers, and GNSSBase sentence handling.
+
+```
+python3 tools/test_gnss.py
+```
+
+Tests covered:
+
+| # | Section | What is checked |
+|---|---------|-----------------|
+| 1 | Checksum | `_nmea_checksum` XOR correctness; `_verify_nmea_checksum` good/bad/missing markers |
+| 2 | Coordinates | `_parse_lat` / `_parse_lon` N/S/E/W sign, empty and non-numeric inputs |
+| 3 | Numeric helpers | `_safe_float` / `_safe_int` valid, empty, and non-numeric inputs |
+| 4 | Binary helpers | `_pack_u8/u16/u32` little-endian; `_fletcher8` checksum |
+| 5 | Initial state | `GNSSBase(None)` default fields all None/zero/False |
+| 6 | GGA parsing | Lat, lon, fix quality, satellites, HDOP, altitude, `has_fix`, `position`, `stats` |
+| 7 | RMC parsing | `rmc_valid`, `speed_knots`, `speed_ms` conversion, `course` |
+| 8 | GST parsing | `std_lat`, `std_lon` field positions; `h_error_m` calculation |
+| 9 | RTK fix | Quality=4 → `has_rtk_fixed`, `fix_quality_name` = "RTK Fixed" |
+| 10 | Bad sentences | Unknown type, missing `$`, empty string all return False |
+| 11 | NTRIPClient | `status == NTRIP_DISCONNECTED` on construction |
 
 ---
 
@@ -162,6 +191,9 @@ Tests covered:
 | 6 | Telemetry | 1 Hz thread populates voltage, current, temperature |
 | 7 | IMU heading | `get_heading()` decodes `RESP_HEADING` within 3° tolerance |
 | 8 | Estop | `estop()` does not raise; mode becomes `ESTOP` |
+| 9 | Reset ESTOP | `reset_estop()` returns mode to `MANUAL` |
+| 10 | AUTO mode | `set_mode(AUTO/MANUAL)` transitions; `set_mode(ESTOP)` raises; `drive()` clamps and stores values |
+| 11 | Data logging | `start_data_log()` / `stop_data_log()` create valid JSONL with `ts`, `mode`, `drive` fields |
 
 The iBUS port is set to a non-existent path — the rc_reader thread logs a warning and exits, which is expected.
 

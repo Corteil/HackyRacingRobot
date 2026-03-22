@@ -247,6 +247,103 @@ def test_estop(robot):
            robot.get_state().mode is RobotMode.ESTOP)
 
 
+def test_reset_estop(robot):
+    print("\nReset ESTOP:")
+    robot.estop()
+    _check("mode is ESTOP before reset",
+           robot.get_state().mode is RobotMode.ESTOP)
+    robot.reset_estop()
+    _check("mode returns to MANUAL after reset_estop()",
+           robot.get_state().mode is RobotMode.MANUAL)
+
+
+def test_auto_mode(robot):
+    print("\nAUTO mode:")
+    robot.reset_estop()   # ensure clean MANUAL state
+
+    robot.set_mode(RobotMode.AUTO)
+    _check("set_mode(AUTO) → mode is AUTO",
+           robot.get_state().mode is RobotMode.AUTO)
+
+    robot.set_mode(RobotMode.MANUAL)
+    _check("set_mode(MANUAL) → mode is MANUAL",
+           robot.get_state().mode is RobotMode.MANUAL)
+
+    raised = False
+    try:
+        robot.set_mode(RobotMode.ESTOP)
+    except ValueError:
+        raised = True
+    _check("set_mode(ESTOP) raises ValueError", raised)
+
+    # drive() stores values regardless of mode (applied by control thread in AUTO)
+    robot.set_mode(RobotMode.AUTO)
+    robot.drive(0.6, -0.4)
+    with robot._mode_lock:
+        al = robot._auto_left
+        ar = robot._auto_right
+    _check("drive(0.6, -0.4): _auto_left stored correctly",
+           _approx(al, 0.6), f"got {al}")
+    _check("drive(0.6, -0.4): _auto_right stored correctly",
+           _approx(ar, -0.4), f"got {ar}")
+
+    # Clamp check
+    robot.drive(2.0, -2.0)
+    with robot._mode_lock:
+        al = robot._auto_left
+        ar = robot._auto_right
+    _check("drive(2.0, …) clamped to 1.0",  _approx(al,  1.0), f"got {al}")
+    _check("drive(…, -2.0) clamped to -1.0", _approx(ar, -1.0), f"got {ar}")
+
+    robot.set_mode(RobotMode.MANUAL)
+
+
+def test_data_log(robot):
+    import tempfile, os
+    print("\nData logging:")
+
+    _check("not logging before start", not robot.is_data_logging())
+
+    with tempfile.NamedTemporaryFile(suffix='.jsonl', delete=False) as f:
+        tmp_path = f.name
+
+    try:
+        started = robot.start_data_log(path=tmp_path, hz=5.0)
+        _check("start_data_log() returns True", started is True)
+        _check("is_data_logging() True while active", robot.is_data_logging())
+
+        # Second call while active should return False
+        started2 = robot.start_data_log(path=tmp_path, hz=5.0)
+        _check("start_data_log() returns False when already active",
+               started2 is False)
+
+        time.sleep(0.5)   # let at least 2 records be written
+
+        returned_path = robot.stop_data_log()
+        _check("stop_data_log() returns the log path",
+               returned_path == tmp_path)
+        _check("is_data_logging() False after stop", not robot.is_data_logging())
+
+        size = os.path.getsize(tmp_path)
+        _check("log file has content (> 0 bytes)", size > 0, f"size={size}")
+
+        with open(tmp_path) as fh:
+            import json
+            lines = [l.strip() for l in fh if l.strip()]
+        _check("log file has at least 1 record", len(lines) >= 1,
+               f"got {len(lines)}")
+        if lines:
+            rec = json.loads(lines[0])
+            _check("record has 'ts' field",   'ts'   in rec)
+            _check("record has 'mode' field", 'mode' in rec)
+            _check("record has 'drive' field",'drive' in rec)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -270,6 +367,9 @@ def main():
         test_telemetry(robot)
         test_imu_heading(robot)
         test_estop(robot)
+        test_reset_estop(robot)
+        test_auto_mode(robot)
+        test_data_log(robot)
 
     finally:
         robot.stop()

@@ -13,9 +13,9 @@ Suggested improvements based on codebase analysis, roughly ordered by priority.
 - [x] `camera_monitor.py` and `camera_web.py` share logic — extracted into `robot/camera_controls.py` (constants, sharpness, rotate, make_cam, draw_aruco_on_frame, CalibrationMaps)
 
 ### Testing
-- [ ] Add unit tests for the `gnss/` package — currently has no dedicated test file unlike every other subsystem
-- [ ] Expand `tools/test_robot.py` integration tests to cover AUTO mode and navigator state transitions using the PTY simulator
-- [ ] Add a `--dry-run` / `--no-hardware` flag to `tools/test_gps.py` so it can run in CI without a physical receiver
+- [x] Add unit tests for the `gnss/` package — `tools/test_gnss.py` (57 tests, no hardware)
+- [x] Expand `tools/test_robot.py` — added AUTO mode, reset_estop, and data log tests (52 tests total)
+- [x] Add `--dry-run` flag to `tools/test_gps.py` — runs 20 NMEA parsing tests without hardware or GUI
 
 ### Navigation & Autonomy
 - [ ] LiDAR data (`LidarScan`) is collected but not used by either navigator — add basic obstacle-stop logic to `aruco_navigator.py` and `gps_navigator.py` (halt if any point inside a configurable forward cone is closer than N metres)
