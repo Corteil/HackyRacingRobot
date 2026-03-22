@@ -102,11 +102,21 @@ Each data packet: `[SYNC, RESP_TYPE, V_HIGH, V_LOW, CHK]` where `RESP_TYPE = sen
 
 ### Fault recovery
 
-If a `FaultError` is raised during Yukon monitoring, the firmware:
-1. Zeros both motor speeds
-2. Waits 50 ms
+The Yukon SDK disables main output before raising any monitoring exception. The firmware handles faults in two categories:
+
+**Non-recoverable** (`OverVoltageError`, `OverTemperatureError`):
+1. Logs `CRITICAL:` with exception type and last sensor readings
+2. Zeros both motor speeds and disables bearing hold
+3. Exits the main loop — `yukon.reset()` is called in the `finally` block
+4. Host will see the serial connection drop
+
+**Recoverable** (`FaultError`, `OverCurrentError`, `UnderVoltageError`, other):
+1. Zeros both motor speeds and disables bearing hold
+2. Waits 500 ms (cooldown to avoid hammering a transient fault)
 3. Re-enables main output and motor modules
-4. Continues running (does not reboot)
+4. Continues running
+
+Recovery is limited to **5 consecutive faults** (`MAX_CONSECUTIVE_FAULTS`). If the fault counter is exceeded, or if re-enabling fails (e.g. short circuit detected), the firmware shuts down. The counter resets to 0 after every successful monitoring cycle.
 
 ### Periodic sensor log
 

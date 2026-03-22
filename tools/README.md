@@ -44,7 +44,7 @@ python3 tools/test_ibus.py [PORT]
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `PORT` (positional) | `/dev/ttyUSB0` | Serial port for the iBUS receiver |
+| `PORT` (positional) | `/dev/ttyAMA3` | Serial port for the iBUS receiver |
 
 Press `Ctrl+C` to exit the live display.
 
@@ -350,7 +350,13 @@ Web front-end for the Yukon simulator — serves a browser dashboard for motor a
 
 ```bash
 python3 tools/yukon_sim_web.py
+python3 tools/yukon_sim_web.py --host 0.0.0.0 --port 5002
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host HOST` | `0.0.0.0` | Bind address |
+| `--port N` | `5002` | HTTP port |
 
 ---
 
@@ -362,8 +368,15 @@ Upload a MicroPython file to the Yukon RP2040 over USB serial.
 
 ```bash
 python3 tools/upload.py yukon_firmware_and_software/main.py
-python3 tools/upload.py yukon_firmware_and_software/main.py --port /dev/ttyACM0
+python3 tools/upload.py yukon_firmware_and_software/main.py main.py
 ```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `SRC` (positional, required) | — | Source file to upload |
+| `DEST` (positional) | basename of `SRC` | Destination filename on device |
+
+Port is hardcoded to `/dev/ttyACM0` at 115200 baud.
 
 Use this instead of `mpremote` or `ampy` — those fail because `yukon.reset()` drops the USB connection on every Ctrl+C. This tool handles the double USB reconnect before entering the raw REPL.
 
@@ -375,7 +388,13 @@ Pygame GUI for recording and editing GPS waypoint routes.
 
 ```bash
 python3 tools/gps_route_builder.py
+python3 tools/gps_route_builder.py --waypoints route.json --live
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--waypoints PATH` | none | Load waypoints JSON on start |
+| `--live` | off | Connect to robot.py on start |
 
 ---
 
@@ -385,7 +404,15 @@ Web-based GPS route builder — browser UI for recording and editing waypoints.
 
 ```bash
 python3 tools/gps_route_builder_web.py
+python3 tools/gps_route_builder_web.py --waypoints route.json --live
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host HOST` | `0.0.0.0` | Bind address |
+| `--port N` | `5003` | HTTP port |
+| `--waypoints PATH` | none | Load waypoints JSON on start |
+| `--live` | off | Auto-connect to robot.py |
 
 ---
 

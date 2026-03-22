@@ -208,6 +208,63 @@ def _draw_system(surf, rect, s):
              f"{s.disk_percent:.0f}% {s.disk_used_gb:.1f}/{s.disk_total_gb:.1f}GB", disk_color)
 
 
+# ── Terminal log panel ────────────────────────────────────────────────────────
+
+_LEVEL_COLORS = {
+    'CRITICAL': (220,  60,  60),
+    'ERROR':    (220,  60,  60),
+    'WARNING':  (240, 200,  40),
+    'DEBUG':    (130, 130, 150),
+}
+_TERM_LINES: list = []  # cached log lines
+
+
+def _load_log_tail(log_path: str, n: int = 30) -> list:
+    """Read last n lines from the log file. Returns list of (level, text) tuples."""
+    if not log_path or not os.path.exists(log_path):
+        return []
+    try:
+        with open(log_path, 'r', errors='replace') as f:
+            raw = f.readlines()[-n:]
+        result = []
+        for line in raw:
+            line = line.rstrip('\n')
+            level = 'INFO'
+            for lvl in ('CRITICAL', 'ERROR', 'WARNING', 'DEBUG'):
+                if lvl in line:
+                    level = lvl
+                    break
+            result.append((level, line))
+        return result
+    except OSError:
+        return []
+
+
+def _draw_terminal(surf, rect, log_path: str, tick: int):
+    """Draw a scrolling log terminal panel."""
+    global _TERM_LINES
+    _panel(surf, rect, "Log")
+    # Refresh every ~20 frames
+    if tick % 20 == 0:
+        _TERM_LINES = _load_log_tail(log_path, n=50)
+
+    inner = pygame.Rect(rect.x + 6, rect.y + 22, rect.width - 12, rect.height - 28)
+    # Clip to inner area
+    old_clip = surf.get_clip()
+    surf.set_clip(inner)
+
+    line_h = FONT_SM.get_height() + 1
+    max_lines = inner.height // line_h
+    visible = _TERM_LINES[-max_lines:] if _TERM_LINES else []
+
+    for i, (level, text) in enumerate(visible):
+        color = _LEVEL_COLORS.get(level, C_WHITE)
+        lbl = FONT_SM.render(text, True, color)
+        surf.blit(lbl, (inner.x, inner.y + i * line_h))
+
+    surf.set_clip(old_clip)
+
+
 # ── Bearing overlay helpers ───────────────────────────────────────────────────
 
 def _draw_bearing_line(surf, inner, tag_cx, tag_cy, label, color, aim=False):
@@ -322,7 +379,8 @@ def _draw_camera(surf, rect, frame, rotation=0,
                  frame_w=640, frame_h=480,
                  target_gate_id=0,
                  auto_type=None,
-                 nav_wp=0, nav_wp_dist=None, nav_wp_bear=None):
+                 nav_wp=0, nav_wp_dist=None, nav_wp_bear=None,
+                 recording=False):
     title = f"Camera [{rotation}°]" if rotation else "Camera"
     if show_bearing:
         title += "  [B=bearing ON]"
@@ -398,6 +456,13 @@ def _draw_camera(surf, rect, frame, rotation=0,
             _draw_nav_status(surf, inner, nav_state, nav_gate, nav_bearing_err,
                              auto_type=auto_type, nav_wp=nav_wp,
                              nav_wp_dist=nav_wp_dist, nav_wp_bear=nav_wp_bear)
+
+    # ── Recording dot (top-left) ──────────────────────────────────────────────
+    if recording and (pygame.time.get_ticks() // 500) % 2 == 0:
+        dot_x = inner.x + 14
+        dot_y = inner.y + 14
+        pygame.draw.circle(surf, (0, 0, 0),   (dot_x, dot_y), 8)   # shadow
+        pygame.draw.circle(surf, C_RED,        (dot_x, dot_y), 6)
 
     # ── ArUco status bar (bottom-left) ────────────────────────────────────────
     if aruco_enabled:
@@ -602,7 +667,7 @@ def _draw_config_overlay(surf, W, H, config_path, cfg,
 # ── Main GUI loop ─────────────────────────────────────────────────────────────
 
 def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
-            config_path: str = "", cfg=None):
+            config_path: str = "", cfg=None, log_path: str = ""):
 
     global FONT_BIG, FONT_MD, FONT_SM, FONT_TINY
 
@@ -622,11 +687,13 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
     PANEL_Y = TITLE_H + 10
     BODY_Y  = PANEL_Y + PANEL_H + 10
     FOOTER_H= 30
-    BODY_H  = H - BODY_Y - FOOTER_H - 8
+    TERM_H  = 110
+    BODY_H  = H - BODY_Y - FOOTER_H - TERM_H - 13
 
     running       = True
     show_config   = False
     show_bearing  = False      # ← bearing overlay toggle
+    tick          = 0
     cfg_sel       = 0
     cfg_editing   = False
     cfg_edit_text = ""
@@ -694,6 +761,16 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
                         robot.toggle_aruco()
                     elif event.key == pygame.K_b:
                         show_bearing = not show_bearing   # ← bearing toggle
+                    elif event.key == pygame.K_v:
+                        if robot.is_cam_recording():
+                            robot.stop_cam_recording()
+                        else:
+                            robot.start_cam_recording()
+                    elif event.key == pygame.K_d:
+                        if robot.is_data_logging():
+                            robot.stop_data_log()
+                        else:
+                            robot.start_data_log()
 
         state       = robot.get_state()
         frame       = robot.get_frame()
@@ -737,7 +814,7 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
 
         no_motors_warn = "  *** NO-MOTORS ***" if state.no_motors else ""
         hint = FONT_SM.render(
-            "E=ESTOP R=Reset [/]=Cam T=ArUco B=Bearing C=Config Q=Quit" + no_motors_warn,
+            "E=ESTOP R=Reset [/]=Cam T=ArUco B=Bearing V=Record D=DataLog C=Config Q=Quit" + no_motors_warn,
             True, C_YELLOW if state.no_motors else C_GRAY)
         screen.blit(hint, (W // 2 - hint.get_width() // 2, 50))
 
@@ -782,8 +859,15 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
             nav_wp       = state.nav_wp,
             nav_wp_dist  = state.nav_wp_dist,
             nav_wp_bear  = state.nav_wp_bear,
+            recording    = state.cam_recording,
         )
         _draw_lidar(screen, lidar_rect, state.lidar)
+
+        # ── Terminal ───────────────────────────────────────────────────────────
+        term_y    = BODY_Y + BODY_H + 5
+        term_rect = pygame.Rect(10, term_y, W - 20, TERM_H)
+        _draw_terminal(screen, term_rect, log_path, tick)
+        tick += 1
 
         # ── Footer ─────────────────────────────────────────────────────────────
         fy = H - FOOTER_H + 4
@@ -807,6 +891,10 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
             bx = _badge(screen, f"H-err: {g.h_error_m:.3f}m", C_CYAN, bx, fy)
         bx = _badge(screen, f"LOG: {'ON' if state.gps_logging else 'OFF'}",
                     C_CYAN if state.gps_logging else C_GRAY, bx, fy)
+        if state.cam_recording:
+            bx = _badge(screen, "REC", C_RED, bx, fy)
+        if state.data_logging:
+            bx = _badge(screen, "DLOG", C_PURPLE, bx, fy)
 
         # IMU heading badge
         if imu_heading is not None:
@@ -935,11 +1023,13 @@ def main():
         speed_min      = _cfg(cfg, "rc",         "speed_min",   0.25, float),
         control_hz     = _cfg(cfg, "rc",         "control_hz",  50,   int),
         no_motors      = args.no_motors,
+        rec_dir        = _cfg(cfg, 'output', 'videos_dir',   ''),
+        data_log_dir   = _cfg(cfg, 'output', 'data_log_dir', ''),
     )
     robot.start()
 
     try:
-        run_gui(robot, fps=fps, config_path=args.config, cfg=cfg)
+        run_gui(robot, fps=fps, config_path=args.config, cfg=cfg, log_path=log_path)
     finally:
         robot.stop()
         pygame.quit()

@@ -31,8 +31,12 @@ from robot.aruco_detector import ArucoDetector, ArUcoState, ARUCO_DICT
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
+import configparser as _cp
 _HERE       = Path(__file__).parent
-IMAGE_DIR   = _HERE / "saved_images"
+_cfg_ini    = _cp.ConfigParser(inline_comment_prefixes=('#',))
+_cfg_ini.read(_HERE / "robot.ini")
+_images_dir = _cfg_ini.get('output', 'images_dir', fallback='').strip()
+IMAGE_DIR   = Path(_images_dir) if _images_dir else Path.home() / "Pictures" / "HackyRacingRobot"
 CALIB_FILE  = _HERE / "camera_cal.npz"
 
 # ── Capture sizes ─────────────────────────────────────────────────────────────

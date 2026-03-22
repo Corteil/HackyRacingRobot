@@ -1,6 +1,6 @@
 # HackyRacingRobot
 
-Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Pi reads an RC transmitter via iBUS and sends motor commands to the Yukon RP2040 over USB serial using a compact 5-byte protocol. Supports autonomous gate navigation with ArUco markers, RTK GPS waypoint following, LiDAR, and a live pygame or web dashboard.
+Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Pi reads an RC transmitter via iBUS and sends motor commands to the Yukon RP2040 over USB serial using a compact 5-byte protocol. Supports autonomous gate navigation with ArUco markers, RTK GPS waypoint following, LiDAR, camera recording, ML sensor data logging, and a live pygame or web dashboard.
 
 ---
 
@@ -51,8 +51,9 @@ python3 camera_web.py
 
 ```
 robot_daemon.py             Pi-side daemon (all subsystem threads)
-robot_gui.py                4-panel pygame monitor
-robot_web.py                Flask web dashboard (port 5000)
+robot_utils.py              Shared utilities (config helper, local IP)
+robot_gui.py                Pygame monitor with drive/telem/GPS/camera/lidar/log panels
+robot_web.py                Flask web dashboard with terminal log panel (port 5000)
 robot_mobile.py             Mobile Flask dashboard (port 5001)
 rc_drive.py                 Minimal RC-to-motor bridge (no GUI)
 lidar_gui.py                Standalone LD06 LiDAR visualiser
@@ -81,6 +82,18 @@ docs/
   PROTOCOL.md               5-byte serial protocol specification
   SETUP.md                  Wiring, overlays, dependencies, upload guide
 ```
+
+---
+
+## Output directories
+
+Configured via `[output]` in `robot.ini` — all default to the Pi user's home folders.
+
+| Output | Default path |
+|--------|-------------|
+| Camera snapshots | `~/Pictures/HackyRacingRobot/` |
+| Video recordings | `~/Videos/HackyRacingRobot/` |
+| ML data logs (JSONL) | `~/Documents/HackyRacingRobot/` |
 
 ---
 

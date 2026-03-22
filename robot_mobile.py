@@ -112,6 +112,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False,
         'aruco_enabled': aruco_enabled,
         'cam_rotation':  cam_rotation,
         'gps_logging':   state.gps_logging,
+        'cam_recording': state.cam_recording,
+        'data_logging':  state.data_logging,
         'no_motors':     state.no_motors,
         'nav_state':     state.nav_state,
         'nav_gate':      state.nav_gate,
@@ -231,6 +233,16 @@ def api_cmd():
         _robot.set_cam_rotation((_robot.get_cam_rotation() + 90) % 360)
     elif cmd == 'rotate_ccw':
         _robot.set_cam_rotation((_robot.get_cam_rotation() - 90 + 360) % 360)
+    elif cmd == 'record_toggle':
+        if _robot.is_cam_recording():
+            _robot.stop_cam_recording()
+        else:
+            _robot.start_cam_recording()
+    elif cmd == 'data_log_toggle':
+        if _robot.is_data_logging():
+            _robot.stop_data_log()
+        else:
+            _robot.start_data_log()
     else:
         return jsonify({'ok': False, 'error': f'Unknown command: {cmd}'}), 400
     return jsonify({'ok': True})
@@ -481,6 +493,14 @@ html, body {
   pointer-events: none; display: none;
 }
 
+#rec-dot {
+  position: absolute; top: 8px; left: 8px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--red); pointer-events: none; display: none;
+  animation: rec-blink .8s step-end infinite;
+}
+@keyframes rec-blink { 50% { opacity: 0; } }
+
 /* ── Nav badge on camera ── */
 #nav-badge-cam {
   position: absolute; top: 6px; right: 6px;
@@ -571,6 +591,7 @@ html, body {
         <img id="cam-img" src="/stream" alt="">
         <div id="cam-no">No camera signal</div>
         <canvas id="bearing-canvas"></canvas>
+        <div id="rec-dot"></div>
         <div id="nav-badge-cam"></div>
       </div>
       <div id="cam-btns">
@@ -578,6 +599,8 @@ html, body {
         <button class="btn" id="btn-aruco" onclick="cmd('aruco_toggle')">ArUco: OFF</button>
         <button class="btn" onclick="cmd('rotate_ccw')">&#x21BA; CCW</button>
         <button class="btn" onclick="cmd('rotate_cw')">CW &#x21BB;</button>
+        <button class="btn" id="btn-record" onclick="cmd('record_toggle')">&#x23FA; REC</button>
+        <button class="btn" id="btn-dlog"   onclick="cmd('data_log_toggle')">&#x2B24; DLOG</button>
       </div>
     </div>
 
@@ -1167,6 +1190,23 @@ function applyState(s) {
         gOk ? (g.fix_quality >= 4 ? 'ok' : 'warn') : '');
   badge('bdg-log', 'LOG: ' + (s.gps_logging ? 'ON' : 'OFF'), s.gps_logging ? 'ok' : '');
 
+  // Recording button state + live dot
+  const recBtn = el('btn-record');
+  if (recBtn) {
+    recBtn.textContent = s.cam_recording ? '\u23F9 STOP' : '\u23FA REC';
+    recBtn.style.color = s.cam_recording ? C.red : '';
+    recBtn.style.borderColor = s.cam_recording ? C.red : '';
+  }
+  el('rec-dot').style.display = s.cam_recording ? 'block' : 'none';
+
+  // Data logging button
+  const dlogBtn = el('btn-dlog');
+  if (dlogBtn) {
+    dlogBtn.textContent  = s.data_logging ? '\u2B24 STOP' : '\u2B24 DLOG';
+    dlogBtn.style.color        = s.data_logging ? 'var(--blue)' : '';
+    dlogBtn.style.borderColor  = s.data_logging ? 'var(--blue)' : '';
+  }
+
   const hdgBadge = el('bdg-hdg');
   if (t.heading != null) {
     hdgBadge.textContent = `HDG: ${t.heading.toFixed(1)}°`;
@@ -1385,6 +1425,8 @@ def main():
         speed_min       = _cfg(cfg, 'rc', 'speed_min',   0.25, float),
         control_hz      = _cfg(cfg, 'rc', 'control_hz',  50,   int),
         no_motors       = args.no_motors,
+        rec_dir         = _cfg(cfg, 'output', 'videos_dir',   ''),
+        data_log_dir    = _cfg(cfg, 'output', 'data_log_dir', ''),
     )
 
     _robot.start()

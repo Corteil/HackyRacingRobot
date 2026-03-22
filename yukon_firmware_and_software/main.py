@@ -1,12 +1,13 @@
 import _thread
-from utime import sleep, sleep_ms
+from utime import sleep, sleep_ms, ticks_diff
 import sys
 import select
 
 from pimoroni_yukon import Yukon, SLOT2, SLOT5
 from pimoroni_yukon.modules import DualMotorModule
 from pimoroni_yukon.timing import ticks_ms, ticks_add
-from pimoroni_yukon.errors import FaultError
+from pimoroni_yukon.errors import (FaultError, OverVoltageError,
+                                   OverCurrentError, OverTemperatureError)
 
 # Hardware constants
 LED_A = 'A'
@@ -14,6 +15,8 @@ LED_B = 'B'
 UPDATES      = 50
 CURRENT_LIMIT = 2
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
+MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
+FAULT_COOLDOWN_MS      = 500   # minimum wait between recovery attempts
 
 # Bearing-hold proportional gain.
 # Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
@@ -91,8 +94,8 @@ def _send_data(resp_id, value):
 def _decode_speed(byte_val):
     """Decode motor speed byte → -1.0 .. +1.0."""
     if byte_val > 100:
-        return -((byte_val - 100) / 100.0)
-    return byte_val / 100.0
+        return max(-1.0, -((byte_val - 100) / 100.0))
+    return min(1.0, byte_val / 100.0)
 
 def _bearing_encode(degrees):
     """Encode degrees 0–359 → byte 0–254 (255 reserved for 'disable')."""
@@ -179,6 +182,7 @@ try:
 
     current_time = ticks_ms()
     last_sensor  = ticks_ms()
+    consecutive_faults = 0
 
     # Serial framing state machine
     state    = 'SYNC'
@@ -192,11 +196,13 @@ try:
         if imu is not None:
             try:
                 imu.update()
-                _lock.acquire()
-                _current_heading = imu.heading()
-                _lock.release()
+                heading = imu.heading()
             except Exception:
-                pass
+                heading = None
+            if heading is not None:
+                _lock.acquire()
+                _current_heading = heading
+                _lock.release()
 
         ready = select.select([sys.stdin], [], [], 0.01)
         if ready[0]:
@@ -209,7 +215,7 @@ try:
                 continue
 
             if state == 'CMD':
-                if 0x21 <= b <= 0x27:
+                if 0x21 <= b <= 0x26:
                     pkt_cmd = b
                     state   = 'V_HIGH'
                 else:
@@ -310,28 +316,53 @@ try:
         current_time = ticks_add(current_time, int(1000 / UPDATES))
         try:
             yukon.monitor_until_ms(current_time)
-        except FaultError as e:
-            print("Fault:", e, "— recovering")
-            _lock.acquire()
-            _left_speed  = 0.0
-            _right_speed = 0.0
-            _lock.release()
+            consecutive_faults = 0
+        except (OverVoltageError, OverTemperatureError) as e:
+            # Non-recoverable: SDK already disabled main output.
+            # Stop motors and exit — let finally block call yukon.reset().
+            print("CRITICAL:", type(e).__name__, e, "— shutting down")
             try:
-                sleep(0.05)
+                print("Last readings: v=%.2f i=%.3f t=%.1f tL=%.1f tR=%.1f"
+                      % (yukon.read_input_voltage(), yukon.read_current(),
+                         yukon.read_temperature(), module2.read_temperature(),
+                         module5.read_temperature()))
+            except Exception:
+                pass
+            _lock.acquire()
+            _left_speed     = 0.0
+            _right_speed    = 0.0
+            _bearing_target = None
+            _lock.release()
+            break
+        except (FaultError, OverCurrentError, Exception) as e:
+            # Recoverable: transient faults, current spikes, undervoltage.
+            # SDK already disabled main output — try to re-enable.
+            consecutive_faults += 1
+            print("Fault:", type(e).__name__, e,
+                  "— recovery attempt %d/%d" % (consecutive_faults,
+                                                MAX_CONSECUTIVE_FAULTS))
+            _lock.acquire()
+            _left_speed     = 0.0
+            _right_speed    = 0.0
+            _bearing_target = None
+            _lock.release()
+            if consecutive_faults >= MAX_CONSECUTIVE_FAULTS:
+                print("Too many consecutive faults — shutting down")
+                break
+            sleep_ms(FAULT_COOLDOWN_MS)
+            try:
                 yukon.enable_main_output()
                 module2.enable()
                 module5.enable()
             except Exception as e2:
-                print("Recovery error:", e2)
-            current_time = ticks_ms()
-        except Exception as e:
-            print("Unexpected error:", e)
+                print("Recovery failed:", e2, "— shutting down")
+                break
             current_time = ticks_ms()
 
         # ── Periodic sensor log line (human-readable, for debugging) ──────────
 
         now = ticks_ms()
-        if now - last_sensor >= SENSOR_PERIOD:
+        if ticks_diff(now, last_sensor) >= SENSOR_PERIOD:
             last_sensor = now
             try:
                 v  = yukon.read_input_voltage()

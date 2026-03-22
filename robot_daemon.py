@@ -34,6 +34,7 @@ Command-line demo
 """
 
 import csv
+import json
 import logging
 import os
 import queue
@@ -157,8 +158,10 @@ class RobotState:
     lidar_ok:    bool        = False
     gps_ok:      bool        = False
     aruco_ok:    bool        = False
-    gps_logging: bool        = False
-    speed_scale: float       = 0.25   # current speed limit scale (0.0–1.0)
+    gps_logging:    bool        = False
+    cam_recording:  bool        = False
+    data_logging:   bool        = False
+    speed_scale:    float       = 0.25   # current speed limit scale (0.0–1.0)
     nav_state:   str         = "IDLE" # Navigator state name
     nav_gate:    int         = 0      # ArUco target gate index
     nav_wp:      int         = 0      # GPS target waypoint index
@@ -365,11 +368,11 @@ class _YukonLink:
         self._stop.set()
         try:
             self.kill()
-        except serial.SerialException:
+        except (OSError, Exception):
             pass
         try:
             self._ser.close()
-        except serial.SerialException:
+        except (OSError, Exception):
             pass
 
 
@@ -411,6 +414,9 @@ class _Camera:
         self._stop         = threading.Event()
         self._ok           = False
         self._aruco_ok     = False
+        self._writer       = None   # cv2.VideoWriter or None
+        self._rec_lock     = threading.Lock()
+        self._rec_path     = ""
 
     def start(self):
         threading.Thread(target=self._run, daemon=True, name="camera").start()
@@ -492,6 +498,7 @@ class _Camera:
                     self._frame       = frame
                     self._aruco_state = aruco_state
                     self._aruco_ok    = aruco_state is not None
+                self._record_frame(frame)
                 remaining = deadline - time.monotonic()
                 if remaining > 0:
                     time.sleep(remaining)
@@ -534,6 +541,7 @@ class _Camera:
                         self._frame       = frame
                         self._aruco_state = aruco_state
                         self._aruco_ok    = aruco_state is not None
+                    self._record_frame(frame)
         finally:
             cap.release()
             self._ok       = False
@@ -577,7 +585,60 @@ class _Camera:
         """Change rotation at runtime (0, 90, 180, 270). Takes effect on next frame."""
         self._rotation = rotation % 360
 
+    def start_recording(self, path: str) -> bool:
+        """Open a VideoWriter and begin saving frames to *path*. Returns True on success."""
+        import cv2
+        with self._rec_lock:
+            if self._writer is not None:
+                return False          # already recording
+            # Determine actual frame size (may differ from configured if rotated 90/270)
+            if self._rotation in (90, 270):
+                w, h = self._h, self._w
+            else:
+                w, h = self._w, self._h
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(path, fourcc, self._fps, (w, h))
+            if not writer.isOpened():
+                writer.release()
+                log.warning(f"VideoWriter failed to open: {path}")
+                return False
+            self._writer   = writer
+            self._rec_path = path
+            log.info(f"Camera recording started → {path}")
+            return True
+
+    def stop_recording(self) -> str:
+        """Flush and close the VideoWriter. Returns the saved file path."""
+        with self._rec_lock:
+            if self._writer is None:
+                return ""
+            self._writer.release()
+            self._writer = None
+            path = self._rec_path
+            self._rec_path = ""
+            log.info(f"Camera recording saved → {path}")
+            return path
+
+    def is_recording(self) -> bool:
+        return self._writer is not None
+
+    def _record_frame(self, frame):
+        """Write a single RGB frame (with timestamp overlay) to the VideoWriter."""
+        with self._rec_lock:
+            if self._writer is None:
+                return
+            import cv2
+            bgr = frame[:, :, ::-1].copy()  # RGB → BGR, copy so we don't mutate the live frame
+            ts  = time.strftime("%d-%m-%y  %H:%M:%S")
+            # Shadow then white text for readability on any background
+            cv2.putText(bgr, ts, (8, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0),   3, cv2.LINE_AA)
+            cv2.putText(bgr, ts, (8, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            self._writer.write(bgr)
+
     def stop(self):
+        self.stop_recording()
         self._stop.set()
 
 
@@ -822,6 +883,156 @@ class _System:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ML Data Logger
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _DataLogger:
+    """
+    Logs all sensor readings and motor outputs to a JSONL file at a fixed rate.
+
+    Each line is a self-contained JSON snapshot suitable for ML training:
+      - Inputs : RC channels, GPS, LiDAR, IMU heading, ArUco detections
+      - Outputs: motor drive commands, robot mode
+    """
+
+    def __init__(self):
+        self._thread:   Optional[threading.Thread] = None
+        self._stop_evt: threading.Event = threading.Event()
+        self._path = ""
+
+    def start(self, robot, path: str, hz: float = 10.0) -> bool:
+        if self._thread and self._thread.is_alive():
+            return False
+        self._path = path
+        self._stop_evt.clear()
+        self._thread = threading.Thread(
+            target=self._run, args=(robot, hz), daemon=True, name="data_log")
+        self._thread.start()
+        log.info(f"ML data logging started → {path} @ {hz:.1f} Hz")
+        return True
+
+    def stop(self):
+        self._stop_evt.set()
+        if self._thread:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+        log.info(f"ML data logging stopped → {self._path}")
+
+    def is_active(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    # ── snapshot ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _snapshot(robot) -> dict:
+        state  = robot.get_state()
+        aruco  = robot.get_aruco_state()
+        rc     = list(robot._rc_channels)   # 14 raw µs values
+
+        g  = state.gps
+        t  = state.telemetry
+        d  = state.drive
+        li = state.lidar
+        s  = state.system
+        now = time.time()
+
+        aruco_data = None
+        if aruco is not None:
+            aruco_data = {
+                'fps':   round(aruco.fps, 1),
+                'tags':  [{'id': tg.id,
+                           'cx': tg.center_x, 'cy': tg.center_y,
+                           'area': tg.area,
+                           'bearing': tg.bearing,
+                           'distance': tg.distance}
+                          for tg in aruco.tags.values()],
+                'gates': [{'gate_id': ga.gate_id,
+                           'cx': ga.centre_x, 'cy': ga.centre_y,
+                           'bearing': ga.bearing,
+                           'distance': ga.distance,
+                           'correct_dir': ga.correct_dir}
+                          for ga in aruco.gates.values()],
+            }
+
+        return {
+            'ts':      round(now, 4),
+            'ts_iso':  time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(now)),
+            'mode':       state.mode.name,
+            'auto_type':  state.auto_type.label,
+            'speed_scale': round(state.speed_scale, 3),
+            'rc_active':  state.rc_active,
+            'rc_channels': rc,
+            'drive': {
+                'left':  round(d.left,  4),
+                'right': round(d.right, 4),
+            },
+            'telemetry': {
+                'voltage':     round(t.voltage,    3),
+                'current':     round(t.current,    3),
+                'board_temp':  round(t.board_temp, 1),
+                'left_temp':   round(t.left_temp,  1),
+                'right_temp':  round(t.right_temp, 1),
+                'heading':     round(t.heading, 2) if t.heading is not None else None,
+                'left_fault':  t.left_fault,
+                'right_fault': t.right_fault,
+            },
+            'gps': {
+                'lat':       g.latitude,
+                'lon':       g.longitude,
+                'alt':       g.altitude,
+                'speed':     g.speed,
+                'heading':   g.heading,
+                'fix':       g.fix_quality,
+                'fix_name':  g.fix_quality_name,
+                'sats':      g.satellites,
+                'sats_view': g.satellites_view,
+                'hdop':      g.hdop,
+                'h_error_m': g.h_error_m,
+                'ts':        g.timestamp,
+            },
+            'lidar': {
+                'angles':    li.angles,
+                'distances': li.distances,
+                'ts':        li.timestamp,
+            },
+            'aruco': aruco_data,
+            'nav': {
+                'state':       state.nav_state,
+                'gate':        state.nav_gate,
+                'wp':          state.nav_wp,
+                'wp_dist':     state.nav_wp_dist,
+                'wp_bear':     state.nav_wp_bear,
+                'bearing_err': state.nav_bearing_err,
+            },
+            'system': {
+                'cpu_pct':  round(s.cpu_percent,  1),
+                'cpu_temp': round(s.cpu_temp_c,   1),
+                'mem_pct':  round(s.mem_percent,  1),
+                'disk_pct': round(s.disk_percent, 1),
+            },
+        }
+
+    # ── thread ────────────────────────────────────────────────────────────────
+
+    def _run(self, robot, hz: float):
+        interval = 1.0 / max(hz, 0.1)
+        try:
+            with open(self._path, 'w', buffering=1) as f:   # line-buffered
+                while not self._stop_evt.is_set():
+                    t0 = time.monotonic()
+                    try:
+                        record = self._snapshot(robot)
+                        f.write(json.dumps(record, separators=(',', ':')) + '\n')
+                    except Exception as e:
+                        log.warning(f"Data log snapshot error: {e}")
+                    remaining = interval - (time.monotonic() - t0)
+                    if remaining > 0:
+                        self._stop_evt.wait(remaining)
+        except OSError as e:
+            log.error(f"Data logger file error: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Robot
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -932,6 +1143,8 @@ class Robot:
         gps_bookmark_ch: int   = 2,
         gps_log_dir:     str   = '',
         gps_log_hz:      float = 5.0,
+        rec_dir:         str   = '',   # video recordings; blank = ~/Videos/HackyRacingRobot
+        data_log_dir:    str   = '',   # ML data logs;     blank = ~/Documents/HackyRacingRobot
         deadzone:       int   = 30,
         failsafe_s:     float = 0.5,
         speed_min:      float = 0.25,
@@ -968,6 +1181,10 @@ class Robot:
         self._ch_gps_bookmark = gps_bookmark_ch - 1 if gps_bookmark_ch > 0 else None
         self._gps_log_dir   = (gps_log_dir.strip() or
                                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs'))
+        self._rec_dir       = (rec_dir.strip() or
+                               os.path.join(os.path.expanduser('~'), 'Videos', 'HackyRacingRobot'))
+        self._data_log_dir  = (data_log_dir.strip() or
+                               os.path.join(os.path.expanduser('~'), 'Documents', 'HackyRacingRobot'))
         self._gps_log_interval = 1.0 / max(gps_log_hz, 0.1)
         self._deadzone    = deadzone
         self._failsafe_s  = failsafe_s
@@ -981,6 +1198,7 @@ class Robot:
         self._lidar:         Optional[_Lidar]     = None
         self._gps:           Optional[_Gps]       = None
         self._system:        _System              = _System()
+        self._data_logger:   _DataLogger          = _DataLogger()
         self._navigator:     Optional[object]     = None  # ArucoNavigator when available
         self._gps_navigator: Optional[object]     = None  # GpsNavigator when available
 
@@ -1070,6 +1288,7 @@ class Robot:
     def stop(self):
         """Kill motors and shut down all subsystems."""
         self._stop_evt.set()
+        self._data_logger.stop()
         if self._yukon:
             self._yukon.close()
         for sub in (self._camera, self._lidar, self._gps, self._system):
@@ -1089,10 +1308,14 @@ class Robot:
 
     def estop(self):
         """Immediately kill motors and enter ESTOP."""
+        import serial as _serial
         with self._mode_lock:
             self._mode = RobotMode.ESTOP
         if self._yukon:
-            self._yukon.kill()
+            try:
+                self._yukon.kill()
+            except (_serial.SerialException, OSError):
+                self._reconnect_yukon()
         log.warning("ESTOP triggered manually")
 
     def reset_estop(self):
@@ -1135,7 +1358,9 @@ class Robot:
             lidar_ok  = bool(self._lidar  and self._lidar.ok),
             gps_ok    = bool(self._gps    and self._gps.ok),
             aruco_ok    = bool(self._camera and self._camera.aruco_ok),
-            gps_logging = self._gps_logging,
+            gps_logging   = self._gps_logging,
+            cam_recording = self.is_cam_recording(),
+            data_logging  = self._data_logger.is_active(),
             nav_state   = (self._navigator.state.name     if self._navigator
                            else self._gps_navigator.state.name if self._gps_navigator
                            else "IDLE"),
@@ -1187,6 +1412,50 @@ class Robot:
         """Return the current camera rotation in degrees."""
         return self._camera._rotation if self._camera else self._cam_rotation
 
+    def start_cam_recording(self, path: str = None) -> bool:
+        """Start recording the camera feed to *path* (auto-generated if None).
+
+        Files are saved to ``~/Videos/HackyRacingRobot/``.
+        Returns True if recording started successfully.
+        """
+        if not self._camera:
+            return False
+        if path is None:
+            os.makedirs(self._rec_dir, exist_ok=True)
+            ts   = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(self._rec_dir, f"recording_{ts}.mp4")
+        return self._camera.start_recording(path)
+
+    def stop_cam_recording(self) -> str:
+        """Stop recording and return the saved file path (empty string if not recording)."""
+        return self._camera.stop_recording() if self._camera else ""
+
+    def is_cam_recording(self) -> bool:
+        """Return True if the camera is currently recording."""
+        return bool(self._camera and self._camera.is_recording())
+
+    def start_data_log(self, path: str = None, hz: float = 10.0) -> bool:
+        """Start ML data logging to *path* (auto-generated if None).
+
+        Files are saved as JSONL to ``~/Documents/HackyRacingRobot/``.
+        Returns True if logging started successfully.
+        """
+        if path is None:
+            os.makedirs(self._data_log_dir, exist_ok=True)
+            ts   = time.strftime('%Y%m%d_%H%M%S')
+            path = os.path.join(self._data_log_dir, f'data_{ts}.jsonl')
+        return self._data_logger.start(self, path, hz)
+
+    def stop_data_log(self) -> str:
+        """Stop ML data logging and return the saved file path."""
+        path = self._data_logger._path
+        self._data_logger.stop()
+        return path
+
+    def is_data_logging(self) -> bool:
+        """Return True if ML data logging is currently active."""
+        return self._data_logger.is_active()
+
     def get_auto_type(self) -> AutoType:
         """Return the current AutoType selected by SwC."""
         with self._mode_lock:
@@ -1227,6 +1496,10 @@ class Robot:
         except (AttributeError, OSError):
             pass
         self._yukon = None
+        with self._mode_lock:
+            if self._mode is not RobotMode.ESTOP:
+                self._mode = RobotMode.ESTOP
+                log.warning("Yukon disconnected — ESTOP engaged")
         log.warning("Yukon disconnected — reconnecting…")
 
         def _retry():
@@ -1246,6 +1519,8 @@ class Robot:
         """Poll Yukon sensors and trigger ESTOP on fault."""
         import serial as _serial
         interval = 1.0 / _TELEMETRY_HZ   # sensor poll is fixed at 1 Hz
+        _MAX_SILENT_POLLS = 5   # consecutive None results before treating as disconnect
+        silent_count = 0
         while not self._stop_evt.is_set():
             if self._yukon:
                 try:
@@ -1255,12 +1530,20 @@ class Robot:
                     self._stop_evt.wait(interval)
                     continue
                 if result:
+                    silent_count = 0
                     with self._mode_lock:
                         self._telemetry = result
                         if result.left_fault or result.right_fault:
                             if self._mode is not RobotMode.ESTOP:
                                 log.warning("Motor fault detected — ESTOP")
                                 self._mode = RobotMode.ESTOP
+                else:
+                    silent_count += 1
+                    if silent_count >= _MAX_SILENT_POLLS:
+                        log.warning("Yukon not responding (%d silent polls) — reconnecting",
+                                    silent_count)
+                        silent_count = 0
+                        self._reconnect_yukon()
             self._stop_evt.wait(interval)
 
     def _control_thread(self):
@@ -1307,34 +1590,41 @@ class Robot:
                 last_auto_type = self._auto_type
 
             if self._yukon:
-                # LED A: on = AUTO, off = MANUAL/ESTOP
-                if mode is not last_mode:
-                    self._yukon.set_led_a(mode is RobotMode.AUTO)
-                    last_mode = mode
+                try:
+                    # LED A: on = AUTO, off = MANUAL/ESTOP
+                    if mode is not last_mode:
+                        self._yukon.set_led_a(mode is RobotMode.AUTO)
+                        last_mode = mode
 
-                # LED B: GPS status
-                #   off        = no GPS / no fix
-                #   slow flash = GPS fix (quality 1-3)  ~1 Hz
-                #   fast flash = RTK Float (quality 5)  ~4 Hz
-                #   on         = RTK Fixed (quality 4)
-                gps_q = self._gps.get_state().fix_quality if self._gps and self._gps.ok else 0
-                now   = t0  # time.monotonic() already captured at loop start
-                if gps_q == 0:
-                    led_b = False
-                elif gps_q == 4:                      # RTK Fixed → solid on
-                    led_b = True
-                elif gps_q == 5:                      # RTK Float → fast flash ~4 Hz
-                    led_b = int(now * 8) % 2 == 0
-                else:                                 # GPS/DGPS/PPS → slow flash ~1 Hz
-                    led_b = int(now * 2) % 2 == 0
-                if led_b != last_led_b:
-                    self._yukon.set_led_b(led_b)
-                    last_led_b = led_b
+                    # LED B: GPS status
+                    #   off        = no GPS / no fix
+                    #   slow flash = GPS fix (quality 1-3)  ~1 Hz
+                    #   fast flash = RTK Float (quality 5)  ~4 Hz
+                    #   on         = RTK Fixed (quality 4)
+                    gps_q = self._gps.get_state().fix_quality if self._gps and self._gps.ok else 0
+                    now   = t0  # time.monotonic() already captured at loop start
+                    if gps_q == 0:
+                        led_b = False
+                    elif gps_q == 4:                      # RTK Fixed → solid on
+                        led_b = True
+                    elif gps_q == 5:                      # RTK Float → fast flash ~4 Hz
+                        led_b = int(now * 8) % 2 == 0
+                    else:                                 # GPS/DGPS/PPS → slow flash ~1 Hz
+                        led_b = int(now * 2) % 2 == 0
+                    if led_b != last_led_b:
+                        self._yukon.set_led_b(led_b)
+                        last_led_b = led_b
+                except (_serial.SerialException, OSError):
+                    self._reconnect_yukon()
 
             if mode is RobotMode.ESTOP:
                 left, right = 0.0, 0.0
                 if last_left != 0.0 or last_right != 0.0:
-                    self._yukon.kill()
+                    if self._yukon:
+                        try:
+                            self._yukon.kill()
+                        except (_serial.SerialException, OSError):
+                            self._reconnect_yukon()
                     last_left = last_right = 0.0
                 if last_mode is not RobotMode.ESTOP:
                     if self._navigator:

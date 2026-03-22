@@ -118,6 +118,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False,
         'aruco_enabled': aruco_enabled,
         'cam_rotation':  cam_rotation,
         'gps_logging':   state.gps_logging,
+        'cam_recording': state.cam_recording,
+        'data_logging':  state.data_logging,
         'no_motors':     state.no_motors,
         'nav_state':     state.nav_state,
         'nav_gate':      state.nav_gate,
@@ -205,6 +207,11 @@ button{font-family:inherit;font-size:12px;padding:4px 10px;
 button:active{background:#2a2a42}
 #btn-estop{border-color:var(--red);color:var(--red)}
 #btn-reset{border-color:var(--green);color:var(--green)}
+#btn-record{border-color:var(--gray);color:var(--gray)}
+#btn-record.recording{border-color:var(--red);color:var(--red);animation:blink 1s step-end infinite}
+#btn-dlog{border-color:var(--gray);color:var(--gray)}
+#btn-dlog.active{border-color:var(--purple);color:var(--purple)}
+@keyframes blink{50%{opacity:.3}}
 
 /* ── No-motors banner ── */
 #no-motors-banner{
@@ -259,6 +266,10 @@ button:active{background:#2a2a42}
 #cam-nosignal{color:var(--gray);font-size:13px;display:none}
 #bearing-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
   pointer-events:none;display:none}
+#rec-dot{position:absolute;top:10px;left:10px;width:12px;height:12px;
+  border-radius:50%;background:var(--red);pointer-events:none;display:none;
+  animation:rec-blink .8s step-end infinite}
+@keyframes rec-blink{50%{opacity:0}}
 #nav-badge{position:absolute;top:6px;right:6px;font-size:10px;
   background:rgba(18,18,30,.8);padding:2px 6px;border-radius:3px;display:none}
 #lidar-canvas{width:100%;flex:1;display:block}
@@ -272,6 +283,18 @@ button:active{background:#2a2a42}
 #compass-wrap{display:inline-flex;align-items:center;gap:6px}
 #compass-canvas{width:36px;height:36px}
 #hdg-text{font-size:13px;color:var(--cyan)}
+
+/* ── Terminal ── */
+#term-panel{flex-shrink:0;height:120px;display:flex;flex-direction:column}
+#term-toolbar{display:flex;gap:6px;margin-bottom:4px;align-items:center}
+#term-filter{flex:1;background:var(--bg);border:1px solid var(--border);
+  color:var(--white);border-radius:4px;padding:3px 7px;
+  font-family:inherit;font-size:11px}
+#term-box{flex:1;overflow-y:auto;background:var(--bg);border:1px solid var(--border);
+  border-radius:4px;padding:4px 6px;font-size:13px;line-height:1.4}
+.tlog{white-space:pre-wrap;word-break:break-all;color:#b0b0c8}
+.tlog.warning{color:var(--yellow)}.tlog.error,.tlog.critical{color:var(--red)}
+.tlog.debug{color:var(--gray)}
 
 /* Mobile breakpoint */
 @media(max-width:700px){
@@ -294,6 +317,8 @@ button:active{background:#2a2a42}
   <div class="controls">
     <button id="btn-estop">ESTOP</button>
     <button id="btn-reset">Reset</button>
+    <button id="btn-record" title="Toggle camera recording">⏺ REC</button>
+    <button id="btn-dlog"   title="Toggle ML data logging">⬤ DLOG</button>
   </div>
 </div>
 
@@ -411,6 +436,7 @@ button:active{background:#2a2a42}
       <img id="cam-img" src="/stream" alt="Camera feed">
       <span id="cam-nosignal">No camera</span>
       <canvas id="bearing-canvas"></canvas>
+      <div id="rec-dot"></div>
       <div id="nav-badge"></div>
     </div>
   </div>
@@ -423,6 +449,16 @@ button:active{background:#2a2a42}
 
 </div><!-- /body-row -->
 
+<!-- Terminal -->
+<div class="panel" id="term-panel">
+  <div id="term-toolbar">
+    <span class="ptitle" style="margin:0;flex-shrink:0">Log</span>
+    <input id="term-filter" type="search" placeholder="Filter…" oninput="filterTerm()">
+    <button id="term-autoscroll-btn" onclick="termToggleScroll()" style="padding:2px 7px;font-size:11px;color:var(--cyan)" title="Toggle auto-scroll">↓ Auto</button>
+  </div>
+  <div id="term-box"></div>
+</div>
+
 <!-- Footer -->
 <div id="footer">
   <span id="badge-rc">RC: --</span>
@@ -432,6 +468,8 @@ button:active{background:#2a2a42}
   <span id="badge-gps">GPS: --</span>
   <span id="footer-herr"></span>
   <span id="badge-log">LOG: --</span>
+  <span id="badge-rec"  style="display:none;color:var(--red)">⏺ REC</span>
+  <span id="badge-dlog" style="display:none;color:var(--purple)">⬤ DLOG</span>
   <span id="badge-hdg" style="display:none"></span>
   <span id="badge-nav" style="display:none"></span>
   <span id="conn-badge">⚫ Connecting…</span>
@@ -796,6 +834,19 @@ function applyState(s) {
   } else { herrEl.textContent=''; }
   badge('badge-log', `LOG: ${s.gps_logging?'ON':'OFF'}`, s.gps_logging, C.cyan);
 
+  // Recording button + badge + live dot
+  const recBtn = el('btn-record');
+  recBtn.classList.toggle('recording', !!s.cam_recording);
+  recBtn.title = s.cam_recording ? 'Stop recording' : 'Start recording';
+  el('badge-rec').style.display = s.cam_recording ? 'inline' : 'none';
+  el('rec-dot').style.display   = s.cam_recording ? 'block'  : 'none';
+
+  // Data logging button + badge
+  const dlogBtn = el('btn-dlog');
+  dlogBtn.classList.toggle('active', !!s.data_logging);
+  dlogBtn.title = s.data_logging ? 'Stop ML data logging' : 'Start ML data logging';
+  el('badge-dlog').style.display = s.data_logging ? 'inline' : 'none';
+
   // IMU heading footer badge
   const hdgBadge=el('badge-hdg');
   if (t.heading != null) {
@@ -871,6 +922,8 @@ el('btn-reset').onclick   = ()=>sendCmd('reset');
 el('btn-ccw').onclick     = ()=>sendCmd('rotate_ccw');
 el('btn-cw').onclick      = ()=>sendCmd('rotate_cw');
 el('btn-aruco').onclick   = ()=>sendCmd('aruco_toggle');
+el('btn-record').onclick  = ()=>sendCmd('record_toggle');
+el('btn-dlog').onclick    = ()=>sendCmd('data_log_toggle');
 
 document.addEventListener('keydown', e => {
   if (e.key==='[')                    sendCmd('rotate_ccw');
@@ -911,6 +964,46 @@ el('cam-img').addEventListener('load', function(){
   if(this.naturalHeight) camNatH=this.naturalHeight;
 });
 
+// ── Terminal log viewer ────────────────────────────────────────────────────────
+let termAutoScroll = true;
+function termToggleScroll() {
+  termAutoScroll = !termAutoScroll;
+  const btn = el('term-autoscroll-btn');
+  btn.textContent = termAutoScroll ? '↓ Auto' : '↓ Manual';
+  btn.style.color  = termAutoScroll ? 'var(--cyan)' : 'var(--gray)';
+}
+function _termLevel(line) {
+  if (/\bCRITICAL\b/.test(line)) return 'critical';
+  if (/\bERROR\b/.test(line))    return 'error';
+  if (/\bWARNING\b/.test(line))  return 'warning';
+  if (/\bDEBUG\b/.test(line))    return 'debug';
+  return '';
+}
+function filterTerm() {
+  const q = el('term-filter').value.toLowerCase();
+  for (const d of el('term-box').children)
+    d.style.display = (!q || d.textContent.toLowerCase().includes(q)) ? '' : 'none';
+}
+async function fetchTerm() {
+  try {
+    const data = await (await fetch('/api/logs?n=200')).json();
+    const lines = data.lines || [];
+    const box = el('term-box');
+    const q   = el('term-filter').value.toLowerCase();
+    box.innerHTML = '';
+    for (const line of lines) {
+      const d = document.createElement('div');
+      d.className = 'tlog ' + _termLevel(line);
+      d.textContent = line;
+      if (q && !line.toLowerCase().includes(q)) d.style.display = 'none';
+      box.appendChild(d);
+    }
+    if (termAutoScroll) box.scrollTop = box.scrollHeight;
+  } catch(e) {}
+}
+fetchTerm();
+setInterval(fetchTerm, 2000);
+
 onResize();
 connect();
 </script>
@@ -920,7 +1013,8 @@ connect();
 # ── Flask app ─────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-_robot = None  # set in main()
+_robot    = None  # set in main()
+_log_path = None  # set in main()
 
 
 @app.route('/')
@@ -982,15 +1076,38 @@ def api_state():
 @app.route('/api/cmd', methods=['POST'])
 def api_cmd():
     cmd = (request.json or {}).get('cmd', '')
-    if   cmd == 'estop':        _robot.estop()
-    elif cmd == 'reset':        _robot.reset_estop()
-    elif cmd == 'aruco_toggle': _robot.toggle_aruco()
-    elif cmd == 'gps_bookmark': _robot.bookmark_gps()
-    elif cmd == 'rotate_cw':    _robot.set_cam_rotation((_robot.get_cam_rotation() + 90) % 360)
-    elif cmd == 'rotate_ccw':   _robot.set_cam_rotation((_robot.get_cam_rotation() - 90 + 360) % 360)
+    if   cmd == 'estop':          _robot.estop()
+    elif cmd == 'reset':          _robot.reset_estop()
+    elif cmd == 'aruco_toggle':   _robot.toggle_aruco()
+    elif cmd == 'gps_bookmark':   _robot.bookmark_gps()
+    elif cmd == 'rotate_cw':      _robot.set_cam_rotation((_robot.get_cam_rotation() + 90) % 360)
+    elif cmd == 'rotate_ccw':     _robot.set_cam_rotation((_robot.get_cam_rotation() - 90 + 360) % 360)
+    elif cmd == 'record_toggle':
+        if _robot.is_cam_recording():
+            _robot.stop_cam_recording()
+        else:
+            _robot.start_cam_recording()
+    elif cmd == 'data_log_toggle':
+        if _robot.is_data_logging():
+            _robot.stop_data_log()
+        else:
+            _robot.start_data_log()
     else:
         return jsonify({'ok': False, 'error': f'Unknown command: {cmd}'}), 400
     return jsonify({'ok': True})
+
+
+@app.route('/api/logs')
+def api_logs():
+    n = min(int(request.args.get('n', 200)), 500)
+    lines = []
+    if _log_path and os.path.exists(_log_path):
+        try:
+            with open(_log_path, 'r', errors='replace') as f:
+                lines = f.readlines()[-n:]
+        except OSError:
+            pass
+    return jsonify({'lines': [l.rstrip('\n') for l in lines]})
 
 
 # ── Config helpers ────────────────────────────────────────────────────────────
@@ -1033,8 +1150,9 @@ def main():
                         help='Suppress all motor/LED/bearing commands (bench test mode)')
     args = parser.parse_args()
 
-    log_path = setup_logging()
-    log.info(f"Log file: {log_path}")
+    global _log_path
+    _log_path = setup_logging()
+    log.info(f"Log file: {_log_path}")
     cfg = _load_config(args.config)
 
     web_host  = args.host  or _cfg(cfg, 'web', 'host',  '0.0.0.0')
@@ -1091,6 +1209,8 @@ def main():
         speed_min      = _cfg(cfg, 'rc',      'speed_min',     0.25, float),
         control_hz     = _cfg(cfg, 'rc',      'control_hz',    50,   int),
         no_motors      = args.no_motors,
+        rec_dir        = _cfg(cfg, 'output', 'videos_dir',   ''),
+        data_log_dir   = _cfg(cfg, 'output', 'data_log_dir', ''),
     )
     _robot.start()
     log.info(f'Web dashboard → http://{_local_ip()}:{web_port}/')

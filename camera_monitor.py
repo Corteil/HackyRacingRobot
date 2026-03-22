@@ -74,7 +74,11 @@ ARUCO_DICTS = [
     "DICT_6X6_100",
 ]
 
-IMAGE_DIR  = Path(__file__).parent / "saved_images"
+import configparser as _cp
+_cfg_ini   = _cp.ConfigParser(inline_comment_prefixes=('#',))
+_cfg_ini.read(Path(__file__).parent / "robot.ini")
+_images_dir = _cfg_ini.get('output', 'images_dir', fallback='').strip()
+IMAGE_DIR  = Path(_images_dir) if _images_dir else Path.home() / "Pictures" / "HackyRacingRobot"
 CALIB_FILE = Path(__file__).parent / "camera_cal.npz"
 
 # Exposure steps in µs (range 1–66 666)

@@ -58,13 +58,38 @@ Key public API:
 
 ```python
 robot = Robot(...)
-robot.start()                 # connect hardware, launch all threads
-state = robot.get_state()     # RobotState snapshot (thread-safe)
-frame = robot.get_frame()     # latest camera frame (numpy RGB) or None
-aruco = robot.get_aruco_state()  # latest ArUcoState or None
-hdg   = robot.get_heading()   # IMU heading in degrees or None
-robot.stop()                  # shutdown all subsystems cleanly
+robot.start()                       # connect hardware, launch all threads
+state = robot.get_state()           # RobotState snapshot (thread-safe)
+frame = robot.get_frame()           # latest camera frame (numpy RGB) or None
+aruco = robot.get_aruco_state()     # latest ArUcoState or None
+hdg   = robot.get_heading()         # IMU heading in degrees or None
+
+robot.start_cam_recording()         # save video to ~/Videos/HackyRacingRobot/
+robot.stop_cam_recording()
+robot.is_cam_recording()            # bool
+
+robot.start_data_log()              # save JSONL to ~/Documents/HackyRacingRobot/
+robot.stop_data_log()
+robot.is_data_logging()             # bool
+
+robot.stop()                        # shutdown all subsystems cleanly
 ```
+
+**ML data log** (`start_data_log()`) writes one JSONL record per tick (default 10 Hz).
+Each record contains a complete snapshot of all sensor inputs and motor outputs:
+
+| Field | Contents |
+|-------|----------|
+| `ts` / `ts_iso` | Unix timestamp + ISO datetime string |
+| `mode`, `auto_type`, `speed_scale` | Robot operating state |
+| `rc_channels` | All 14 raw RC µs values |
+| `drive` | `left` / `right` motor outputs — the training labels |
+| `telemetry` | Voltage, current, temperatures, IMU heading, fault flags |
+| `gps` | Lat, lon, alt, speed, fix quality, satellites, HDOP, h_error |
+| `lidar` | Full angle and distance arrays |
+| `aruco` | All detected tags and gates with bearings and distances |
+| `nav` | Navigator state, target gate/waypoint, bearing error |
+| `system` | CPU %, CPU temp, memory %, disk % |
 
 `robot.start()` retries the Yukon serial connection every 3 seconds if the port is
 not yet available — it will not raise an error or exit.
@@ -108,6 +133,7 @@ at the configured GUI fps (default 10 Hz).
 | GPS | Fix quality, position, horizontal error, HDOP, satellites |
 | Camera | Live frame with optional ArUco / bearing overlay and IMU compass arc |
 | LiDAR | Polar distance scan (distance-coloured points, range rings) |
+| Log | Scrolling terminal showing recent log output, colour-coded by level |
 | Footer | Subsystem health badges, mode badge, no-motors warning |
 
 **Keyboard**
@@ -119,6 +145,8 @@ at the configured GUI fps (default 10 Hz).
 | `[` / `]` | Rotate camera −90° / +90° |
 | `T` | Toggle ArUco detection |
 | `B` | Toggle bearing overlay on camera panel |
+| `V` | Toggle camera video recording (flashing REC badge + red dot on feed) |
+| `D` | Toggle ML data logging (DLOG badge in footer) |
 | `C` | Open / close config overlay (live edit of `robot.ini` values) |
 | `Q` / `Esc` | Quit |
 
@@ -158,6 +186,9 @@ Flask web dashboard (port 5000).  Same `Robot` backend as `robot_gui.py`.
 - Camera rotation, ArUco toggle, bearing overlay toggle
 - No-motors warning banner
 - GPS logging badge
+- Camera recording button (⏺ REC) — flashing badge + red dot on live feed
+- ML data logging button (⬤ DLOG) — DLOG badge in footer while active
+- Terminal log panel — colour-coded by level, filter bar, auto-scroll (`/api/logs`)
 - Mobile-responsive layout
 
 ```bash
@@ -187,7 +218,7 @@ Mobile-optimised Flask dashboard (port 5001).  Same `Robot` backend as
 
 | Tab | Contents |
 |-----|----------|
-| Drive | Camera stream, bearing overlay, motor bars, mode / speed, ArUco, nav state |
+| Drive | Camera stream (with flashing REC dot), bearing overlay, motor bars, mode / speed, ArUco, recording and DLOG buttons |
 | Telem | Voltage, current, temperatures, IMU heading compass, faults |
 | GPS | Fix quality, position, horizontal error, satellites, bookmark button |
 | System | CPU, temperature, memory, disk, LiDAR polar plot |
@@ -207,6 +238,25 @@ Accepts all [common flags](#common-flags), plus:
 |------|---------|-------------|
 | `--host HOST` | `0.0.0.0` | Bind address |
 | `--port N` | `5001` | HTTP port |
+
+---
+
+## Output directories
+
+All output paths are configured in the `[output]` section of `robot.ini`.
+Leave a value blank to use the default.
+
+| Setting | Default | Contents |
+|---------|---------|----------|
+| `images_dir` | `~/Pictures/HackyRacingRobot` | Snapshots from `camera_web.py` and `camera_monitor.py` |
+| `videos_dir` | `~/Videos/HackyRacingRobot` | MP4 recordings from camera recording feature |
+| `data_log_dir` | `~/Documents/HackyRacingRobot` | JSONL ML training data logs |
+
+Directories are created automatically on first use.
+
+Video filenames: `recording_YYYYMMDD_HHMMSS.mp4` — each frame has a `DD-MM-YY HH:MM:SS` timestamp burned in the top-left corner.
+
+Data log filenames: `data_YYYYMMDD_HHMMSS.jsonl`
 
 ---
 
@@ -290,7 +340,7 @@ python3 camera_monitor.py
 | `A` | Restore auto exposure / gain |
 | `T` | Toggle ArUco tag detection |
 | `D` | Cycle ArUco dictionary |
-| `Space` | Save frame to `saved_images/` |
+| `Space` | Save frame to `~/Pictures/HackyRacingRobot/` |
 | `Q` / `Esc` | Quit |
 
 **Colour modes**
@@ -327,7 +377,7 @@ python3 camera_web.py --width 1456 --height 1088
 - Exposure and gain sliders (auto / manual)
 - ArUco detection toggle + dictionary selector
 - Lens calibration toggle (applies `camera_cal.npz` if present)
-- Snapshot button — saves to `saved_images/`
+- Snapshot button — saves to `~/Pictures/HackyRacingRobot/`
 
 Open `http://<pi-ip>:8080/` in a browser.
 
