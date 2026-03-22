@@ -2,9 +2,10 @@ import _thread
 from utime import sleep, sleep_ms, ticks_diff
 import sys
 import select
+import random
 
-from pimoroni_yukon import Yukon, SLOT2, SLOT5
-from pimoroni_yukon.modules import DualMotorModule
+from pimoroni_yukon import Yukon, SLOT1, SLOT2, SLOT5
+from pimoroni_yukon.modules import DualMotorModule, LEDStripModule
 from pimoroni_yukon.timing import ticks_ms, ticks_add
 from pimoroni_yukon.errors import (FaultError, OverVoltageError,
                                    OverCurrentError, OverTemperatureError)
@@ -17,6 +18,7 @@ CURRENT_LIMIT = 2
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
 FAULT_COOLDOWN_MS      = 500   # minimum wait between recovery attempts
+NUM_LEDS               = 8     # number of NeoPixels on the LED strip module
 
 # Bearing-hold proportional gain.
 # Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
@@ -27,7 +29,7 @@ BEARING_KP = 0.4
 #
 # Host → Device  [SYNC, CMD, V_HIGH, V_LOW, CHK]
 #   SYNC   = 0x7E  ('~')       — unique framing byte, never in other fields
-#   CMD    = cmd_code + 0x20   → 0x21–0x26  ('!' to '&')
+#   CMD    = cmd_code + 0x20   → 0x21–0x2A  ('!' to '*')
 #   V_HIGH = (value >> 4) + 0x40 → 0x40–0x4F  ('@' to 'O')
 #   V_LOW  = (value & 0xF) + 0x50 → 0x50–0x5F  ('P' to '_')
 #   CHK    = CMD ^ V_HIGH ^ V_LOW  (never equals SYNC)
@@ -51,6 +53,11 @@ CMD_RIGHT   = 3
 CMD_KILL    = 4   # value: ignored — zeros both motors and clears bearing hold
 CMD_SENSOR  = 5   # value: ignored — replies with sensor data packets then ACK
 CMD_BEARING = 6   # value: 0–254 = target bearing (encoded 0–359°), 255 = disable
+CMD_STRIP      = 7   # value: colour preset index (see _STRIP_COLOURS); 0 = off
+CMD_PIXEL_SET  = 8   # value: high nibble = LED index, low nibble = colour index
+CMD_PIXEL_SHOW = 9   # value: ignored; pushes all staged pixel data to hardware
+CMD_PATTERN    = 10  # value: high nibble = colour index (0=keep current), low nibble = pattern
+                     #        patterns: 0=off, 1=larson, 2=random, 3=rainbow, 4=retro_computer, 5=converge
 
 # CMD_SENSOR response IDs
 RESP_VOLTAGE = 0   # input voltage × 10          (e.g. 11.2 V → 112)
@@ -72,6 +79,13 @@ _bearing_target  = None    # None = disabled; float 0–360 = active target
 _current_heading = 0.0     # updated each loop by imu.update() on core 0
 _imu_ok          = False   # set True once IMU initialises successfully
 _running         = True
+
+# ── Pattern state (Core 0 only — no lock needed) ──────────────────────────────
+_pattern         = 0       # active pattern: 0=off 1=larson 2=random 3=rainbow 4=sparkle
+_pat_pos         = 0       # current position / hue offset
+_pat_dir         = 1       # direction (larson)
+_pat_counter     = 0       # tick counter for rate-limiting pattern updates
+_pat_colour_idx  = 8       # palette index used by sparkle (default 8 = white)
 
 
 # ── Protocol helpers ──────────────────────────────────────────────────────────
@@ -110,6 +124,134 @@ def _angle_diff(target, current):
     return (target - current + 180.0) % 360.0 - 180.0
 
 
+# ── LED strip ─────────────────────────────────────────────────────────────────
+
+# Preset colours (R, G, B).  Index matches the CMD_STRIP value byte.
+_STRIP_COLOURS = [
+    (0,   0,   0  ),  # 0  off
+    (255, 0,   0  ),  # 1  red     — ESTOP / fault
+    (0,   255, 0  ),  # 2  green   — AUTO
+    (0,   0,   255),  # 3  blue    — MANUAL
+    (255, 165, 0  ),  # 4  orange
+    (255, 255, 0  ),  # 5  yellow
+    (0,   255, 255),  # 6  cyan
+    (255, 0,   255),  # 7  magenta
+    (255, 255, 255),  # 8  white
+]
+
+def _set_strip(r, g, b):
+    """Set all NeoPixels to (r, g, b) and push to hardware."""
+    for i in range(NUM_LEDS):
+        module1.strip.set_rgb(i, r, g, b)
+    module1.strip.update()
+
+
+def _hsv_to_rgb(h):
+    """Convert hue (0-359) to (r, g, b) at full saturation and half brightness."""
+    h = h % 360
+    s = h // 60
+    f = (h % 60) * 255 // 60
+    q = 255 - f
+    if s == 0: return 127, f // 2,   0
+    if s == 1: return q // 2,  127,  0
+    if s == 2: return 0,   127,      f // 2
+    if s == 3: return 0,   q // 2,   127
+    if s == 4: return f // 2,   0,   127
+    return 127, 0, q // 2
+
+
+# Ticks between pattern updates (1 tick = 20 ms at 50 Hz)
+_PAT_RATE = {1: 3, 2: 10, 3: 2, 4: 10, 5: 4, 6: 15}  # larson ~60 ms, random/retro ~200 ms, rainbow ~40 ms, converge ~80 ms, estop_flash ~300 ms
+
+
+def _update_pattern():
+    """Advance the active pattern by one step and push to the strip."""
+    global _pattern, _pat_pos, _pat_dir, _pat_counter
+
+    if _pattern == 0:
+        return
+
+    _pat_counter += 1
+    if _pat_counter < _PAT_RATE.get(_pattern, 5):
+        return
+    _pat_counter = 0
+
+    if _pattern == 1:                               # ── Larson scanner ──
+        for i in range(NUM_LEDS):
+            d = abs(i - _pat_pos)
+            if d == 0:
+                module1.strip.set_rgb(i, 255, 0, 0)
+            elif d == 1:
+                module1.strip.set_rgb(i, 48, 0, 0)
+            elif d == 2:
+                module1.strip.set_rgb(i, 8, 0, 0)
+            else:
+                module1.strip.set_rgb(i, 0, 0, 0)
+        module1.strip.update()
+        _pat_pos += _pat_dir
+        if _pat_pos >= NUM_LEDS - 1:
+            _pat_dir = -1
+        elif _pat_pos <= 0:
+            _pat_dir = 1
+
+    elif _pattern == 2:                             # ── Random on/off ──
+        for i in range(NUM_LEDS):
+            if random.getrandbits(1):
+                idx = random.randint(1, len(_STRIP_COLOURS) - 1)
+                r, g, b = _STRIP_COLOURS[idx]
+            else:
+                r, g, b = 0, 0, 0
+            module1.strip.set_rgb(i, r, g, b)
+        module1.strip.update()
+
+    elif _pattern == 3:                             # ── Rainbow ──
+        for i in range(NUM_LEDS):
+            hue = (_pat_pos + i * (360 // NUM_LEDS)) % 360
+            r, g, b = _hsv_to_rgb(hue)
+            module1.strip.set_rgb(i, r, g, b)
+        module1.strip.update()
+        _pat_pos = (_pat_pos + 8) % 360
+
+    elif _pattern == 4:                             # ── Retro Computer ──
+        r, g, b = _STRIP_COLOURS[_pat_colour_idx]
+        for i in range(NUM_LEDS):
+            if random.getrandbits(1):
+                module1.strip.set_rgb(i, r, g, b)
+            else:
+                module1.strip.set_rgb(i, 0, 0, 0)
+        module1.strip.update()
+
+    elif _pattern == 5:                             # ── Converge ──
+        r, g, b = _STRIP_COLOURS[_pat_colour_idx]
+        fill = _pat_pos
+        for i in range(NUM_LEDS):
+            if i < fill or i >= NUM_LEDS - fill:
+                module1.strip.set_rgb(i, r, g, b)
+            else:
+                module1.strip.set_rgb(i, 0, 0, 0)
+        module1.strip.update()
+        _pat_pos += _pat_dir
+        if _pat_pos > NUM_LEDS // 2:
+            _pat_dir = -1
+            _pat_pos = NUM_LEDS // 2
+        elif _pat_pos < 0:
+            _pat_dir = 1
+            _pat_pos = 0
+
+    elif _pattern == 6:                             # ── ESTOP flash ──
+        # LEDs 0-2 and 5-7 flash red; LEDs 3-4 show fault colour (_pat_colour_idx)
+        fr, fg, fb = _STRIP_COLOURS[_pat_colour_idx]
+        red = (255, 0, 0) if _pat_pos == 0 else (0, 0, 0)
+        for i in range(3):
+            module1.strip.set_rgb(i, red[0], red[1], red[2])
+        module1.strip.set_rgb(3, fr, fg, fb)
+        module1.strip.set_rgb(4, fr, fg, fb)
+        for i in range(5, NUM_LEDS):
+            module1.strip.set_rgb(i, red[0], red[1], red[2])
+        module1.strip.update()
+        _pat_pos = 1 - _pat_pos                     # toggle 0/1
+
+
 # ── Core 1: motor drive loop ──────────────────────────────────────────────────
 
 def motor_core(module_left, module_right):
@@ -141,6 +283,7 @@ def motor_core(module_left, module_right):
 # ── Hardware setup ────────────────────────────────────────────────────────────
 
 yukon   = Yukon()
+module1 = LEDStripModule(LEDStripModule.NEOPIXEL, pio=0, sm=0, num_leds=NUM_LEDS)
 module2 = DualMotorModule()   # left motors  — SLOT2
 module5 = DualMotorModule()   # right motors — SLOT5
 
@@ -158,10 +301,14 @@ except Exception as e:
     print("IMU not available:", e)
 
 try:
+    yukon.register_with_slot(module1, SLOT1)
     yukon.register_with_slot(module2, SLOT2)
     yukon.register_with_slot(module5, SLOT5)
     yukon.verify_and_initialise()
     yukon.enable_main_output()
+
+    module1.enable()
+    _set_strip(0, 0, 0)   # strip off at startup
 
     module2.set_current_limit(CURRENT_LIMIT)
     module2.enable()
@@ -215,7 +362,7 @@ try:
                 continue
 
             if state == 'CMD':
-                if 0x21 <= b <= 0x26:
+                if 0x21 <= b <= 0x2A:
                     pkt_cmd = b
                     state   = 'V_HIGH'
                 else:
@@ -308,8 +455,44 @@ try:
                             state = 'SYNC'
                             continue
 
+                    elif cmd_code == CMD_STRIP:
+                        _pattern = 0
+                        idx = min(value, len(_STRIP_COLOURS) - 1)
+                        r, g, b = _STRIP_COLOURS[idx]
+                        _set_strip(r, g, b)
+
+                    elif cmd_code == CMD_PIXEL_SET:
+                        led_idx    = (value >> 4) & 0x0F
+                        colour_idx = value & 0x0F
+                        if led_idx < NUM_LEDS and colour_idx < len(_STRIP_COLOURS):
+                            r, g, b = _STRIP_COLOURS[colour_idx]
+                            module1.strip.set_rgb(led_idx, r, g, b)
+                        else:
+                            _nak()
+                            state = 'SYNC'
+                            continue
+
+                    elif cmd_code == CMD_PIXEL_SHOW:
+                        module1.strip.update()
+
+                    elif cmd_code == CMD_PATTERN:
+                        colour_nibble = (value >> 4) & 0x0F
+                        pat           = value & 0x0F
+                        if colour_nibble > 0 and colour_nibble < len(_STRIP_COLOURS):
+                            _pat_colour_idx = colour_nibble
+                        _pattern     = pat if pat <= 6 else 0
+                        _pat_pos     = 0
+                        _pat_dir     = 1
+                        _pat_counter = 0
+                        if _pattern == 0:
+                            _set_strip(0, 0, 0)
+
                     _ack()
                 state = 'SYNC'
+
+        # ── Pattern animation ─────────────────────────────────────────────────
+
+        _update_pattern()
 
         # ── Yukon health monitoring ───────────────────────────────────────────
 
@@ -333,6 +516,9 @@ try:
             _right_speed    = 0.0
             _bearing_target = None
             _lock.release()
+            _pat_colour_idx = 1   # red = Yukon hardware fault (reserved)
+            _pat_pos        = 0
+            _pattern        = 6   # estop_flash pattern
             break
         except (FaultError, OverCurrentError, Exception) as e:
             # Recoverable: transient faults, current spikes, undervoltage.
@@ -346,6 +532,9 @@ try:
             _right_speed    = 0.0
             _bearing_target = None
             _lock.release()
+            _pat_colour_idx = 1   # red = Yukon hardware fault (reserved)
+            _pat_pos        = 0
+            _pattern        = 6   # estop_flash pattern
             if consecutive_faults >= MAX_CONSECUTIVE_FAULTS:
                 print("Too many consecutive faults — shutting down")
                 break
@@ -354,6 +543,8 @@ try:
                 yukon.enable_main_output()
                 module2.enable()
                 module5.enable()
+                _pattern = 0
+                _set_strip(0, 0, 0)     # clear fault pattern after successful recovery
             except Exception as e2:
                 print("Recovery failed:", e2, "— shutting down")
                 break
@@ -385,4 +576,8 @@ try:
 finally:
     _running = False
     print("Shutting down")
+    try:
+        _set_strip(0, 0, 0)
+    except Exception:
+        pass
     yukon.reset()

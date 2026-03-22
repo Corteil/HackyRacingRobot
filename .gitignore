@@ -8,3 +8,5 @@ logs/
 # output folders moved to ~/Pictures/HackyRacingRobot and ~/Videos/HackyRacingRobot
 tests/__pycache__/
 tools/__pycache__/
+# Camera calibration binaries — generate locally with tools/calibrate_camera.py
+camera_cal*.npz

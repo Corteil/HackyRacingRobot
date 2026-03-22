@@ -60,7 +60,7 @@ C_BLUE    = ( 60, 120, 220)
 C_DARKRED = ( 80,  10,  10)
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-W, H = 900, 620
+W, H = 900, 650
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -330,22 +330,29 @@ def run_gui(yukon_path, no_terminal=False):
         _sim.SIM_VOLTAGE = volt_slider.value
         _sim.SIM_CURRENT = curr_slider.value
         with _sim._lock:
+            prev_fl = _sim._state.get('fault_l', False)
+            prev_fr = _sim._state.get('fault_r', False)
             _sim._state['fault_l'] = fault_left
             _sim._state['fault_r'] = fault_right
+        if fault_left != prev_fl or fault_right != prev_fr:
+            _sim.set_fault_leds()
 
-        # Tick IMU
+        # Tick IMU and LED strip patterns
         _sim._tick_imu()
+        _sim._tick_strip()
 
         # ── Read state ───────────────────────────────────────────────────────
         with _sim._lock:
-            lb          = _sim._state['left_byte']
-            rb          = _sim._state['right_byte']
-            led_a       = _sim._state['led_a']
-            led_b       = _sim._state['led_b']
-            cmds        = _sim._state['cmds_rx']
-            imu_present = _sim._state['imu_present']
-            imu_heading = _sim._state['imu_heading']
-            bearing_tgt = _sim._state['bearing_target']
+            lb           = _sim._state['left_byte']
+            rb           = _sim._state['right_byte']
+            led_a        = _sim._state['led_a']
+            led_b        = _sim._state['led_b']
+            cmds         = _sim._state['cmds_rx']
+            imu_present  = _sim._state['imu_present']
+            imu_heading  = _sim._state['imu_heading']
+            bearing_tgt  = _sim._state['bearing_target']
+            strip_pixels = list(_sim._state['strip_pixels'])
+            strip_pat    = _sim._state['strip_pattern']
 
         rx_l = _sim._decode_speed(lb)
         rx_r = _sim._decode_speed(rb)
@@ -392,12 +399,14 @@ def run_gui(yukon_path, no_terminal=False):
             bar = pygame.Rect(mid_panel.x + 12, by + 22, mid_panel.width - 24, 40)
             _motor_bar(screen, bar, speed)
 
-        # LED status
-        ly = mid_panel.y + 190
-        for label, state in (("LED A", led_a), ("LED B", led_b)):
-            col = C_GREEN if state else C_GRAY
-            _label(screen, f"{label}: {'ON ' if state else 'OFF'}", mid_panel.x + 12, ly, col)
-            ly += 20
+        # LED A / B indicators (white squares)
+        led_y = mid_panel.y + 195
+        for i, (label, state) in enumerate((("A", led_a), ("B", led_b))):
+            sq_x = mid_panel.x + 12 + i * 80
+            sq   = pygame.Rect(sq_x, led_y, 20, 20)
+            col  = C_WHITE if state else C_BORDER
+            pygame.draw.rect(screen, col, sq, border_radius=3)
+            _label(screen, f"LED {label}", sq_x + 24, led_y + 3)
 
         # Cmds received
         _label(screen, f"Cmds rx: {cmds}", mid_panel.x + 12, mid_panel.bottom - 22, C_GRAY)
@@ -411,6 +420,32 @@ def run_gui(yukon_path, no_terminal=False):
         fr_col = C_RED   if fault_right else C_GRAY
         _label(screen, f"Fault L : {'YES' if fault_left  else 'no'}", stat_panel.x+12, stat_panel.y+74,  fl_col)
         _label(screen, f"Fault R : {'YES' if fault_right else 'no'}", stat_panel.x+12, stat_panel.y+98,  fr_col)
+
+        # ── Bottom: LED strip ─────────────────────────────────────────────────
+        strip_panel = pygame.Rect(10, 492, W - 20, 95)
+        _panel(screen, strip_panel, "LED Strip")
+
+        sq_sz  = 80
+        sq_h   = 46
+        gap    = (_sim.NUM_LEDS * sq_sz + (_sim.NUM_LEDS - 1) * 10)
+        off_x  = strip_panel.x + (strip_panel.width - gap) // 2
+        sq_y   = strip_panel.y + 34   # leave header row clear
+
+        for i, (pr, pg, pb) in enumerate(strip_pixels):
+            sx = off_x + i * (sq_sz + 10)
+            sq = pygame.Rect(sx, sq_y, sq_sz, sq_h)
+            # dim background
+            pygame.draw.rect(screen, (pr // 3, pg // 3, pb // 3), sq, border_radius=5)
+            # bright inner fill when lit
+            if pr > 0 or pg > 0 or pb > 0:
+                inner = sq.inflate(-6, -6)
+                pygame.draw.rect(screen, (pr, pg, pb), inner, border_radius=4)
+            pygame.draw.rect(screen, C_BORDER, sq, width=1, border_radius=5)
+
+        # Draw pattern label after pixels so it is never covered
+        pat_label = _sim.PAT_NAMES.get(strip_pat, '?')
+        _label(screen, f"pattern: {pat_label}",
+               strip_panel.x + 120, strip_panel.y + 6, C_GRAY)
 
         # ── Right column: Controls ────────────────────────────────────────────
         ctrl_panel = pygame.Rect(620, 82, 270, 400)

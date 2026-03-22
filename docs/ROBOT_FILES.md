@@ -73,7 +73,37 @@ robot.stop_data_log()
 robot.is_data_logging()             # bool
 
 robot.stop()                        # shutdown all subsystems cleanly
+
+# LED strip (NeoPixel, 8 LEDs on Yukon SLOT1)
+robot.yukon.set_strip(preset)           # fill all 8 LEDs with a colour preset
+                                        # preset: STRIP_OFF(0) … STRIP_WHITE(8)
+robot.yukon.set_pixel(index, colour)    # stage one pixel (0-indexed); call show_pixels() to commit
+robot.yukon.show_pixels()              # push staged pixel values to the strip
+robot.yukon.set_pixels(colours)         # set all 8 pixels at once; colours is a list of 8 preset ints
+robot.yukon.set_pattern(pattern, colour=0)  # run an autonomous animation on the Yukon
+                                            # pattern: PATTERN_OFF(0), PATTERN_LARSON(1),
+                                            #          PATTERN_RANDOM(2), PATTERN_RAINBOW(3),
+                                            #          PATTERN_RETRO_COMPUTER(4), PATTERN_CONVERGE(5),
+                                            #          PATTERN_ESTOP_FLASH(6)
+                                            # colour: palette index used by pattern (0 = keep current)
 ```
+
+Colour preset constants (defined on `_YukonLink`):
+
+| Constant | Index | RGB |
+|----------|-------|-----|
+| `STRIP_OFF` | 0 | (0, 0, 0) |
+| `STRIP_RED` | 1 | (255, 0, 0) |
+| `STRIP_GREEN` | 2 | (0, 255, 0) |
+| `STRIP_BLUE` | 3 | (0, 0, 255) |
+| `STRIP_ORANGE` | 4 | (255, 80, 0) |
+| `STRIP_YELLOW` | 5 | (255, 200, 0) |
+| `STRIP_CYAN` | 6 | (0, 255, 255) |
+| `STRIP_MAGENTA` | 7 | (255, 0, 255) |
+| `STRIP_WHITE` | 8 | (255, 255, 255) |
+
+The control thread applies an LED preset automatically on mode changes — configured in `[leds]` in `robot.ini`.
+Defaults: `larson` → MANUAL, `retro_computer` → AUTO, `estop_flash` → ESTOP.
 
 **ML data log** (`start_data_log()`) writes one JSONL record per tick (default 10 Hz).
 Each record contains a complete snapshot of all sensor inputs and motor outputs:

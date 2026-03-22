@@ -49,6 +49,7 @@ _yukon_path = ""
 def _get_state():
     with _sim._lock:
         s = dict(_sim._state)
+        strip_pixels = [list(p) for p in s.get('strip_pixels', [])]
     return {
         'left_speed'    : _sim._decode_speed(s.get('left_byte')),
         'right_speed'   : _sim._decode_speed(s.get('right_byte')),
@@ -63,6 +64,8 @@ def _get_state():
         'voltage'       : round(_sim.SIM_VOLTAGE, 2),
         'current'       : round(_sim.SIM_CURRENT, 3),
         'yukon_port'    : _yukon_path,
+        'strip_pixels'  : strip_pixels,
+        'strip_pattern' : s.get('strip_pattern', 0),
     }
 
 
@@ -78,6 +81,7 @@ def api_state():
     def _gen():
         while True:
             _sim._tick_imu()
+            _sim._tick_strip()
             yield f"data: {json.dumps(_get_state())}\n\n"
             time.sleep(0.1)
     return Response(_gen(), mimetype='text/event-stream',
@@ -118,15 +122,18 @@ def api_cmd():
     elif cmd == 'fault_l':
         with _sim._lock:
             _sim._state['fault_l'] = not _sim._state.get('fault_l', False)
+        _sim.set_fault_leds()
 
     elif cmd == 'fault_r':
         with _sim._lock:
             _sim._state['fault_r'] = not _sim._state.get('fault_r', False)
+        _sim.set_fault_leds()
 
     elif cmd == 'clear_faults':
         with _sim._lock:
             _sim._state['fault_l'] = False
             _sim._state['fault_r'] = False
+        _sim.set_fault_leds()
 
     else:
         return jsonify({'ok': False, 'error': f'Unknown cmd: {cmd}'}), 400
@@ -206,6 +213,24 @@ button.active{background:#1a2a1a}
 .badge.err{border-color:var(--red);color:var(--red)}
 .badge.info{border-color:var(--cyan);color:var(--cyan)}
 
+/* LED indicators */
+.led-row{display:flex;gap:16px;margin-top:10px;align-items:center}
+.led-indicator{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--gray)}
+.led-sq{width:18px;height:18px;border-radius:3px;border:1px solid var(--border);
+  background:var(--border);flex-shrink:0}
+.led-sq.on{background:#e6e6f0;border-color:#e6e6f0}
+
+/* LED strip */
+.strip-wrap{margin-top:12px;max-width:960px;margin-left:auto;margin-right:auto}
+.strip-panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;padding:14px}
+.strip-panel h2{font-size:.7rem;color:var(--gray);text-transform:uppercase;
+  letter-spacing:1px;margin-bottom:10px;display:inline-block}
+.strip-pat-label{font-size:.7rem;color:var(--gray);float:right;margin-top:2px}
+.strip-pixels{display:flex;gap:8px;justify-content:center;margin-top:8px}
+.pixel{flex:1;max-width:90px;height:44px;border-radius:6px;
+  border:1px solid var(--border);position:relative;transition:background .08s}
+
 /* Connection */
 #conn{position:fixed;top:10px;right:14px;font-size:.7rem;color:var(--gray)}
 
@@ -282,9 +307,15 @@ button.active{background:#1a2a1a}
     </div>
 
     <h2 style="margin-top:14px">Status</h2>
-    <div class="badges">
-      <span class="badge" id="bdg-leda">LED A: --</span>
-      <span class="badge" id="bdg-ledb">LED B: --</span>
+    <div class="led-row">
+      <div class="led-indicator">
+        <div class="led-sq" id="sq-leda"></div>LED A
+      </div>
+      <div class="led-indicator">
+        <div class="led-sq" id="sq-ledb"></div>LED B
+      </div>
+    </div>
+    <div class="badges" style="margin-top:8px">
       <span class="badge" id="bdg-cmds">Cmds: 0</span>
       <span class="badge" id="bdg-fl">Fault L: --</span>
       <span class="badge" id="bdg-fr">Fault R: --</span>
@@ -336,6 +367,14 @@ button.active{background:#1a2a1a}
   </div>
 
 </div><!-- /grid -->
+
+<div class="strip-wrap">
+  <div class="strip-panel">
+    <h2>LED Strip</h2>
+    <span class="strip-pat-label" id="strip-pat-label">pattern: off</span>
+    <div class="strip-pixels" id="strip-pixels"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -426,10 +465,33 @@ function applyState(s) {
   motorBar('fill-l', 'val-l', s.left_speed);
   motorBar('fill-r', 'val-r', s.right_speed);
 
-  // LED badges
-  setBadge('bdg-leda', `LED A: ${s.led_a?'ON':'OFF'}`, s.led_a?'ok':'');
-  setBadge('bdg-ledb', `LED B: ${s.led_b?'ON':'OFF'}`, s.led_b?'ok':'');
+  // LED A/B squares
+  el('sq-leda').className = 'led-sq' + (s.led_a ? ' on' : '');
+  el('sq-ledb').className = 'led-sq' + (s.led_b ? ' on' : '');
   setBadge('bdg-cmds', `Cmds: ${s.cmds_rx}`, 'info');
+
+  // LED strip
+  const PAT_NAMES = ['off','larson','random','rainbow','retro_computer','converge','estop_flash'];
+  el('strip-pat-label').textContent = 'pattern: ' + (PAT_NAMES[s.strip_pattern] || '?');
+  const container = el('strip-pixels');
+  const pixels    = s.strip_pixels || [];
+  // Build pixel divs on first render, then just update colours
+  if (container.children.length !== pixels.length) {
+    container.innerHTML = '';
+    pixels.forEach(() => {
+      const d = document.createElement('div');
+      d.className = 'pixel';
+      container.appendChild(d);
+    });
+  }
+  pixels.forEach(([r, g, b], i) => {
+    const lit = r > 0 || g > 0 || b > 0;
+    const dim = `rgb(${Math.round(r/3)},${Math.round(g/3)},${Math.round(b/3)})`;
+    const bright = `rgb(${r},${g},${b})`;
+    container.children[i].style.background =
+      lit ? `radial-gradient(ellipse at center, ${bright} 40%, ${dim} 100%)` : dim;
+    container.children[i].style.borderColor = lit ? bright : 'var(--border)';
+  });
 
   // Fault badges
   setBadge('bdg-fl', `Fault L: ${s.fault_l?'YES':'no'}`, s.fault_l?'err':'');

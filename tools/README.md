@@ -1,4 +1,4 @@
-# HackyRacingRobot Tools & Tests
+# Hacky Racing Robot Tools & Tests
 
 Helper scripts, calibration tools, simulators, and host-side tests.
 All scripts run on the Raspberry Pi host unless noted otherwise.
@@ -164,6 +164,29 @@ Tests covered:
 | 8 | Estop | `estop()` does not raise; mode becomes `ESTOP` |
 
 The iBUS port is set to a non-existent path — the rc_reader thread logs a warning and exits, which is expected.
+
+---
+
+### test_leds.py
+
+Host-side tests for the NeoPixel LED strip module (SLOT1).
+Tests all colour presets, individual pixel control, `set_pixels()`, and all built-in patterns.
+
+```
+python3 tools/test_leds.py [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--yukon-port PORT` | `/dev/ttyACM0` | Yukon serial port |
+| `--baud N` | `115200` | Baud rate |
+| `--dry-run` | off | Protocol encoding tests only — no hardware required |
+
+**Examples**
+```
+python3 tools/test_leds.py --dry-run
+python3 tools/test_leds.py --yukon-port /dev/ttyACM0
+```
 
 ---
 
@@ -413,6 +436,37 @@ python3 tools/gps_route_builder_web.py --waypoints route.json --live
 | `--port N` | `5003` | HTTP port |
 | `--waypoints PATH` | none | Load waypoints JSON on start |
 | `--live` | off | Auto-connect to robot.py |
+
+---
+
+### read_data_log.py
+
+Web viewer for JSONL data logs produced by `robot_daemon.py`.
+Opens log files from `~/Documents/HackyRacingRobot/` and serves an interactive
+browser dashboard on port 5004.
+
+```bash
+python3 tools/read_data_log.py
+python3 tools/read_data_log.py --dir /path/to/logs --port 5004
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dir PATH` | `~/Documents/HackyRacingRobot/` | Directory containing `.jsonl` files |
+| `--host HOST` | `0.0.0.0` | Bind address |
+| `--port N` | `5004` | HTTP port |
+
+**Tabs**
+
+| Tab | Content |
+|-----|---------|
+| Drive | Mode timeline (colour-coded), left/right motor commands, RC steer/throttle |
+| Telemetry | Voltage, IMU heading, board/motor temps, CPU % and temp |
+| GPS | Leaflet map with track coloured by mode, speed-over-time chart |
+| LiDAR | Polar scatter plot for any frame via slider |
+| Inspector | Raw JSON for any frame |
+
+Charts downsample long runs to 800 points; full LiDAR data is fetched on demand per frame.
 
 ---
 

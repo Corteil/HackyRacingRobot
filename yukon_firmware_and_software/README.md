@@ -17,6 +17,7 @@ python3 tools/upload.py yukon_firmware_and_software/main.py
 
 | Slot | Module | Role |
 |------|--------|------|
+| SLOT1 | `LEDStripModule` (NeoPixel, 8 LEDs) | Status LED strip |
 | SLOT2 | `DualMotorModule` | Left motors |
 | SLOT5 | `DualMotorModule` | Right motors |
 | Qw/ST I2C | BNO085 (optional) | Heading for bearing hold |
@@ -41,7 +42,7 @@ Shared state (`_left_speed`, `_right_speed`, `_bearing_target`, `_current_headin
 | Byte | Value | Notes |
 |------|-------|-------|
 | `SYNC` | `0x7E` | Framing byte — resets state machine if seen anywhere |
-| `CMD` | `cmd_code + 0x20` | Range `0x21`–`0x26` |
+| `CMD` | `cmd_code + 0x20` | Range `0x21`–`0x2A` |
 | `V_HIGH` | `(value >> 4) + 0x40` | Range `0x40`–`0x4F` |
 | `V_LOW` | `(value & 0xF) + 0x50` | Range `0x50`–`0x5F` |
 | `CHK` | `CMD ^ V_HIGH ^ V_LOW` | XOR checksum |
@@ -57,7 +58,11 @@ Device replies **ACK** (`0x06`) on success, **NAK** (`0x15`) on error.
 | `CMD_RIGHT` | 3 | speed byte | Right motor speed |
 | `CMD_KILL` | 4 | ignored | Zero both motors and disable bearing hold |
 | `CMD_SENSOR` | 5 | ignored | Returns sensor data packets then ACK |
-| `CMD_BEARING` | 6 | 0–254 = heading, 255 = disable | Set/clear bearing hold (NAK if no IMU) |
+| `CMD_BEARING`    | 6  | 0–254 = heading, 255 = disable | Set/clear bearing hold (NAK if no IMU) |
+| `CMD_STRIP`      | 7  | Colour preset index (0–8) | Set all LEDs to palette colour; stops any pattern |
+| `CMD_PIXEL_SET`  | 8  | `(led_index << 4) \| colour_index` | Stage one pixel colour (no hardware update) |
+| `CMD_PIXEL_SHOW` | 9  | Ignored | Push all staged pixel data to strip hardware |
+| `CMD_PATTERN`    | 10 | `(colour_index << 4) \| pattern_id` | Start built-in animation (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge) |
 
 ### Motor speed encoding
 
@@ -99,6 +104,27 @@ The Yukon sends 8 data packets before the final ACK:
 | 7 `RESP_HEADING` | IMU heading | same encoding as `CMD_BEARING`; 255 = IMU absent | |
 
 Each data packet: `[SYNC, RESP_TYPE, V_HIGH, V_LOW, CHK]` where `RESP_TYPE = sensor_id + 0x30`.
+
+### LED strip
+
+The NeoPixel LED strip module in SLOT1 provides visual status feedback.
+
+**Colour palette (indices 0–8):** off, red, green, blue, orange, yellow, cyan, magenta, white
+
+**Built-in patterns** (run autonomously on the Yukon, zero Pi serial traffic during animation):
+
+| Pattern | ID | Rate | Notes |
+|---------|----|------|-------|
+| larson  | 1  | ~60 ms/step  | Red comet bouncing with decay trail |
+| random  | 2  | ~200 ms/step | Random palette colours per LED |
+| rainbow | 3  | ~40 ms/step  | Rotating full-spectrum hue |
+| retro_computer | 4 | ~200 ms/step | Single-colour random on/off (default white) |
+| converge | 5 | ~80 ms/step  | Fill from both ends toward centre and back |
+
+**Default behaviour (set by Pi daemon):** blue = MANUAL, green = AUTO, red = ESTOP.
+Faults override to solid red. Strip clears to off on shutdown.
+
+See `docs/PROTOCOL.md` for full encoding details.
 
 ### Fault recovery
 

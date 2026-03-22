@@ -23,6 +23,7 @@ import threading
 import time
 import select
 import argparse
+import random
 
 # ---------------------------------------------------------------------------
 # Protocol constants
@@ -36,7 +37,27 @@ CMD_LEFT    = 2
 CMD_RIGHT   = 3
 CMD_KILL    = 4
 CMD_SENSOR  = 5
-CMD_BEARING = 6   # value: 0–254 = target bearing (encoded 0–359°), 255 = disable
+CMD_BEARING    = 6   # value: 0–254 = target bearing (encoded 0–359°), 255 = disable
+CMD_STRIP      = 7
+CMD_PIXEL_SET  = 8
+CMD_PIXEL_SHOW = 9
+CMD_PATTERN    = 10
+
+STRIP_COLOURS = [
+    (  0,   0,   0),  # 0  off
+    (255,   0,   0),  # 1  red
+    (  0, 255,   0),  # 2  green
+    (  0,   0, 255),  # 3  blue
+    (255, 165,   0),  # 4  orange
+    (255, 255,   0),  # 5  yellow
+    (  0, 255, 255),  # 6  cyan
+    (255,   0, 255),  # 7  magenta
+    (255, 255, 255),  # 8  white
+]
+NUM_LEDS = 8
+PAT_RATE = {1: 0.06, 2: 0.20, 3: 0.04, 4: 0.20, 5: 0.08, 6: 0.30}  # seconds/step
+PAT_NAMES = {0: 'off', 1: 'larson', 2: 'random', 3: 'rainbow',
+             4: 'retro_computer', 5: 'converge', 6: 'estop_flash'}
 
 RESP_VOLTAGE = 0
 RESP_CURRENT = 1
@@ -82,6 +103,13 @@ _state = {
     'imu_heading'    : 0.0,     # current simulated heading (0–359°)
     'bearing_target' : None,    # None = hold disabled; float = active target
     'last_imu_tick'  : 0.0,     # monotonic time of last heading update
+    # LED strip simulation
+    'strip_pixels'    : [(0, 0, 0)] * NUM_LEDS,
+    'strip_pattern'   : 0,
+    'strip_pat_pos'   : 0,
+    'strip_pat_dir'   : 1,
+    'strip_colour_idx': 8,       # default white
+    'strip_last_tick' : 0.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -159,6 +187,110 @@ def _tick_imu():
 
 
 
+def _hsv_to_rgb(h):
+    """Hue 0-359 -> (r, g, b) at full saturation, half brightness."""
+    h = int(h) % 360
+    s = h // 60
+    f = (h % 60) * 255 // 60
+    q = 255 - f
+    if s == 0: return 127, f // 2, 0
+    if s == 1: return q // 2, 127, 0
+    if s == 2: return 0, 127, f // 2
+    if s == 3: return 0, q // 2, 127
+    if s == 4: return f // 2, 0, 127
+    return 127, 0, q // 2
+
+
+def set_fault_leds():
+    """Mirror Yukon firmware: pattern 6 + red when any motor fault is active, clear when none."""
+    with _lock:
+        any_fault = _state.get('fault_l', False) or _state.get('fault_r', False)
+        if any_fault:
+            _state['strip_pattern']    = 6
+            _state['strip_colour_idx'] = 1   # red = Yukon hardware fault colour
+            _state['strip_pat_pos']    = 0
+            _state['strip_pat_dir']    = 1
+        else:
+            if _state['strip_pattern'] == 6 and _state['strip_colour_idx'] == 1:
+                _state['strip_pattern'] = 0
+                _state['strip_pixels']  = [(0, 0, 0)] * NUM_LEDS
+
+
+def _tick_strip():
+    """Advance LED strip pattern animation (call periodically)."""
+    now = time.monotonic()
+    with _lock:
+        pattern = _state['strip_pattern']
+        if pattern == 0:
+            _state['strip_last_tick'] = now
+            return
+        rate = PAT_RATE.get(pattern, 0.20)
+        if now - _state['strip_last_tick'] < rate:
+            return
+        _state['strip_last_tick'] = now
+
+        pixels    = list(_state['strip_pixels'])
+        col_idx   = _state['strip_colour_idx']
+        pos       = _state['strip_pat_pos']
+        direction = _state['strip_pat_dir']
+        r, g, b   = STRIP_COLOURS[col_idx]
+
+        if pattern == 1:                                   # larson
+            for i in range(NUM_LEDS):
+                d = abs(i - pos)
+                if d == 0:   pixels[i] = (255, 0, 0)
+                elif d == 1: pixels[i] = (48,  0, 0)
+                elif d == 2: pixels[i] = (8,   0, 0)
+                else:        pixels[i] = (0,   0, 0)
+            pos += direction
+            if pos >= NUM_LEDS - 1: direction = -1
+            elif pos <= 0:          direction =  1
+
+        elif pattern == 2:                                 # random
+            for i in range(NUM_LEDS):
+                if random.getrandbits(1):
+                    pixels[i] = STRIP_COLOURS[random.randint(1, len(STRIP_COLOURS) - 1)]
+                else:
+                    pixels[i] = (0, 0, 0)
+
+        elif pattern == 3:                                 # rainbow
+            for i in range(NUM_LEDS):
+                pixels[i] = _hsv_to_rgb((pos + i * (360 // NUM_LEDS)) % 360)
+            pos = (pos + 8) % 360
+
+        elif pattern == 4:                                 # retro_computer
+            for i in range(NUM_LEDS):
+                pixels[i] = (r, g, b) if random.getrandbits(1) else (0, 0, 0)
+
+        elif pattern == 5:                                 # converge
+            fill = pos
+            for i in range(NUM_LEDS):
+                pixels[i] = (r, g, b) if (i < fill or i >= NUM_LEDS - fill) else (0, 0, 0)
+            pos += direction
+            if pos > NUM_LEDS // 2:
+                direction = -1
+                pos = NUM_LEDS // 2
+            elif pos < 0:
+                direction = 1
+                pos = 0
+
+        elif pattern == 6:                                 # estop_flash
+            # LEDs 0-2 and 5-7 flash red; LEDs 3-4 show fault colour
+            flash = (255, 0, 0) if pos == 0 else (0, 0, 0)
+            fault_col = STRIP_COLOURS[col_idx]
+            for i in range(3):
+                pixels[i] = flash
+            pixels[3] = fault_col
+            pixels[4] = fault_col
+            for i in range(5, NUM_LEDS):
+                pixels[i] = flash
+            pos = 1 - pos                                  # toggle 0/1
+
+        _state['strip_pixels']   = pixels
+        _state['strip_pat_pos']  = pos
+        _state['strip_pat_dir']  = direction
+
+
 # ---------------------------------------------------------------------------
 # Yukon PTY server  (background thread)
 # ---------------------------------------------------------------------------
@@ -197,11 +329,11 @@ def yukon_server(master_fd):
             continue
 
         if sm == 'CMD':
-            if 0x21 <= b <= 0x27:          # commands 1–7 (0x21–0x27)
+            if 0x21 <= b <= 0x2A:          # commands 1–10 (0x21–0x2A)
                 pkt_cmd = b
                 sm = 'V_HIGH'
             else:
-                os.write(master_fd, bytes([NAK, ord('\n')]))
+                os.write(master_fd, bytes([NAK]))
                 sm = 'SYNC'
 
         elif sm == 'V_HIGH':
@@ -209,7 +341,7 @@ def yukon_server(master_fd):
                 pkt_vhigh = b
                 sm = 'V_LOW'
             else:
-                os.write(master_fd, bytes([NAK, ord('\n')]))
+                os.write(master_fd, bytes([NAK]))
                 sm = 'SYNC'
 
         elif sm == 'V_LOW':
@@ -217,13 +349,13 @@ def yukon_server(master_fd):
                 pkt_vlow = b
                 sm = 'CHK'
             else:
-                os.write(master_fd, bytes([NAK, ord('\n')]))
+                os.write(master_fd, bytes([NAK]))
                 sm = 'SYNC'
 
         elif sm == 'CHK':
             expected = pkt_cmd ^ pkt_vhigh ^ pkt_vlow
             if b != expected:
-                os.write(master_fd, bytes([NAK, ord('\n')]))
+                os.write(master_fd, bytes([NAK]))
             else:
                 cmd_code = pkt_cmd - 0x20
                 value    = ((pkt_vhigh - 0x40) << 4) | (pkt_vlow - 0x50)
@@ -249,9 +381,36 @@ def yukon_server(master_fd):
                             _state['bearing_target'] = _bearing_decode(value)
                         else:
                             # NAK if no IMU
-                            os.write(master_fd, bytes([NAK, ord('\n')]))
+                            os.write(master_fd, bytes([NAK]))
                             sm = 'SYNC'
                             continue
+                    elif cmd_code == CMD_STRIP:
+                        _state['strip_pattern'] = 0
+                        idx = min(value, len(STRIP_COLOURS) - 1)
+                        _state['strip_pixels'] = [STRIP_COLOURS[idx]] * NUM_LEDS
+
+                    elif cmd_code == CMD_PIXEL_SET:
+                        led_idx    = (value >> 4) & 0x0F
+                        colour_idx = value & 0x0F
+                        if led_idx < NUM_LEDS and colour_idx < len(STRIP_COLOURS):
+                            pixels = list(_state['strip_pixels'])
+                            pixels[led_idx] = STRIP_COLOURS[colour_idx]
+                            _state['strip_pixels'] = pixels
+
+                    elif cmd_code == CMD_PIXEL_SHOW:
+                        pass   # pixels already staged in state
+
+                    elif cmd_code == CMD_PATTERN:
+                        colour_nibble = (value >> 4) & 0x0F
+                        pat           = value & 0x0F
+                        if colour_nibble > 0 and colour_nibble < len(STRIP_COLOURS):
+                            _state['strip_colour_idx'] = colour_nibble
+                        _state['strip_pattern']  = pat if pat <= 6 else 0
+                        _state['strip_pat_pos']  = 0
+                        _state['strip_pat_dir']  = 1
+                        if pat == 0:
+                            _state['strip_pixels'] = [(0, 0, 0)] * NUM_LEDS
+
                     elif cmd_code == CMD_SENSOR:
                         _send_sensor_packet(master_fd, RESP_VOLTAGE, SIM_VOLTAGE  * 10)
                         _send_sensor_packet(master_fd, RESP_CURRENT, SIM_CURRENT  * 100)
@@ -266,7 +425,7 @@ def yukon_server(master_fd):
                                                 _bearing_encode(_state['imu_heading']))
                         else:
                             _send_sensor_packet(master_fd, RESP_HEADING, 255)
-                os.write(master_fd, bytes([ACK, ord('\n')]))
+                os.write(master_fd, bytes([ACK]))
             sm = 'SYNC'
 
 
@@ -278,14 +437,16 @@ def yukon_server(master_fd):
 
 def draw(yukon_path):
     with _lock:
-        lb          = _state['left_byte']
-        rb          = _state['right_byte']
-        led_a       = _state['led_a']
-        led_b       = _state['led_b']
-        cmds        = _state['cmds_rx']
-        imu_present = _state['imu_present']
-        imu_heading = _state['imu_heading']
-        bearing_tgt = _state['bearing_target']
+        lb           = _state['left_byte']
+        rb           = _state['right_byte']
+        led_a        = _state['led_a']
+        led_b        = _state['led_b']
+        cmds         = _state['cmds_rx']
+        imu_present  = _state['imu_present']
+        imu_heading  = _state['imu_heading']
+        bearing_tgt  = _state['bearing_target']
+        strip_pixels = list(_state['strip_pixels'])
+        strip_pat    = _state['strip_pattern']
 
     rx_l = _decode_speed(lb)
     rx_r = _decode_speed(rb)
@@ -325,6 +486,11 @@ def draw(yukon_path):
         '--- Status ' + '-' * 51,
         f'  LED A: {"ON " if led_a else "OFF"}  LED B: {"ON " if led_b else "OFF"}'
         f'  Cmds rx: {cmds}',
+        '--- LED Strip ' + '-' * 48,
+        '  ' + ''.join(
+            f'\033[48;2;{r};{g};{b}m  \033[0m' for r, g, b in strip_pixels
+        ),
+        f'  pattern: {PAT_NAMES.get(strip_pat, "?")}',
         '--- Keys ' + '-' * 53,
         '  Q  quit',
         '=' * 62,
@@ -371,6 +537,7 @@ def main():
 
             # Tick IMU heading toward bearing target
             _tick_imu()
+            _tick_strip()
 
             if now - last_draw >= 0.1:
                 try:

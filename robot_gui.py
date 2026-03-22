@@ -569,6 +569,37 @@ def _cfg_flat(cfg):
     return rows
 
 
+def _cfg_col_heights():
+    """Return (left_height, right_height) in pixels for the config overlay columns."""
+    ROW_H = 20
+    GAP   = 8
+    heights = [0, 0]
+    for si, (section, keys) in enumerate(_CFG_FIELDS):
+        col = 0 if si < _CFG_LEFT_SECTS else 1
+        heights[col] += ROW_H              # section header
+        heights[col] += len(keys) * (ROW_H - 2)  # item rows
+        heights[col] += GAP
+    return heights
+
+
+def _sel_item_y(flat_idx):
+    """Pixel y-offset of flat_idx relative to start_y (before scroll applied)."""
+    ROW_H = 20
+    GAP   = 8
+    fi    = 0
+    y_cols = [0, 0]
+    for si, (section, keys) in enumerate(_CFG_FIELDS):
+        col = 0 if si < _CFG_LEFT_SECTS else 1
+        y_cols[col] += ROW_H
+        for key in keys:
+            if fi == flat_idx:
+                return y_cols[col]
+            y_cols[col] += ROW_H - 2
+            fi += 1
+        y_cols[col] += GAP
+    return 0
+
+
 def _save_config(path, cfg):
     with open(path) as f:
         lines = f.readlines()
@@ -595,7 +626,7 @@ def _save_config(path, cfg):
 
 
 def _draw_config_overlay(surf, W, H, config_path, cfg,
-                         sel_idx, editing, edit_text, dirty):
+                         sel_idx, editing, edit_text, dirty, scroll_y=0):
     overlay = pygame.Rect(20, 20, W - 40, H - 40)
     pygame.draw.rect(surf, C_PANEL, overlay, border_radius=8)
     pygame.draw.rect(surf, C_BORDER, overlay, width=1, border_radius=8)
@@ -621,6 +652,12 @@ def _draw_config_overlay(surf, W, H, config_path, cfg,
     right_x= left_x + col_w + 16
     start_y= overlay.y + 54
     mid_x  = left_x + col_w + 8
+    body_h = overlay.bottom - 12 - start_y
+
+    # Clip rows to the body area so content doesn't bleed into title or border
+    body_clip = pygame.Rect(overlay.x + 2, start_y, overlay.width - 4, body_h)
+    old_clip  = surf.get_clip()
+    surf.set_clip(body_clip)
 
     pygame.draw.line(surf, C_BORDER,
                      (mid_x, start_y - 4), (mid_x, overlay.bottom - 12), 1)
@@ -633,7 +670,7 @@ def _draw_config_overlay(surf, W, H, config_path, cfg,
         (left_x,  range(0, _CFG_LEFT_SECTS)),
         (right_x, range(_CFG_LEFT_SECTS, len(_CFG_FIELDS)))
     )):
-        y = start_y
+        y = start_y - scroll_y
         for si in sect_range:
             section, keys = _CFG_FIELDS[si]
             hdr = FONT_SM.render(section.capitalize(), True, C_CYAN)
@@ -661,6 +698,23 @@ def _draw_config_overlay(surf, W, H, config_path, cfg,
                 flat_idx += 1
                 y += ROW_H - 2
             y += GAP
+
+    surf.set_clip(old_clip)
+
+    # Scroll indicators
+    max_content = max(_cfg_col_heights())
+    if scroll_y > 0:
+        pts = [(overlay.centerx, start_y + 4),
+               (overlay.centerx - 8, start_y + 13),
+               (overlay.centerx + 8, start_y + 13)]
+        pygame.draw.polygon(surf, C_GRAY, pts)
+    if scroll_y < max_content - body_h:
+        bot = overlay.bottom - 14
+        pts = [(overlay.centerx, bot + 9),
+               (overlay.centerx - 8, bot),
+               (overlay.centerx + 8, bot)]
+        pygame.draw.polygon(surf, C_GRAY, pts)
+
     return item_rects
 
 
@@ -695,10 +749,26 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
     show_bearing  = False      # ← bearing overlay toggle
     tick          = 0
     cfg_sel       = 0
+    cfg_scroll    = 0
     cfg_editing   = False
     cfg_edit_text = ""
     cfg_dirty     = False
     cfg_n_items   = sum(len(keys) for _, keys in _CFG_FIELDS)
+
+    # Body height available inside the config overlay (matches _draw_config_overlay)
+    _overlay_body_h = (H - 40 - 12) - (20 + 54)   # overlay.bottom-12 - start_y
+
+    def _cfg_clamp_scroll(sel, scroll):
+        """Adjust scroll so the selected item stays visible."""
+        item_y = _sel_item_y(sel)
+        if item_y - scroll < 0:
+            scroll = item_y
+        elif item_y + (ROW_H - 2) - scroll > _overlay_body_h:
+            scroll = item_y + (ROW_H - 2) - _overlay_body_h
+        max_s = max(0, max(_cfg_col_heights()) - _overlay_body_h)
+        return max(0, min(max_s, scroll))
+
+    ROW_H = 20   # local alias used by _cfg_clamp_scroll
 
     while running:
         for event in pygame.event.get():
@@ -725,9 +795,11 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
                 elif show_config:
                     if event.key in (pygame.K_c, pygame.K_ESCAPE):
                         show_config = False
+                        pygame.key.set_repeat(0, 0)
                     elif event.key in (pygame.K_UP, pygame.K_DOWN):
                         delta   = -1 if event.key == pygame.K_UP else 1
                         cfg_sel = (cfg_sel + delta) % cfg_n_items
+                        cfg_scroll = _cfg_clamp_scroll(cfg_sel, cfg_scroll)
                     elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                         flat = _cfg_flat(cfg)
                         val  = flat[cfg_sel][2].lower()
@@ -747,6 +819,8 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
                 else:
                     if event.key == pygame.K_c:
                         show_config = True
+                        cfg_scroll  = _cfg_clamp_scroll(cfg_sel, cfg_scroll)
+                        pygame.key.set_repeat(300, 50)
                     elif event.key in (pygame.K_q, pygame.K_ESCAPE):
                         running = False
                     elif event.key == pygame.K_e:
@@ -771,6 +845,10 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
                             robot.stop_data_log()
                         else:
                             robot.start_data_log()
+
+            elif event.type == pygame.MOUSEWHEEL and show_config and not cfg_editing:
+                max_s = max(0, max(_cfg_col_heights()) - _overlay_body_h)
+                cfg_scroll = max(0, min(max_s, cfg_scroll - event.y * ROW_H))
 
         state       = robot.get_state()
         frame       = robot.get_frame()
@@ -937,7 +1015,8 @@ def run_gui(robot: Robot, fps: int = 10, initial_rotation: int = 0,
         # ── Config overlay ─────────────────────────────────────────────────────
         if show_config and cfg is not None:
             _draw_config_overlay(screen, W, H, config_path, cfg,
-                                 cfg_sel, cfg_editing, cfg_edit_text, cfg_dirty)
+                                 cfg_sel, cfg_editing, cfg_edit_text, cfg_dirty,
+                                 cfg_scroll)
 
         pygame.display.flip()
         clock.tick(fps)

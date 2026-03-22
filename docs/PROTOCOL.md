@@ -13,7 +13,7 @@ Communication between the Raspberry Pi (host) and the Pimoroni Yukon (RP2040) us
 | Field  | Encoding                     | Range             |
 |--------|------------------------------|-------------------|
 | SYNC   | `0x7E` (`~`) — fixed marker  | always `0x7E`     |
-| CMD    | `cmd_code + 0x20`            | `0x21–0x26`       |
+| CMD    | `cmd_code + 0x20`            | `0x21–0x2A`       |
 | V_HIGH | `(value >> 4) + 0x40`        | `0x40–0x4F`       |
 | V_LOW  | `(value & 0xF) + 0x50`       | `0x50–0x5F`       |
 | CHK    | `CMD ^ V_HIGH ^ V_LOW`       | `49–62`, never equals SYNC |
@@ -24,14 +24,18 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 
 ## Commands
 
-| Command        | Code | Value meaning |
-|----------------|------|---------------|
-| `CMD_LED`      | 1    | 0 = LED_A off, 1 = LED_A on, 2 = LED_B off, 3 = LED_B on |
-| `CMD_LEFT`     | 2    | Motor speed byte (see below) |
-| `CMD_RIGHT`    | 3    | Motor speed byte |
-| `CMD_KILL`     | 4    | Ignored — zeros both motors and disables bearing hold |
-| `CMD_SENSOR`   | 5    | Ignored — device replies with 8 sensor data packets then ACK |
-| `CMD_BEARING`  | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
+| Command          | Code | Value meaning |
+|------------------|------|---------------|
+| `CMD_LED`        | 1    | 0 = LED_A off, 1 = LED_A on, 2 = LED_B off, 3 = LED_B on |
+| `CMD_LEFT`       | 2    | Motor speed byte (see below) |
+| `CMD_RIGHT`      | 3    | Motor speed byte |
+| `CMD_KILL`       | 4    | Ignored — zeros both motors and disables bearing hold |
+| `CMD_SENSOR`     | 5    | Ignored — device replies with 8 sensor data packets then ACK |
+| `CMD_BEARING`    | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
+| `CMD_STRIP`      | 7    | Colour preset index (0=off 1=red 2=green 3=blue 4=orange 5=yellow 6=cyan 7=magenta 8=white) — stops any active pattern |
+| `CMD_PIXEL_SET`  | 8    | High nibble = LED index (0–15), low nibble = colour index (0–15) — stages pixel, no hardware update |
+| `CMD_PIXEL_SHOW` | 9    | Ignored — pushes all staged pixel data to strip hardware |
+| `CMD_PATTERN`    | 10   | High nibble = colour index (0=keep current), low nibble = pattern (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge) |
 
 ---
 
@@ -97,3 +101,62 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 | 7  | IMU heading       | same as `CMD_BEARING`; 255 = IMU absent | ° |
 
 `RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x37`).
+
+---
+
+## LED strip (NeoPixel module, SLOT1)
+
+### Colour palette
+
+| Index | Name     | RGB           |
+|-------|----------|---------------|
+| 0     | off      | (0, 0, 0)     |
+| 1     | red      | (255, 0, 0)   |
+| 2     | green    | (0, 255, 0)   |
+| 3     | blue     | (0, 0, 255)   |
+| 4     | orange   | (255, 165, 0) |
+| 5     | yellow   | (255, 255, 0) |
+| 6     | cyan     | (0, 255, 255) |
+| 7     | magenta  | (255, 0, 255) |
+| 8     | white    | (255, 255, 255) |
+
+### CMD_STRIP
+
+Sets all LEDs to a single palette colour immediately. Stops any active pattern.
+
+### CMD_PIXEL_SET / CMD_PIXEL_SHOW
+
+Stage individual pixel colours without updating hardware, then push all staged data at once:
+
+```
+value = (led_index << 4) | colour_index
+```
+
+Example — set LED 3 to cyan (index 6):
+```
+CMD_PIXEL_SET  value = (3 << 4) | 6 = 0x36 = 54
+CMD_PIXEL_SHOW value = 0 (ignored)
+```
+
+### CMD_PATTERN
+
+Starts a built-in animation running autonomously on the Yukon. The high nibble optionally sets the colour used by colour-aware patterns (sparkle/retro_computer, converge); 0 keeps the current colour (default: white).
+
+| Pattern | Index | Description |
+|---------|-------|-------------|
+| off     | 0     | Stop pattern and clear strip |
+| larson  | 1     | Red comet bouncing end-to-end with decay trail (~60 ms/step) |
+| random  | 2     | Each LED randomly picks a palette colour or off (~200 ms/step) |
+| rainbow | 3     | Full spectrum across all LEDs, rotating hue (~40 ms/step) |
+| retro_computer | 4 | Single-colour random on/off — default white (~200 ms/step) |
+| converge | 5   | LEDs fill in from both ends to centre and back (~80 ms/step) |
+
+Example — start rainbow:
+```
+CMD_PATTERN  value = 0x03  (colour nibble=0 keep current, pattern=3)
+```
+
+Example — start cyan converge:
+```
+CMD_PATTERN  value = (6 << 4) | 5 = 0x65  (colour=cyan, pattern=converge)
+```

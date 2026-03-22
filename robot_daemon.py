@@ -33,6 +33,7 @@ Command-line demo
   python3 robot.py --no-camera --no-lidar --no-gps
 """
 
+import configparser
 import csv
 import json
 import logging
@@ -194,6 +195,11 @@ class _YukonLink:
     CMD_KILL    = 4
     CMD_SENSOR  = 5
     CMD_BEARING = 6   # value: 0–254 = target bearing (0–359°), 255 = disable hold
+    CMD_STRIP      = 7   # value: colour preset index (0=off 1=red 2=green 3=blue ...)
+    CMD_PIXEL_SET  = 8   # value: high nibble = LED index, low nibble = colour index
+    CMD_PIXEL_SHOW = 9   # value: ignored; pushes staged pixel data to hardware
+    CMD_PATTERN    = 10  # value: high nibble = colour index (0=keep current), low nibble = pattern
+                         #        patterns: 0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge
 
     RESP_IDS = range(8)   # 0..7  (7 = heading)
 
@@ -326,6 +332,88 @@ class _YukonLink:
             self._ser.write(self._encode(self.CMD_LED, 3 if on else 2))
             self._drain(1)
 
+    # Colour palette indices — mirror _STRIP_COLOURS in yukon firmware/main.py
+    STRIP_OFF     = 0
+    STRIP_RED     = 1
+    STRIP_GREEN   = 2
+    STRIP_BLUE    = 3
+    STRIP_ORANGE  = 4
+    STRIP_YELLOW  = 5
+    STRIP_CYAN    = 6
+    STRIP_MAGENTA = 7
+    STRIP_WHITE   = 8
+
+    def set_strip(self, preset: int):
+        """Set all LEDs to a palette colour preset. Thread-safe."""
+        if self._no_motors:
+            return
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_STRIP, max(0, min(255, preset))))
+            self._drain(1)
+
+    def set_pixel(self, index: int, colour: int):
+        """Stage a single pixel colour from the palette. Call show_pixels() to update hardware."""
+        if self._no_motors:
+            return
+        value = ((index & 0x0F) << 4) | (colour & 0x0F)
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_PIXEL_SET, value))
+            self._drain(1)
+
+    def show_pixels(self):
+        """Push all staged pixel data to the LED strip hardware."""
+        if self._no_motors:
+            return
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_PIXEL_SHOW, 0))
+            self._drain(1)
+
+    PATTERN_OFF            = 0
+    PATTERN_LARSON         = 1
+    PATTERN_RANDOM         = 2
+    PATTERN_RAINBOW        = 3
+    PATTERN_RETRO_COMPUTER = 4
+    PATTERN_CONVERGE       = 5
+    PATTERN_ESTOP_FLASH    = 6
+
+    def set_pattern(self, pattern: int, colour: int = 0):
+        """Start a built-in LED animation (PATTERN_* constants). 0 stops and clears.
+
+        colour: palette index to use for sparkle (0 = keep current, default white).
+        """
+        if self._no_motors:
+            return
+        value = ((colour & 0x0F) << 4) | (pattern & 0x0F)
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_PATTERN, value))
+            self._drain(1)
+
+    # Named LED preset lookup — accepts colour or pattern names from robot.ini
+    _LED_PRESETS: dict = {}   # populated below class body
+
+    def apply_led_preset(self, name: str):
+        """Apply a colour or pattern preset by name (e.g. 'larson', 'red')."""
+        entry = self._LED_PRESETS.get(name.lower().strip(), ('strip', 0))
+        kind, val = entry[0], entry[1]
+        colour = entry[2] if len(entry) > 2 else 0
+        if kind == 'pattern':
+            self.set_pattern(val, colour)
+        else:
+            self.set_strip(val)
+
+    def set_pixels(self, colours: list):
+        """Set every pixel from a list of palette indices and push to hardware in one write."""
+        if self._no_motors:
+            return
+        pkt = b''.join(
+            self._encode(self.CMD_PIXEL_SET, ((i & 0x0F) << 4) | (c & 0x0F))
+            for i, c in enumerate(colours)
+        )
+        pkt += self._encode(self.CMD_PIXEL_SHOW, 0)
+        with self._cmd_lock:
+            self._ser.write(pkt)
+            self._drain(len(colours) + 1)
+
     def kill(self):
         if self._no_motors:
             return
@@ -374,6 +462,28 @@ class _YukonLink:
             self._ser.close()
         except (OSError, Exception):
             pass
+
+
+# Populate _YukonLink._LED_PRESETS after class body so constants are available
+_YukonLink._LED_PRESETS = {
+    'off':            ('strip',   _YukonLink.STRIP_OFF),
+    'red':            ('strip',   _YukonLink.STRIP_RED),
+    'green':          ('strip',   _YukonLink.STRIP_GREEN),
+    'blue':           ('strip',   _YukonLink.STRIP_BLUE),
+    'orange':         ('strip',   _YukonLink.STRIP_ORANGE),
+    'yellow':         ('strip',   _YukonLink.STRIP_YELLOW),
+    'cyan':           ('strip',   _YukonLink.STRIP_CYAN),
+    'magenta':        ('strip',   _YukonLink.STRIP_MAGENTA),
+    'white':          ('strip',   _YukonLink.STRIP_WHITE),
+    'larson':         ('pattern', _YukonLink.PATTERN_LARSON),
+    'random':         ('pattern', _YukonLink.PATTERN_RANDOM),
+    'rainbow':        ('pattern', _YukonLink.PATTERN_RAINBOW),
+    'retro_computer': ('pattern', _YukonLink.PATTERN_RETRO_COMPUTER),
+    'converge':       ('pattern', _YukonLink.PATTERN_CONVERGE),
+    'estop_flash':    ('pattern', _YukonLink.PATTERN_ESTOP_FLASH, _YukonLink.STRIP_YELLOW),
+    'rc_lost':        ('pattern', _YukonLink.PATTERN_ESTOP_FLASH, _YukonLink.STRIP_BLUE),
+    'motor_fault':    ('pattern', _YukonLink.PATTERN_ESTOP_FLASH, _YukonLink.STRIP_RED),
+}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1191,6 +1301,16 @@ class Robot:
         self._speed_min   = speed_min
         self._control_hz  = control_hz
         self._no_motors   = no_motors
+        # LED strip config — read directly from robot.ini so it's consistent
+        # across all frontends without each one needing to pass these values.
+        _ini = configparser.ConfigParser(inline_comment_prefixes=('#',))
+        _ini.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ini'))
+        self._led_manual      = _ini.get('leds', 'manual',      fallback='larson').strip()
+        self._led_auto        = _ini.get('leds', 'auto',        fallback='retro_computer').strip()
+        self._led_estop       = _ini.get('leds', 'estop',       fallback='estop_flash').strip()
+        self._led_rc_lost     = _ini.get('leds', 'rc_lost',     fallback='rc_lost').strip()
+        self._led_motor_fault = _ini.get('leds', 'motor_fault', fallback='motor_fault').strip()
+        self._fault_rotation_s = float(_ini.get('leds', 'fault_rotation_s', fallback='2.0'))
 
         # Subsystems (created in start())
         self._yukon:         Optional[_YukonLink] = None
@@ -1552,9 +1672,15 @@ class Robot:
         dt        = 1.0 / self._control_hz
         last_left  = None
         last_right = None
-        last_mode      = None
-        last_auto_type = None
-        last_led_b     = None   # track last LED B state to avoid redundant serial writes
+        last_mode          = None
+        last_auto_type     = None
+        last_led_b         = None
+        rc_was_active      = True
+        rc_lost_active     = False
+        last_fault_list    : list  = []
+        fault_rotation_idx : int   = 0
+        last_fault_tick    : float = 0.0
+        last_strip_mode    = None   # tracks which mode preset is on the strip
 
         while not self._stop_evt.is_set():
             t0 = time.monotonic()
@@ -1589,12 +1715,58 @@ class Robot:
                          f"(mode={mode.name} type={self._auto_type.label})")
                 last_auto_type = self._auto_type
 
+            # RC signal transition detection
+            rc_active = self._rc_active
+            if not rc_active and rc_was_active:
+                rc_lost_active = True
+                log.warning("RC signal lost")
+            elif rc_active and not rc_was_active:
+                rc_lost_active = False
+                log.info("RC signal recovered")
+            rc_was_active = rc_active
+
             if self._yukon:
                 try:
                     # LED A: on = AUTO, off = MANUAL/ESTOP
                     if mode is not last_mode:
                         self._yukon.set_led_a(mode is RobotMode.AUTO)
                         last_mode = mode
+
+                    # ── LED strip: rotate through all active faults ───────────
+                    tel = self._telemetry
+                    active_faults = []
+                    if rc_lost_active:
+                        active_faults.append(self._led_rc_lost)
+                    if mode is RobotMode.ESTOP and not rc_lost_active:
+                        active_faults.append(self._led_estop)
+                    if tel.left_fault or tel.right_fault:
+                        active_faults.append(self._led_motor_fault)
+
+                    want_preset = None
+                    if active_faults:
+                        if active_faults != last_fault_list:
+                            # Fault list changed — restart rotation from first entry
+                            fault_rotation_idx = 0
+                            last_fault_tick    = t0
+                            want_preset        = active_faults[0]
+                            last_strip_mode    = None  # mode preset no longer on strip
+                        elif t0 - last_fault_tick >= self._fault_rotation_s:
+                            fault_rotation_idx = (fault_rotation_idx + 1) % len(active_faults)
+                            last_fault_tick    = t0
+                            want_preset        = active_faults[fault_rotation_idx]
+                    else:
+                        # No faults: apply mode preset when mode changed or faults just cleared
+                        if mode is not last_strip_mode:
+                            want_preset     = {
+                                RobotMode.MANUAL: self._led_manual,
+                                RobotMode.AUTO:   self._led_auto,
+                                RobotMode.ESTOP:  self._led_estop,
+                            }.get(mode, 'off')
+                            last_strip_mode = mode
+
+                    last_fault_list = active_faults[:]
+                    if want_preset is not None:
+                        self._yukon.apply_led_preset(want_preset)
 
                     # LED B: GPS status
                     #   off        = no GPS / no fix

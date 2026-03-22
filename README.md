@@ -1,4 +1,4 @@
-# HackyRacingRobot
+# Hacky Racing Robot
 
 Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Pi reads an RC transmitter via iBUS and sends motor commands to the Yukon RP2040 over USB serial using a compact 5-byte protocol. Supports autonomous gate navigation with ArUco markers, RTK GPS waypoint following, LiDAR, camera recording, ML sensor data logging, and a live pygame or web dashboard.
 
@@ -36,6 +36,7 @@ python3 camera_web.py
 | Component | Detail |
 |-----------|--------|
 | Pimoroni Yukon | RP2040-based motor controller |
+| LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT1 |
 | Left motors | `DualMotorModule` in SLOT2 |
 | Right motors | `DualMotorModule` in SLOT5 |
 | RC receiver | FlySky iBUS on GPIO 9 / `/dev/ttyAMA3` |
@@ -76,6 +77,7 @@ tools/
   calibrate_camera.py       Lens calibration tool (outputs camera_cal.npz)
   generate_aruco_tags.py    Generate ArUco tag PDFs
   yukon_sim.py              PTY-based Yukon serial simulator
+  read_data_log.py          Web viewer for JSONL data logs (port 5004)
   test_*.py                 Unit tests and live-display tools
 docs/
   ARCHITECTURE.md           Component diagram, data flow, threading model
