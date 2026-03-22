@@ -365,11 +365,11 @@ class _YukonLink:
         self._stop.set()
         try:
             self.kill()
-        except Exception:
+        except serial.SerialException:
             pass
         try:
             self._ser.close()
-        except Exception:
+        except serial.SerialException:
             pass
 
 
@@ -418,7 +418,7 @@ class _Camera:
     def _run(self):
         try:
             self._run_picamera2()
-        except Exception:
+        except (ImportError, OSError):
             try:
                 self._run_opencv()
             except Exception as e:
@@ -701,7 +701,7 @@ class _Gps:
                 correction_src.stop()
             try:
                 ser.close()
-            except Exception:
+            except serial.SerialException:
                 pass
             self._ok = False
 
@@ -1224,7 +1224,7 @@ class Robot:
         try:
             if self._yukon:
                 self._yukon.close()
-        except Exception:
+        except (AttributeError, OSError):
             pass
         self._yukon = None
         log.warning("Yukon disconnected — reconnecting…")
@@ -1527,7 +1527,7 @@ class Robot:
             ports = serial.tools.list_ports.comports()
             if ports:
                 return ports[0].device
-        except Exception:
+        except (ImportError, AttributeError):
             pass
         return '/dev/ttyACM0'
 
@@ -1585,13 +1585,7 @@ def _load_config(path):
     return cfg
 
 
-def _cfg(cfg, section, key, fallback, cast=str):
-    """Read a value from config, casting to the required type."""
-    try:
-        raw = cfg.get(section, key).strip()
-        return cast(raw) if raw else fallback
-    except Exception:
-        return fallback
+from robot_utils import _cfg  # noqa: E402  (defined after _load_config for locality)
 
 
 def main():
@@ -1624,10 +1618,26 @@ def main():
 
     cfg = _load_config(args.config)
 
+    _ENV_MAP = {
+        ("ntrip", "host"):     "NTRIP_HOST",
+        ("ntrip", "port"):     "NTRIP_PORT",
+        ("ntrip", "mount"):    "NTRIP_MOUNT",
+        ("ntrip", "user"):     "NTRIP_USER",
+        ("ntrip", "password"): "NTRIP_PASSWORD",
+    }
+
     def arg(cli_val, section, key, fallback, cast=str):
-        """CLI wins → config file → built-in default."""
+        """CLI wins → env var → config file → built-in default."""
         if cli_val is not None:
             return cli_val
+        env_name = _ENV_MAP.get((section, key))
+        if env_name:
+            env_val = os.environ.get(env_name)
+            if env_val is not None:
+                try:
+                    return cast(env_val)
+                except ValueError:
+                    pass
         return _cfg(cfg, section, key, fallback, cast)
 
     log_path = setup_logging()
@@ -1675,8 +1685,13 @@ def main():
     )
     robot.start()
 
+    import signal
+    _quit = threading.Event()
+    signal.signal(signal.SIGTERM, lambda sig, frame: _quit.set())
+    signal.signal(signal.SIGINT,  lambda sig, frame: _quit.set())
+
     try:
-        while True:
+        while not _quit.is_set():
             s = robot.get_state()
             t = s.telemetry
             g = s.gps
@@ -1696,10 +1711,9 @@ def main():
                 f"{'FAULT-R'  if t.right_fault else ''}",
                 end='', flush=True,
             )
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        print()
+            _quit.wait(0.5)
     finally:
+        print()
         robot.stop()
 
 

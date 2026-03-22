@@ -91,12 +91,7 @@ def _load_config(path):
     cfg.read(path)
     return cfg
 
-def _cfg(cfg, section, key, fallback, cast=str):
-    try:
-        raw = cfg.get(section, key).strip()
-        return cast(raw) if raw else fallback
-    except Exception:
-        return fallback
+from robot_utils import _cfg
 
 # ── Drawing helpers ───────────────────────────────────────────────────────────
 
@@ -503,7 +498,7 @@ def _cfg_flat(cfg):
         for key in keys:
             try:
                 val = cfg.get(section, key).strip()
-            except Exception:
+            except (configparser.NoSectionError, configparser.NoOptionError):
                 val = ""
             rows.append((section, key, val))
     return rows
