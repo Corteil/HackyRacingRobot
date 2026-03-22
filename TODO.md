@@ -6,30 +6,27 @@
 
 Suggested improvements based on codebase analysis, roughly ordered by priority.
 
-### Code & Architecture
-- [x] Commit the currently uncommitted changes — done (commit `18a273f`)
-- [x] Decide whether `camera_cal.npz` should be committed — added to `.gitignore`
-- [x] NTRIP credentials — env var overrides (`NTRIP_HOST/PORT/MOUNT/USER/PASSWORD`) implemented
-- [x] `camera_monitor.py` and `camera_web.py` share logic — extracted into `robot/camera_controls.py` (constants, sharpness, rotate, make_cam, draw_aruco_on_frame, CalibrationMaps)
-
 ### Testing
-- [x] Add unit tests for the `gnss/` package — `tools/test_gnss.py` (57 tests, no hardware)
-- [x] Expand `tools/test_robot.py` — added AUTO mode, reset_estop, and data log tests (52 tests total)
-- [x] Add `--dry-run` flag to `tools/test_gps.py` — runs 20 NMEA parsing tests without hardware or GUI
+- [ ] Add unit tests for `robot/aruco_navigator.py` state machine — synthetic `ArUcoState` inputs, verify state transitions (SEARCHING→ALIGNING→APPROACHING→RECOVERING etc.), no hardware needed
+- [ ] Add unit tests for `robot/gps_navigator.py` — synthetic NMEA fixes, verify waypoint sequencing, arrival detection, look-ahead blending, no hardware needed
+- [ ] Extend `tools/yukon_sim.py` to simulate IMU heading responses (CMD_SENSOR reply ID 7) — enables testing bearing-hold logic in `tools/test_robot.py` without hardware
+- [ ] Add `--dry-run` mode to `tools/test_leds.py` so it runs in CI without a Yukon connected (pattern/preset encoding tests only)
 
-### Navigation & Autonomy
-- [x] LiDAR data (`LidarScan`) is collected but not used by either navigator — add basic obstacle-stop logic to `aruco_navigator.py` and `gps_navigator.py` (halt if any point inside a configurable forward cone is closer than N metres)
-- [x] `gps_navigator.py` drives straight between waypoints — add a simple look-ahead / smoothing step to reduce oscillation on longer straights
-- [x] The ArUco gate navigator has no recovery behaviour when it loses sight of the target gate — add a slow rotation search state
+### Code & Architecture
+- [ ] `robot_daemon.py` is ~2400 lines — consider splitting subsystem classes (`_Camera`, `_Gps`, `_YukonLink`, `_Lidar`) into separate files under `robot/` to reduce merge conflicts and improve readability
+- [ ] ArUco navigator COMPLETE state just stops — add a `loop` config option to restart from gate 0 for circuit racing
+- [ ] GPS navigator has no fallback when IMU is unavailable between fixes — add a timed dead-reckoning step (hold last bearing for up to N seconds) to avoid stalling mid-straight
+- [ ] Obstacle stop in both navigators is binary (halt/go) — add a configurable `obstacle_steer` mode that biases steering away from the nearest obstacle instead of fully halting
+- [ ] Add a `--lock` / single-instance guard to `robot_daemon.py` (write PID to `/tmp/robot.pid`, refuse to start if another instance holds it) to enforce the single-frontend constraint at runtime rather than just in docs
+
+### Tooling & Developer Experience
+- [ ] Add a `systemd` service file (`robot.service`) for auto-start on boot — `ExecStart=python3 /home/pi/Code/HackyRacingRobot/robot_web.py`, with restart-on-failure
+- [x] Add a `Makefile` (or `justfile`) with common tasks: `make upload` (firmware), `make test` (all dry-run tests), `make logs` (tail robot.log)
+- [ ] `tools/read_data_log.py` has no export — add a `/api/export.csv` endpoint that streams the current log as CSV for offline analysis
 
 ### Documentation
-- [x] `docs/ARCHITECTURE.md` and `docs/SETUP.md` may be out of date following the rename from Yukon to HackyRacingRobot — review and update device paths, file names, and wiring notes
-- [x] Add a `docs/CALIBRATION.md` walk-through covering the full camera calibration → ArUco detection pipeline
-
-### Minor / Quality-of-Life
-- [x] Video recordings have no maximum duration or size cap — long runs could fill the SD card; add a rolling max-minutes config option to `[output]`
-- [x] `robot_web.py` and `robot_mobile.py` both start their own `Robot` instance; if both are launched together they fight over serial ports — document clearly that only one frontend should run at a time, or add a shared-daemon IPC layer
-- [x] `tools/gps_route_builder.py` saves routes as plain JSON with no schema version field — add a `"version": 1` key now before the format evolves
+- [ ] Add `docs/AUTONOMOUS.md` — how to extend `AutoType`, wire a new navigator into `_control_thread`, and the state-machine contract (`update()` signature, return values)
+- [ ] `docs/SETUP.md` has no "first run" checklist — add a step-by-step section: flash firmware → verify serial ports → test RC → test motors (`--no-motors` bench mode) → calibrate camera → first autonomous run
 
 ---
 
