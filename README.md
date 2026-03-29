@@ -1,22 +1,14 @@
 # Hacky Racing Robot
 
-Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Yukon RP2040 reads the RC transmitter directly via iBUS on GP26 (PIO UART) and drives the motors in MANUAL mode without Pi involvement. The Pi communicates with the Yukon over USB serial using a compact 5-byte protocol, handles autonomous navigation (ArUco gate navigation, RTK GPS waypoints, LiDAR), and runs a live pygame or web dashboard.
+Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Yukon RP2040 reads the RC transmitter directly via iBUS on GP26 (PIO UART) and drives the motors in MANUAL mode without Pi involvement. The Pi communicates with the Yukon over USB serial using a compact 5-byte protocol, handles autonomous navigation (ArUco gate navigation, RTK GPS waypoints, LiDAR), and serves a unified web dashboard.
 
 ---
 
 ## Quick start
 
-> **Run only ONE frontend at a time.** `robot_gui.py`, `robot_web.py`, and `robot_mobile.py` each open the same hardware ports — running two simultaneously causes port conflicts.
-
 ```bash
-# Full robot stack with pygame GUI
-python3 robot_gui.py
-
-# Web dashboard (desktop, port 5000)
-python3 robot_web.py
-
-# Mobile web dashboard (port 5001)
-python3 robot_mobile.py
+# Unified web dashboard (port 5000) — desktop, mobile, and touchscreen
+python3 robot_dashboard.py
 
 # RC drive only (no GUI)
 python3 rc_drive.py
@@ -24,12 +16,12 @@ python3 rc_drive.py
 # Standalone LiDAR visualiser
 python3 lidar_gui.py
 
-# Camera monitor with ArUco overlay and calibration (pygame)
-python3 camera_monitor.py
-
-# Camera web interface (mobile, port 8080)
-python3 camera_web.py
+# Standalone camera tools
+python3 camera_monitor.py    # pygame, ArUco overlay + calibration
+python3 camera_web.py        # web interface at :8080
 ```
+
+Open `http://<pi-ip>:5000/` in any browser. On desktop/touchscreen the UI shows a configurable 2×2 panel grid; on mobile (≤700px) it switches to a tab view.
 
 ---
 
@@ -55,10 +47,7 @@ python3 camera_web.py
 ```
 robot_daemon.py             Pi-side daemon (all subsystem threads)
 robot_utils.py              Shared utilities (config helper, local IP)
-robot_gui.py                Pygame monitor with drive/telem/GPS/camera/lidar/log panels
-robot_quad_gui.py           Quad-panel touch GUI (3 cameras + LiDAR/GPS/IMU panels, 1280×720)
-robot_web.py                Flask web dashboard with terminal log panel (port 5000)
-robot_mobile.py             Mobile Flask dashboard (port 5001)
+robot_dashboard.py          Unified web dashboard — 2×2 configurable grid + mobile tab view (port 5000)
 rc_drive.py                 Minimal RC-to-motor bridge (no GUI)
 lidar_gui.py                Standalone LD06 LiDAR visualiser
 camera_monitor.py           Pygame camera monitor (ArUco, sharpness, calibration)
