@@ -378,7 +378,7 @@ button:active{background:#2a2a42}
 
     <div class="mob-page active" id="mob-drive">
       <div class="cam-wrap" id="mob-cam-wrap" style="max-height:45vh">
-        <img class="cam-img" id="mob-cam-img" src="/stream/front_left" alt="">
+        <img class="cam-img" id="mob-cam-img" alt="">
         <span class="cam-nosig" id="mob-cam-nosig">No camera</span>
         <canvas class="bearing-canvas" id="mob-bearing-canvas"></canvas>
         <div class="cam-rec-dot" id="mob-cam-rec-dot"></div>
@@ -1270,8 +1270,11 @@ function showTab(name) {
   el('tab-'+name).classList.add('active');
   if (name==='logs') startLogPolling();
   else if (logPolling) { clearInterval(logPolling); logPolling=null; }
-  if (name==='sys') {
-    setTimeout(()=>resizeLidar('mob-lidar-canvas'),50);
+  if (name==='sys')   { setTimeout(()=>resizeLidar('mob-lidar-canvas'),50); }
+  if (name==='drive') {
+    // Lazily open the mobile camera stream the first time the Drive tab is shown
+    const mi = el('mob-cam-img');
+    if (mi && !mi.src) mi.src = '/stream/front_left';
   }
 }
 
@@ -1343,10 +1346,18 @@ function onResize() {
 window.addEventListener('resize', onResize);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-// Presets will be replaced by server-injected config; defaults used until SSE arrives.
 buildPresetButtons(PRESETS_DEFAULT);
 applyPreset('Race', PRESETS_DEFAULT);  // sets quadTypes + renders quads
-startLogPolling();
+
+// Only start log polling if a log panel is actually visible at startup
+if (quadTypes.includes('logs')) startLogPolling();
+
+// Lazily set mobile camera src — only when actually in mobile layout
+if (window.innerWidth <= 700) {
+  const mi = el('mob-cam-img');
+  if (mi && !mi.src) mi.src = '/stream/front_left';
+}
+
 connect();
 
 // Natural camera frame size
@@ -1397,7 +1408,9 @@ def _stream_gen(cam_name):
                            b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
                 except (OSError, ValueError):
                     pass
-            time.sleep(0.05)
+                time.sleep(0.1)   # 10 fps
+            else:
+                time.sleep(0.5)   # camera absent — back off
     return Response(
         _gen(),
         mimetype='multipart/x-mixed-replace; boundary=frame',
