@@ -30,7 +30,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_LEFT`       | 2    | Motor speed byte (see below) — **only applied in AUTO mode** |
 | `CMD_RIGHT`      | 3    | Motor speed byte — **only applied in AUTO mode** |
 | `CMD_KILL`       | 4    | Ignored — zeros both motors and disables bearing hold |
-| `CMD_SENSOR`     | 5    | Ignored — device replies with 10 sensor data packets then ACK |
+| `CMD_SENSOR`     | 5    | Ignored — device replies with 12 sensor data packets then ACK |
 | `CMD_BEARING`    | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
 | `CMD_STRIP`      | 7    | Colour preset index (0=off 1=red 2=green 3=blue 4=orange 5=yellow 6=cyan 7=magenta 8=white) — stops any active pattern |
 | `CMD_PIXEL_SET`  | 8    | High nibble = LED index (0–15), low nibble = colour index (0–15) — stages pixel, no hardware update |

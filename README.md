@@ -41,7 +41,7 @@ python3 camera_web.py
 | LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT3 |
 | Left motors | `DualMotorModule` in SLOT2 |
 | Right motors | `DualMotorModule` in SLOT5 |
-| RC receiver | FlySky iBUS on GPIO 9 / `/dev/ttyAMA3` |
+| RC receiver | FlySky iBUS → Yukon GP26 (PIO UART, decoded by firmware) |
 | Host ↔ Yukon | USB serial `/dev/ttyACM0` at 115200 baud |
 | Camera | IMX296 global shutter via picamera2 |
 | LiDAR | LD06 on `/dev/ttyAMA0` |
@@ -56,6 +56,7 @@ python3 camera_web.py
 robot_daemon.py             Pi-side daemon (all subsystem threads)
 robot_utils.py              Shared utilities (config helper, local IP)
 robot_gui.py                Pygame monitor with drive/telem/GPS/camera/lidar/log panels
+robot_quad_gui.py           Quad-panel touch GUI (3 cameras + LiDAR/GPS/IMU panels, 1280×720)
 robot_web.py                Flask web dashboard with terminal log panel (port 5000)
 robot_mobile.py             Mobile Flask dashboard (port 5001)
 rc_drive.py                 Minimal RC-to-motor bridge (no GUI)
@@ -116,8 +117,8 @@ Set `max_recording_minutes` in `[output]` to roll video to a new file automatica
 
 ## Firmware upload
 
-```bash
-python3 tools/upload.py yukon_firmware_and_software/main.py
-```
+Use **Thonny** to upload `yukon_firmware_and_software/main.py` to the Yukon RP2040:
 
-Use `tools/upload.py` instead of `mpremote` or `ampy` — `yukon.reset()` drops the USB connection on every Ctrl+C, which breaks standard uploaders.
+1. Open `yukon_firmware_and_software/main.py` in Thonny
+2. **File → Save as… → MicroPython device** → save as `main.py`
+3. Press **Stop / Restart** to reboot the Yukon with the new firmware
