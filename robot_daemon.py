@@ -5,7 +5,7 @@ robot_daemon.py — Central Robot class for HackyRacingRobot differential-drive 
 Subsystems
 ----------
   Drive    : Yukon RP2040 USB serial (CMD_LEFT / CMD_RIGHT / CMD_KILL / CMD_SENSOR)
-  RC       : FlySky iBUS manual control + mode/speed-limit switches
+  RC       : FlySky iBUS on Yukon GP26 (PIO UART). CMD_RC_QUERY fetches channels; CMD_MODE heartbeat keeps Yukon watchdog alive.
   Telemetry: Yukon voltage, current, temps, faults, IMU heading  (1 Hz)
   Camera   : picamera2 (IMX296) or OpenCV fallback; optional ArUco detection
   LiDAR    : LDROBOT LD06 via drivers/ld06.py
@@ -103,7 +103,11 @@ class Telemetry:
     right_temp:  float          = 0.0
     left_fault:  bool           = False
     right_fault: bool           = False
+    bench_temp:  float          = 0.0
+    bench_fault: bool           = False
     heading:     Optional[float] = None   # IMU heading in degrees (None = IMU absent)
+    pitch:       Optional[float] = None   # IMU pitch  in degrees, +ve = nose up
+    roll:        Optional[float] = None   # IMU roll   in degrees, +ve = right down
     timestamp:   float          = 0.0
 
 
@@ -120,6 +124,7 @@ class GpsState:
     h_error_m:       Optional[float] = None  # horizontal error from GST (m)
     satellites:      Optional[int]   = None
     satellites_view: Optional[int]   = None
+    satellites_data: list            = field(default_factory=list)
     hdop:            Optional[float] = None
     timestamp:       float            = 0.0
 
@@ -211,8 +216,14 @@ class _YukonLink:
     CMD_PIXEL_SHOW = 9   # value: ignored; pushes staged pixel data to hardware
     CMD_PATTERN    = 10  # value: high nibble = colour index (0=keep current), low nibble = pattern
                          #        patterns: 0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge
+    CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
+    CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
 
-    RESP_IDS = range(8)   # 0..7  (7 = heading)
+    RESP_IDS     = range(12)  # 0..11 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault)
+    RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
+    # Note: RESP_RC_BASE (8) overlaps RESP_PITCH (8) and RESP_ROLL (9) by ID number,
+    # but they are never mixed in the same response batch. Routing is safe because
+    # CMD_SENSOR responses always start with RESP_VOLTAGE (ID 0) < RESP_RC_BASE.
 
     def __init__(self, port: str, baud: int = 115200, no_motors: bool = False):
         import serial
@@ -223,6 +234,7 @@ class _YukonLink:
         self._cmd_lock  = threading.Lock()
         self._ack_q     = queue.Queue()
         self._sensor_q  = queue.Queue()
+        self._rc_q      = queue.Queue()
         self._stop      = threading.Event()
         self._rx = threading.Thread(target=self._reader, daemon=True, name="yukon_rx")
         self._rx.start()
@@ -248,7 +260,10 @@ class _YukonLink:
 
             if b == self.ACK:
                 if s_buf:
-                    self._sensor_q.put(self._parse_sensor(s_buf))
+                    if s_buf[0][0] >= self.RESP_RC_BASE:
+                        self._rc_q.put(self._parse_rc(s_buf))
+                    else:
+                        self._sensor_q.put(self._parse_sensor(s_buf))
                     s_buf = []
                 self._ack_q.put(True)
                 in_pkt = False
@@ -267,7 +282,7 @@ class _YukonLink:
                 if len(pkt) == 5:
                     in_pkt = False
                     rtype, v_high, v_low, chk = pkt[1], pkt[2], pkt[3], pkt[4]
-                    if (0x30 <= rtype <= 0x37 and
+                    if (0x30 <= rtype <= 0x46 and
                             0x40 <= v_high <= 0x4F and
                             0x50 <= v_low  <= 0x5F and
                             chk == (rtype ^ v_high ^ v_low)):
@@ -277,11 +292,29 @@ class _YukonLink:
                     pkt = []
 
     @staticmethod
+    def _parse_rc(packets) -> tuple:
+        """Decode RC channel response packets. Returns (channels, rc_valid).
+
+        channels: list of 14 ints (µs, 1000-2000)
+        rc_valid: True if Yukon received an iBUS packet within its failsafe window
+        """
+        raw = {resp_id: value for resp_id, value in packets}
+        channels = [raw.get(8 + i, 0) * 5 + 1000 for i in range(14)]
+        rc_valid = bool(raw.get(22, 0))
+        return (channels, rc_valid)
+
+    @staticmethod
     def _parse_sensor(packets) -> Telemetry:
         raw = {resp_id: value for resp_id, value in packets}
         # Heading: encoded as value * 254/359; 255 = IMU not available
         hdg_raw = raw.get(7, 255)
         heading = None if hdg_raw == 255 else round(hdg_raw * 359.0 / 254.0, 1)
+        # Pitch: encoded (pitch+90)*254/180; 255 = absent
+        pit_raw = raw.get(8, 255)
+        pitch   = None if pit_raw == 255 else round(pit_raw * 180.0 / 254.0 - 90.0, 1)
+        # Roll: encoded (roll+180)*254/360; 255 = absent
+        rol_raw = raw.get(9, 255)
+        roll    = None if rol_raw == 255 else round(rol_raw * 360.0 / 254.0 - 180.0, 1)
         return Telemetry(
             voltage     = raw.get(0, 0) / 10.0,
             current     = raw.get(1, 0) / 100.0,
@@ -290,7 +323,11 @@ class _YukonLink:
             right_temp  = raw.get(4, 0) / 3.0,
             left_fault  = bool(raw.get(5, 0)),
             right_fault = bool(raw.get(6, 0)),
+            bench_temp  = raw.get(10, 0) / 3.0,
+            bench_fault = bool(raw.get(11, 0)),
             heading     = heading,
+            pitch       = pitch,
+            roll        = roll,
             timestamp   = time.monotonic(),
         )
 
@@ -463,6 +500,30 @@ class _YukonLink:
         except queue.Empty:
             return None
 
+    def set_mode(self, mode_val: int):
+        """Send operating mode to Yukon (0=MANUAL, 1=AUTO, 2=ESTOP). Keeps Pi watchdog alive."""
+        if self._no_motors:
+            return
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_MODE, mode_val & 0xFF))
+            self._drain(1)
+
+    def query_rc(self) -> Optional[tuple]:
+        """Request RC channels from Yukon. Returns (channels, rc_valid) or None on timeout.
+
+        channels: list of 14 ints (µs, 1000-2000)
+        rc_valid: True if Yukon is receiving a live iBUS signal
+        """
+        if self._no_motors:
+            return ([1500] * 14, False)
+        with self._cmd_lock:
+            self._ser.write(self._encode(self.CMD_RC_QUERY, 0))
+            self._drain(1, timeout=0.5)
+        try:
+            return self._rc_q.get(timeout=0.1)
+        except queue.Empty:
+            return None
+
     def close(self):
         self._stop.set()
         try:
@@ -574,6 +635,7 @@ class _Camera:
         self._rec_start      = 0.0
         self._max_rec_s      = max_rec_minutes * 60.0 if max_rec_minutes > 0 else 0.0
         self._rec_dir        = rec_dir
+        self._thread: Optional[threading.Thread] = None
 
     # ── backward-compat properties (single-camera callers use _w/_h) ─────────
     @property
@@ -585,8 +647,9 @@ class _Camera:
         return self._display_h
 
     def start(self):
-        threading.Thread(target=self._run, daemon=True,
-                         name=f"camera-{self._name}").start()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name=f"camera-{self._name}")
+        self._thread.start()
 
     def _run(self):
         if self._driver == 'picamera2':
@@ -713,7 +776,7 @@ class _Camera:
         if not os.path.exists(device):
             log.warning(f"{self._name}: device {device!r} not found — trying /dev/video0")
             device = '/dev/video0'
-        cap = cv2.VideoCapture(device)
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._capture_w)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._capture_h)
         cap.set(cv2.CAP_PROP_FPS,          self._fps)
@@ -856,6 +919,9 @@ class _Camera:
     def stop(self):
         self.stop_recording()
         self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -902,6 +968,8 @@ class _Gps:
                  ntrip_host: str = '', ntrip_port: int = 2101,
                  ntrip_mount: str = '', ntrip_user: str = '',
                  ntrip_password: str = '',
+                 ntrip_lat: float = 0.0, ntrip_lon: float = 0.0,
+                 ntrip_height: float = 0.0,
                  rtcm_port: str = '', rtcm_baud: int = 115200):
         self._port           = port
         self._baud           = baud
@@ -910,6 +978,9 @@ class _Gps:
         self._ntrip_mount    = ntrip_mount
         self._ntrip_user     = ntrip_user
         self._ntrip_password = ntrip_password
+        self._ntrip_lat      = ntrip_lat
+        self._ntrip_lon      = ntrip_lon
+        self._ntrip_height   = ntrip_height
         self._rtcm_port      = rtcm_port
         self._rtcm_baud      = rtcm_baud
         self._state          = GpsState()
@@ -949,6 +1020,9 @@ class _Gps:
                 mountpoint = self._ntrip_mount,
                 username   = self._ntrip_user,
                 password   = self._ntrip_password,
+                lat        = self._ntrip_lat,
+                lon        = self._ntrip_lon,
+                height     = self._ntrip_height,
             )
             correction_src.start(gnss)
             log.info(f"NTRIP corrections → {self._ntrip_host}/{self._ntrip_mount}")
@@ -969,6 +1043,7 @@ class _Gps:
                         h_error_m        = gnss.h_error_m,
                         satellites       = gnss.satellites,
                         satellites_view  = gnss.satellites_in_view,
+                        satellites_data  = list(gnss.satellites_data),
                         hdop             = gnss.hdop,
                         timestamp        = time.monotonic(),
                     )
@@ -1307,7 +1382,7 @@ class Robot:
     Parameters
     ----------
     yukon_port     : Yukon USB serial device (auto-detected if None)
-    ibus_port      : iBUS UART device
+    ibus_port      : Deprecated — RC input is now handled on the Yukon (GP26 PIO UART). Parameter kept for backward compatibility but ignored.
     lidar_port     : LD06 serial device
     gps_port       : TAU1308 GPS serial device
     ntrip_host     : NTRIP caster hostname (e.g. 'www.rtk2go.com'); leave blank to disable
@@ -1315,6 +1390,9 @@ class Robot:
     ntrip_mount    : NTRIP mountpoint name
     ntrip_user     : NTRIP username
     ntrip_password : NTRIP password
+    ntrip_lat      : Fallback latitude sent in GGA before GPS fix (degrees)
+    ntrip_lon      : Fallback longitude sent in GGA before GPS fix (degrees)
+    ntrip_height   : Fallback height above MSL sent in GGA before GPS fix (metres)
     enable_camera / enable_lidar / enable_gps : toggle optional subsystems
     throttle_ch    : RC throttle channel, 1-based (default 3)
     steer_ch       : RC steering channel, 1-based (default 1)
@@ -1337,6 +1415,9 @@ class Robot:
         ntrip_mount:    str   = '',
         ntrip_user:     str   = '',
         ntrip_password: str   = '',
+        ntrip_lat:      float = 0.0,
+        ntrip_lon:      float = 0.0,
+        ntrip_height:   float = 0.0,
         rtcm_port:      str   = '',
         rtcm_baud:      int   = 115200,
         enable_camera:  bool  = True,
@@ -1377,6 +1458,9 @@ class Robot:
         self._ntrip_mount    = ntrip_mount
         self._ntrip_user     = ntrip_user
         self._ntrip_password = ntrip_password
+        self._ntrip_lat      = ntrip_lat
+        self._ntrip_lon      = ntrip_lon
+        self._ntrip_height   = ntrip_height
         self._rtcm_port      = rtcm_port
         self._rtcm_baud      = rtcm_baud
         self._enable         = dict(camera=enable_camera, lidar=enable_lidar, gps=enable_gps)
@@ -1422,6 +1506,7 @@ class Robot:
 
         # Subsystems (created in start())
         self._yukon:            Optional[_YukonLink] = None
+        self._yukon_reconnecting = threading.Event()  # guard against concurrent reconnects
         # Legacy single camera — kept for backward compat; None when triple-camera active
         self._camera:           Optional[_Camera]    = None
         # Triple camera system
@@ -1567,6 +1652,9 @@ class Robot:
                 ntrip_mount    = self._ntrip_mount,
                 ntrip_user     = self._ntrip_user,
                 ntrip_password = self._ntrip_password,
+                ntrip_lat      = self._ntrip_lat,
+                ntrip_lon      = self._ntrip_lon,
+                ntrip_height   = self._ntrip_height,
                 rtcm_port      = self._rtcm_port,
                 rtcm_baud      = self._rtcm_baud,
             )
@@ -1574,7 +1662,8 @@ class Robot:
 
         self._system.start()
 
-        threading.Thread(target=self._rc_thread,        daemon=True, name="rc_reader").start()
+        # RC input is now handled on the Yukon (GP26 PIO UART). The control thread
+        # queries channels via CMD_RC_QUERY and sends CMD_MODE as a heartbeat.
         threading.Thread(target=self._telemetry_thread, daemon=True, name="telemetry").start()
         threading.Thread(target=self._control_thread,   daemon=True, name="control").start()
         threading.Thread(target=self._gps_log_thread,   daemon=True, name="gps_log").start()
@@ -1660,9 +1749,9 @@ class Robot:
             cam_front_left_ok  = bool(self._cam_front_left  and self._cam_front_left.ok),
             cam_front_right_ok = bool(self._cam_front_right and self._cam_front_right.ok),
             cam_rear_ok        = bool(self._cam_rear        and self._cam_rear.ok),
-            cam_front_left_recording  = bool(self._cam_front_left  and self._cam_front_left.is_recording()),
-            cam_front_right_recording = bool(self._cam_front_right and self._cam_front_right.is_recording()),
-            cam_rear_recording        = bool(self._cam_rear        and self._cam_rear.is_recording()),
+            cam_front_left_recording  = bool(self._cam('front_left')  and self._cam('front_left').is_recording()),
+            cam_front_right_recording = bool(self._cam('front_right') and self._cam('front_right').is_recording()),
+            cam_rear_recording        = bool(self._cam_rear and self._cam_rear.is_recording()),
             # Gate confirmation
             gate_confirmed  = self._gate_confirmed,
             current_gate_id = self._current_gate_id,
@@ -1841,7 +1930,11 @@ class Robot:
     # ── internal threads ─────────────────────────────────────────────────────
 
     def _rc_thread(self):
-        """Read iBUS packets and update RC state."""
+        """Read iBUS packets and update RC state.
+
+        DEPRECATED — RC input is now handled on the Yukon (GP26 PIO UART).
+        This method is no longer started. Kept for reference only.
+        """
         import serial as _serial
         from drivers.ibus import IBusReader, IBusError
         while not self._stop_evt.is_set():
@@ -1862,7 +1955,15 @@ class Robot:
                 time.sleep(2.0)
 
     def _reconnect_yukon(self):
-        """Close the dead Yukon link and reconnect in a background thread."""
+        """Close the dead Yukon link and reconnect in a background thread.
+
+        Safe to call from multiple threads simultaneously — only the first
+        caller starts the reconnect; subsequent callers return immediately.
+        """
+        if self._yukon_reconnecting.is_set():
+            return
+        self._yukon_reconnecting.set()
+
         try:
             if self._yukon:
                 self._yukon.close()
@@ -1876,15 +1977,18 @@ class Robot:
         log.warning("Yukon disconnected — reconnecting…")
 
         def _retry():
-            while not self._stop_evt.is_set():
-                try:
-                    link = _YukonLink(self._yukon_port, no_motors=self._no_motors)
-                    self._yukon = link
-                    log.info("Yukon reconnected.")
-                    return
-                except Exception as e:
-                    log.warning(f"Yukon not available ({e}) — retrying in 3 s")
-                    self._stop_evt.wait(3)
+            try:
+                while not self._stop_evt.is_set():
+                    try:
+                        link = _YukonLink(self._yukon_port, no_motors=self._no_motors)
+                        self._yukon = link
+                        log.info("Yukon reconnected.")
+                        return
+                    except Exception as e:
+                        log.warning(f"Yukon not available ({e}) — retrying in 3 s")
+                        self._stop_evt.wait(3)
+            finally:
+                self._yukon_reconnecting.clear()
 
         threading.Thread(target=_retry, daemon=True, name="yukon_reconnect").start()
 
@@ -1928,15 +2032,33 @@ class Robot:
         last_mode          = None
         last_auto_type     = None
         last_led_b         = None
-        rc_was_active      = True
+        rc_was_active      = False
         rc_lost_active     = False
         last_fault_list    : list  = []
         fault_rotation_idx : int   = 0
         last_fault_tick    : float = 0.0
         last_strip_mode    = None   # tracks which mode preset is on the strip
+        rc_query_counter   = 0      # query RC every 5 ticks (10 Hz at 50 Hz loop)
 
         while not self._stop_evt.is_set():
             t0 = time.monotonic()
+
+            # Query RC channels at 10 Hz (Yukon owns the iBUS receiver on GP26)
+            rc_query_counter += 1
+            if rc_query_counter >= 5 and self._yukon:
+                rc_query_counter = 0
+                try:
+                    result = self._yukon.query_rc()
+                    if result is not None:
+                        channels, rc_valid = result
+                        self._rc_channels = channels
+                        if rc_valid:
+                            self._rc_ts = time.monotonic()
+                        self._rc_active   = rc_valid
+                    else:
+                        self._rc_active = (time.monotonic() - self._rc_ts) < self._failsafe_s
+                except (_serial.SerialException, OSError):
+                    self._rc_active = False
 
             with self._mode_lock:
                 mode       = self._mode
@@ -1978,11 +2100,18 @@ class Robot:
                 log.info("RC signal recovered")
             rc_was_active = rc_active
 
-            if self._yukon:
+            yukon = self._yukon   # snapshot — reconnect thread may set self._yukon=None
+            if yukon:
                 try:
+                    # CMD_MODE heartbeat — keeps Yukon Pi-watchdog alive
+                    _yukon_mode = {RobotMode.MANUAL: 0,
+                                   RobotMode.AUTO:   1,
+                                   RobotMode.ESTOP:  2}.get(mode, 0)
+                    yukon.set_mode(_yukon_mode)
+
                     # LED A: on = AUTO, off = MANUAL/ESTOP
                     if mode is not last_mode:
-                        self._yukon.set_led_a(mode is RobotMode.AUTO)
+                        yukon.set_led_a(mode is RobotMode.AUTO)
                         last_mode = mode
 
                     # ── LED strip: rotate through all active faults ───────────
@@ -2019,7 +2148,7 @@ class Robot:
 
                     last_fault_list = active_faults[:]
                     if want_preset is not None:
-                        self._yukon.apply_led_preset(want_preset)
+                        yukon.apply_led_preset(want_preset)
 
                     # LED B: GPS status
                     #   off        = no GPS / no fix
@@ -2037,7 +2166,7 @@ class Robot:
                     else:                                 # GPS/DGPS/PPS → slow flash ~1 Hz
                         led_b = int(now * 2) % 2 == 0
                     if led_b != last_led_b:
-                        self._yukon.set_led_b(led_b)
+                        yukon.set_led_b(led_b)
                         last_led_b = led_b
                 except (_serial.SerialException, OSError):
                     self._reconnect_yukon()
@@ -2064,22 +2193,21 @@ class Robot:
 
             elif mode is RobotMode.MANUAL:
                 ch = self._rc_channels
-                # Failsafe: no RC signal → stop
-                if not self._rc_active:
-                    left, right = 0.0, 0.0
-                else:
-                    left, right = _tank_mix(ch[self._ch_throttle], ch[self._ch_steer], self._deadzone)
-                    # Mode switch from transmitter
-                    if ch[self._ch_mode] > 1500:
-                        with self._mode_lock:
-                            self._mode = RobotMode.AUTO
-                        if (self._navigator and
-                                self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)):
-                            self._navigator.start()
-                        if (self._gps_navigator and
-                                self._auto_type in (AutoType.GPS, AutoType.CAMERA_GPS)):
-                            self._gps_navigator.start()
-                        log.info("RC → AUTO")
+                # Yukon drives motors directly from RC; mirror the tank-mix here for display.
+                left, right = _tank_mix(ch[self._ch_throttle], ch[self._ch_steer],
+                                        self._deadzone)
+                last_left = last_right = None   # reset so first AUTO tick sends a command
+                # Mode switch from transmitter
+                if self._rc_active and ch[self._ch_mode] > 1500:
+                    with self._mode_lock:
+                        self._mode = RobotMode.AUTO
+                    if (self._navigator and
+                            self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)):
+                        self._navigator.start()
+                    if (self._gps_navigator and
+                            self._auto_type in (AutoType.GPS, AutoType.CAMERA_GPS)):
+                        self._gps_navigator.start()
+                    log.info("RC → AUTO")
 
             else:  # AUTO
                 # ── Camera autonomous: feed ArUco state + IMU heading ─────────
@@ -2142,15 +2270,16 @@ class Robot:
             left               = left  * scale
             right              = right * scale
 
-            # Only send if values changed
-            left_b  = round(left  * 100)
-            right_b = round(right * 100)
-            if left_b != last_left or right_b != last_right:
-                try:
-                    self._yukon.drive(left, right)
-                except (_serial.SerialException, OSError):
-                    self._reconnect_yukon()
-                last_left, last_right = left_b, right_b
+            # Send drive commands only in AUTO mode (MANUAL is handled on Yukon)
+            if mode is RobotMode.AUTO and self._yukon:
+                left_b  = round(left  * 100)
+                right_b = round(right * 100)
+                if left_b != last_left or right_b != last_right:
+                    try:
+                        self._yukon.drive(left, right)
+                    except (_serial.SerialException, OSError):
+                        self._reconnect_yukon()
+                    last_left, last_right = left_b, right_b
 
             with self._mode_lock:
                 self._drive_state = DriveState(left, right)
@@ -2370,6 +2499,9 @@ def main():
         ntrip_mount    = arg(args.ntrip_mount,     "ntrip",  "mount",          ""),
         ntrip_user     = arg(args.ntrip_user,      "ntrip",  "user",           ""),
         ntrip_password = arg(args.ntrip_password,  "ntrip",  "password",       ""),
+        ntrip_lat      = _cfg(cfg, "ntrip", "lat",    0.0, float),
+        ntrip_lon      = _cfg(cfg, "ntrip", "lon",    0.0, float),
+        ntrip_height   = _cfg(cfg, "ntrip", "height", 0.0, float),
         rtcm_port      = "" if arg(None, "rtcm", "disabled", False, lambda x: x.lower() == "true") else arg(args.rtcm_port, "rtcm", "port", ""),
         rtcm_baud      = arg(args.rtcm_baud,       "rtcm",   "baud",           115200, int),
         enable_camera  = not arg(args.no_camera,   "camera", "disabled",       False, lambda x: x.lower() == "true"),

@@ -1,6 +1,6 @@
 # Hacky Racing Robot
 
-Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Pi reads an RC transmitter via iBUS and sends motor commands to the Yukon RP2040 over USB serial using a compact 5-byte protocol. Supports autonomous gate navigation with ArUco markers, RTK GPS waypoint following, LiDAR, camera recording, ML sensor data logging, and a live pygame or web dashboard.
+Raspberry Pi–hosted controller for a Pimoroni Yukon robot. The Yukon RP2040 reads the RC transmitter directly via iBUS on GP26 (PIO UART) and drives the motors in MANUAL mode without Pi involvement. The Pi communicates with the Yukon over USB serial using a compact 5-byte protocol, handles autonomous navigation (ArUco gate navigation, RTK GPS waypoints, LiDAR), and runs a live pygame or web dashboard.
 
 ---
 
