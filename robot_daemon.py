@@ -228,6 +228,7 @@ class _YukonLink:
     def __init__(self, port: str, baud: int = 115200, no_motors: bool = False):
         import serial
         self._no_motors = no_motors
+        self._closed   = False
         self._ser      = serial.Serial(port, baud, timeout=0.1, dsrdtr=False)
         time.sleep(0.5)
         self._ser.reset_input_buffer()
@@ -252,7 +253,9 @@ class _YukonLink:
         while not self._stop.is_set():
             try:
                 data = self._ser.read(1)
-            except _serial.SerialException:
+            except (_serial.SerialException, OSError, TypeError):
+                # SerialException: port gone; OSError/TypeError: port closed by
+                # reconnect thread (pyserial nulls fd/pipes before we notice _stop)
                 break
             if not data:
                 continue
@@ -358,6 +361,7 @@ class _YukonLink:
 
     def drive(self, left: float, right: float):
         """Send left+right motor speeds in one write. Thread-safe."""
+        self._check_open()
         if self._no_motors:
             return
         pkt = (self._encode(self.CMD_LEFT,  self._speed_byte(left)) +
@@ -367,6 +371,7 @@ class _YukonLink:
             self._drain(2)
 
     def set_led_a(self, on: bool):
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -374,6 +379,7 @@ class _YukonLink:
             self._drain(1)
 
     def set_led_b(self, on: bool):
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -393,6 +399,7 @@ class _YukonLink:
 
     def set_strip(self, preset: int):
         """Set all LEDs to a palette colour preset. Thread-safe."""
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -401,6 +408,7 @@ class _YukonLink:
 
     def set_pixel(self, index: int, colour: int):
         """Stage a single pixel colour from the palette. Call show_pixels() to update hardware."""
+        self._check_open()
         if self._no_motors:
             return
         value = ((index & 0x0F) << 4) | (colour & 0x0F)
@@ -410,6 +418,7 @@ class _YukonLink:
 
     def show_pixels(self):
         """Push all staged pixel data to the LED strip hardware."""
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -429,6 +438,7 @@ class _YukonLink:
 
         colour: palette index to use for sparkle (0 = keep current, default white).
         """
+        self._check_open()
         if self._no_motors:
             return
         value = ((colour & 0x0F) << 4) | (pattern & 0x0F)
@@ -441,6 +451,7 @@ class _YukonLink:
 
     def apply_led_preset(self, name: str):
         """Apply a colour or pattern preset by name (e.g. 'larson', 'red')."""
+        self._check_open()
         entry = self._LED_PRESETS.get(name.lower().strip(), ('strip', 0))
         kind, val = entry[0], entry[1]
         colour = entry[2] if len(entry) > 2 else 0
@@ -451,6 +462,7 @@ class _YukonLink:
 
     def set_pixels(self, colours: list):
         """Set every pixel from a list of palette indices and push to hardware in one write."""
+        self._check_open()
         if self._no_motors:
             return
         pkt = b''.join(
@@ -463,6 +475,7 @@ class _YukonLink:
             self._drain(len(colours) + 1)
 
     def kill(self):
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -476,6 +489,7 @@ class _YukonLink:
 
     def set_bearing(self, degrees: float):
         """Enable bearing hold. Yukon PID will steer toward this heading."""
+        self._check_open()
         if self._no_motors:
             return
         degrees = degrees % 360.0
@@ -485,6 +499,7 @@ class _YukonLink:
 
     def clear_bearing(self):
         """Disable bearing hold. Direct CMD_LEFT/CMD_RIGHT control resumes."""
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -492,6 +507,7 @@ class _YukonLink:
             self._drain(1)
 
     def query_sensor(self) -> Optional[Telemetry]:
+        self._check_open()
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_SENSOR, 0))
             self._drain(1, timeout=0.5)          # wait for ACK (arrives after data)
@@ -502,6 +518,7 @@ class _YukonLink:
 
     def set_mode(self, mode_val: int):
         """Send operating mode to Yukon (0=MANUAL, 1=AUTO, 2=ESTOP). Keeps Pi watchdog alive."""
+        self._check_open()
         if self._no_motors:
             return
         with self._cmd_lock:
@@ -514,6 +531,7 @@ class _YukonLink:
         channels: list of 14 ints (µs, 1000-2000)
         rc_valid: True if Yukon is receiving a live iBUS signal
         """
+        self._check_open()
         if self._no_motors:
             return ([1500] * 14, False)
         with self._cmd_lock:
@@ -525,6 +543,7 @@ class _YukonLink:
             return None
 
     def close(self):
+        self._closed = True   # set before stop so write guards see it immediately
         self._stop.set()
         try:
             self.kill()
@@ -534,6 +553,16 @@ class _YukonLink:
             self._ser.close()
         except (OSError, Exception):
             pass
+
+    def _check_open(self):
+        """Raise OSError if the link has been closed.
+
+        Called at the start of every write method so that a stale local reference
+        held by another thread gets a clean, catchable error instead of a TypeError
+        from pyserial's nulled-out internal pipes post-close().
+        """
+        if self._closed:
+            raise OSError("YukonLink closed")
 
 
 # Populate _YukonLink._LED_PRESETS after class body so constants are available
@@ -567,6 +596,34 @@ _CV2_ROTATIONS = {
     180: None,
     270: None,
 }
+
+
+def _make_sw_jpeg_encoder():
+    """Return a callable ``encode(rgb_frame) -> bytes`` using the fastest available encoder.
+
+    Priority: TurboJPEG (libjpeg-turbo NEON SIMD) → OpenCV imencode fallback.
+    Returns None if neither is available.
+    """
+    try:
+        from turbojpeg import TurboJPEG, TJPF_RGB
+        _tj = TurboJPEG()
+        def _turbo_encode(frame):
+            return bytes(_tj.encode(frame, quality=75, pixel_format=TJPF_RGB))
+        log.debug("SW JPEG encoder: TurboJPEG (libjpeg-turbo NEON)")
+        return _turbo_encode
+    except Exception:
+        pass
+    try:
+        import cv2
+        def _cv2_encode(frame):
+            ok, buf = cv2.imencode('.jpg', frame[:, :, ::-1],
+                                   [cv2.IMWRITE_JPEG_QUALITY, 75])
+            return bytes(buf) if ok else b''
+        log.debug("SW JPEG encoder: OpenCV imencode")
+        return _cv2_encode
+    except Exception:
+        pass
+    return None
 
 
 class _Camera:
@@ -624,8 +681,12 @@ class _Camera:
         self._aruco_enabled  = enable_aruco
         self._name           = name
         self._frame          = None   # display-resolution RGB frame
+        self._jpeg_bytes     = None   # pre-encoded JPEG bytes (cached per frame)
+        self._stream_clients = 0      # number of active MJPEG stream readers
         self._aruco_state    = None   # ArUcoState or None
+        self._aruco_q        = queue.Queue(maxsize=1)  # latest full-res frame for ArUco thread
         self._lock           = threading.Lock()
+        self._jpeg_lock      = threading.Lock()  # also guards _stream_clients
         self._stop           = threading.Event()
         self._ok             = False
         self._aruco_ok       = False
@@ -650,6 +711,10 @@ class _Camera:
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name=f"camera-{self._name}")
         self._thread.start()
+        if self._aruco_enabled:
+            t = threading.Thread(target=self._run_aruco, daemon=True,
+                                 name=f"aruco-{self._name}")
+            t.start()
 
     def _run(self):
         if self._driver == 'picamera2':
@@ -707,32 +772,54 @@ class _Camera:
             log.warning(f"{self._name}: ArUco detector init failed: {e}")
             return None
 
-    def _process_frame(self, frame, detector, cv2):
-        """Shared per-frame pipeline for both capture paths.
+    def _run_aruco(self):
+        """Dedicated ArUco detection thread.
 
-        1. Mirror (horizontal flip for rear camera)
-        2. Rotate
-        3. Run ArUco on full capture-resolution frame
-        4. Downscale to display resolution for UI / MJPEG
-
-        Returns (display_frame, aruco_state).
+        Runs independently of the camera capture loop.  Processes full-resolution
+        frames posted by _process_frame via _aruco_q (maxsize=1 — always latest,
+        older frames dropped).  Detection rate floats with CPU availability without
+        blocking frame capture.
         """
-        if self._mirror:
-            frame = cv2.flip(frame, 1)
-        frame = self._rotate(frame, cv2)
-        aruco_state = None
-        if detector is not None and self._aruco_enabled:
+        detector = self._make_detector()
+        while not self._stop.is_set():
+            try:
+                frame = self._aruco_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if not self._aruco_enabled or detector is None:
+                continue
             try:
                 aruco_state = detector.detect(frame)
             except Exception as e:
                 log.debug(f"{self._name}: ArUco detect error: {e}")
+                continue
+            with self._lock:
+                self._aruco_state = aruco_state
+                self._aruco_ok    = aruco_state is not None
+
+    def _process_frame(self, frame, cv2):
+        """Mirror, rotate, post full-res frame to ArUco thread, then downscale.
+
+        ArUco runs asynchronously in _run_aruco — this method just queues the frame
+        (non-blocking; dropped if the ArUco thread is still busy on the previous one).
+
+        Returns display_frame.
+        """
+        if self._mirror:
+            frame = cv2.flip(frame, 1)
+        frame = self._rotate(frame, cv2)
+        if self._aruco_enabled:
+            try:
+                self._aruco_q.put_nowait(frame)
+            except queue.Full:
+                pass   # ArUco thread still busy — skip this frame
         if (self._capture_w != self._display_w or
                 self._capture_h != self._display_h):
             display = cv2.resize(frame, (self._display_w, self._display_h),
                                  interpolation=cv2.INTER_AREA)
         else:
             display = frame
-        return display, aruco_state
+        return display
 
     def _run_picamera2(self):
         import cv2
@@ -746,17 +833,27 @@ class _Camera:
         self._ok = True
         log.info(f"{self._name}: Picamera2 started (CAM{self._camera_num}, "
                  f"{self._capture_w}×{self._capture_h} @ {self._fps} fps)")
-        detector = self._make_detector()
-        period   = 1.0 / self._fps
-        deadline = time.monotonic() + period
+        sw_enc        = _make_sw_jpeg_encoder()
+        period        = 1.0 / self._fps
+        deadline      = time.monotonic() + period
+        last_jpeg_t   = 0.0
+        jpeg_interval = 0.1   # encode JPEG at 10 fps max — matches stream client cap
         try:
             while not self._stop.is_set():
                 frame = cam.capture_array()[:, :, ::-1]  # BGR → RGB
-                display, aruco_state = self._process_frame(frame, detector, cv2)
+                display = self._process_frame(frame, cv2)
                 with self._lock:
-                    self._frame       = display
-                    self._aruco_state = aruco_state
-                    self._aruco_ok    = aruco_state is not None
+                    self._frame = display
+                now = time.monotonic()
+                if (sw_enc is not None and self._stream_clients > 0
+                        and now - last_jpeg_t >= jpeg_interval):
+                    try:
+                        jpeg = sw_enc(display)
+                        with self._jpeg_lock:
+                            self._jpeg_bytes = jpeg
+                        last_jpeg_t = now
+                    except Exception:
+                        pass
                 self._record_frame(frame)
                 remaining = deadline - time.monotonic()
                 if remaining > 0:
@@ -786,17 +883,27 @@ class _Camera:
         self._ok = True
         log.info(f"{self._name}: OpenCV camera opened ({device}, "
                  f"{self._capture_w}×{self._capture_h} @ {self._fps} fps)")
-        detector = self._make_detector()
+        sw_enc        = _make_sw_jpeg_encoder()
+        last_jpeg_t   = 0.0
+        jpeg_interval = 0.1   # encode JPEG at 10 fps max
         try:
             while not self._stop.is_set():
                 ret, frame = cap.read()
                 if ret:
                     frame = frame[:, :, ::-1]   # BGR → RGB
-                    display, aruco_state = self._process_frame(frame, detector, cv2)
+                    display = self._process_frame(frame, cv2)
                     with self._lock:
-                        self._frame       = display
-                        self._aruco_state = aruco_state
-                        self._aruco_ok    = aruco_state is not None
+                        self._frame = display
+                    now = time.monotonic()
+                    if (sw_enc is not None and self._stream_clients > 0
+                            and now - last_jpeg_t >= jpeg_interval):
+                        try:
+                            jpeg = sw_enc(display)
+                            with self._jpeg_lock:
+                                self._jpeg_bytes = jpeg
+                            last_jpeg_t = now
+                        except Exception:
+                            pass
                     self._record_frame(frame)
         finally:
             cap.release()
@@ -808,6 +915,28 @@ class _Camera:
         """Return latest camera frame (numpy array, RGB) or None."""
         with self._lock:
             return self._frame
+
+    def get_jpeg(self) -> Optional[bytes]:
+        """Return pre-encoded JPEG bytes for the latest display frame, or None.
+
+        Encoded once per frame in the camera thread (TurboJPEG NEON SIMD when
+        available, OpenCV fallback).  All MJPEG stream clients share this cache —
+        no redundant re-encoding per viewer.
+        """
+        with self._jpeg_lock:
+            return self._jpeg_bytes
+
+    def add_stream_client(self):
+        """Notify the camera thread that a stream client has connected.
+        JPEG encoding only runs while at least one client is active.
+        """
+        with self._jpeg_lock:
+            self._stream_clients += 1
+
+    def remove_stream_client(self):
+        """Notify the camera thread that a stream client has disconnected."""
+        with self._jpeg_lock:
+            self._stream_clients = max(0, self._stream_clients - 1)
 
     def get_aruco_state(self):
         """Return latest :class:`~aruco_detector.ArUcoState` or None."""
@@ -1801,6 +1930,27 @@ class Robot:
         c = self._cam(cam)
         return c.get_frame() if c else None
 
+    def get_jpeg(self, cam: str = 'front_left') -> Optional[bytes]:
+        """Return pre-encoded JPEG bytes for *cam*, or None.
+        Encoded once per frame in the camera thread — safe to call from multiple stream clients.
+        """
+        c = self._cam(cam)
+        return c.get_jpeg() if c else None
+
+    def add_stream_client(self, cam: str = 'front_left'):
+        """Signal that an MJPEG stream client connected for *cam*.
+        Camera thread starts JPEG encoding only when at least one client is active.
+        """
+        c = self._cam(cam)
+        if c:
+            c.add_stream_client()
+
+    def remove_stream_client(self, cam: str = 'front_left'):
+        """Signal that an MJPEG stream client disconnected for *cam*."""
+        c = self._cam(cam)
+        if c:
+            c.remove_stream_client()
+
     def get_aruco_state(self, cam: str = 'front_left'):
         """Return latest ArUcoState for *cam*, or None."""
         c = self._cam(cam)
@@ -1884,8 +2034,8 @@ class Robot:
         return paths
 
     def is_cam_recording(self, cam: str = 'any') -> bool:
-        """Return True if any (cam='any') or a specific named camera is recording."""
-        if cam == 'any':
+        """Return True if any (cam='any'|'all') or a specific named camera is recording."""
+        if cam in ('any', 'all'):
             return any([
                 bool(self._cam_front_left  and self._cam_front_left.is_recording()),
                 bool(self._cam_front_right and self._cam_front_right.is_recording()),
@@ -2081,11 +2231,10 @@ class Robot:
 
             # Auto-enable ArUco on mode/type transitions only, so the T-key
             # toggle is not overridden every tick.
-            if self._camera and (mode is not last_mode or
-                                 self._auto_type is not last_auto_type):
+            if mode is not last_mode or self._auto_type is not last_auto_type:
                 want_aruco = (mode is RobotMode.AUTO and
                               self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS))
-                self._camera.set_aruco_enabled(want_aruco)
+                self.set_aruco_enabled(want_aruco)
                 log.info(f"ArUco {'ON' if want_aruco else 'OFF'} "
                          f"(mode={mode.name} type={self._auto_type.label})")
                 last_auto_type = self._auto_type

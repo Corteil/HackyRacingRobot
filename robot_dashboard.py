@@ -44,23 +44,38 @@ log = logging.getLogger(__name__)
 # ── JPEG encoder ──────────────────────────────────────────────────────────────
 
 def _make_jpeg_encoder():
+    """Fallback JPEG encoder for when robot.get_jpeg() returns None (no cached frame yet).
+
+    Priority: TurboJPEG (libjpeg-turbo NEON SIMD) → OpenCV → Pillow.
+    Under normal operation the camera thread pre-encodes frames, so this path
+    is rarely used — it only fires on the first frame before the cache warms up.
+    """
+    try:
+        from turbojpeg import TurboJPEG, TJPF_RGB
+        _tj = TurboJPEG()
+        def _enc(frame, quality=75):
+            return bytes(_tj.encode(frame, quality=quality, pixel_format=TJPF_RGB))
+        log.info('Fallback JPEG encoder: TurboJPEG (libjpeg-turbo NEON)')
+        return _enc
+    except Exception:
+        pass
     try:
         import cv2
-        def _enc(frame, quality=82):
+        def _enc(frame, quality=75):
             _, buf = cv2.imencode('.jpg', frame[:, :, ::-1],
                                   [cv2.IMWRITE_JPEG_QUALITY, quality])
             return buf.tobytes()
-        log.info('JPEG encoder: OpenCV')
+        log.info('Fallback JPEG encoder: OpenCV')
         return _enc
     except ImportError:
         pass
     try:
         from PIL import Image as _PIL
-        def _enc(frame, quality=82):
+        def _enc(frame, quality=75):
             buf = io.BytesIO()
             _PIL.fromarray(frame).save(buf, format='JPEG', quality=quality)
             return buf.getvalue()
-        log.info('JPEG encoder: Pillow')
+        log.info('Fallback JPEG encoder: Pillow')
         return _enc
     except ImportError:
         pass
@@ -228,15 +243,18 @@ button:active{background:#2a2a42}
   border-radius:0;border:none}
 .quad-hdr{display:flex;align-items:center;gap:5px;padding:3px 7px;
   background:rgba(0,0,0,.3);flex-shrink:0;font-size:11px;color:var(--gray)}
-.quad-title{font-weight:bold;color:var(--white);flex:1}
-.quad-hdr button{padding:1px 6px;font-size:10px}
+.quad-title{font-weight:bold;color:var(--white);flex:1;cursor:pointer}
+.quad-title:hover{color:var(--green)}
+.quad-hdr button{padding:4px 10px;font-size:13px}
 .quad-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
 
 /* Camera panel */
 .cam-wrap{flex:1;min-height:0;overflow:hidden;display:flex;align-items:center;
   justify-content:center;background:var(--bg);position:relative}
-.cam-img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+.cam-img{width:100%;height:100%;object-fit:contain;display:block}
 .cam-nosig{position:absolute;color:var(--gray);font-size:12px}
+.cam-paused{position:absolute;color:var(--white);font-size:18px;font-weight:bold;
+  background:rgba(0,0,0,.55);padding:8px 18px;border-radius:8px;pointer-events:none}
 .cam-rec-dot{position:absolute;top:8px;left:8px;width:10px;height:10px;
   border-radius:50%;background:var(--red);display:none;
   animation:rec-blink .8s step-end infinite}
@@ -344,6 +362,7 @@ button:active{background:#2a2a42}
     <button class="btn-mode" id="btn-mode" onclick="toggleMode()">AUTO</button>
     <button onclick="sendCmd('record_toggle')" id="btn-rec" title="Toggle recording">⏺ REC</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
+    <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
   </div>
 </div>
 
@@ -567,6 +586,7 @@ function htmlCamera(i, camKey) {
     <div class="cam-wrap">
       <img class="cam-img" id="q${i}-cam-img" src="/stream/${camKey}" alt="">
       <span class="cam-nosig" id="q${i}-cam-nosig">No camera</span>
+      <div class="cam-paused" id="q${i}-cam-paused" style="display:none">⏸ Stream paused</div>
       <canvas class="bearing-canvas" id="q${i}-bearing-canvas"></canvas>
       <div class="cam-rec-dot" id="q${i}-cam-rec-dot"></div>
       <div class="cam-nav-badge" id="q${i}-cam-nav-badge"></div>
@@ -675,7 +695,9 @@ function renderQuad(i) {
         <button onclick="sendCmd('rotate_ccw')" style="font-size:10px">↺</button>
         <button onclick="sendCmd('rotate_cw')"  style="font-size:10px">↻</button>
         <button onclick="toggleBearing(${i})" id="q${i}-btn-bearing" style="font-size:10px">Bearing</button>
-        <button onclick="sendCmd('record_toggle',{cam:'${camKey}'})" id="q${i}-btn-rec" style="font-size:10px">⏺</button>`;
+        <button onclick="sendCmd('record_toggle',{cam:'${camKey}'})" id="q${i}-btn-rec" style="font-size:10px">⏺</button>
+        <button onclick="sendCmd('record_stop',{cam:'${camKey}'})" style="font-size:10px" title="Stop recording">⏹</button>
+        <button onclick="toggleStream(${i})" id="q${i}-btn-stream" style="font-size:10px" title="Pause/resume stream">📷</button>`;
     }
   }
 
@@ -727,6 +749,34 @@ function sysBar(fid, vid, pct, lbl, color) {
   f.style.width=Math.min(pct,100)+'%'; f.style.backgroundColor=color;
   const v=el(vid); if(!v) return;
   v.textContent=lbl; v.style.color=pct>55?C.bg:color;
+}
+
+// Track which quad streams are paused (src cleared)
+const streamPaused = {};
+function toggleStream(i) {
+  const img     = el(`q${i}-cam-img`);
+  const btn     = el(`q${i}-btn-stream`);
+  const overlay = el(`q${i}-cam-paused`);
+  if (!img) return;
+  if (streamPaused[i]) {
+    const type = quadTypes[i];
+    const camKey = type.includes(':') ? type.split(':')[1] : null;
+    if (camKey) img.src = '/stream/' + camKey;
+    streamPaused[i] = false;
+    if (btn)     { btn.textContent = '📷'; btn.style.color = ''; }
+    if (overlay)   overlay.style.display = 'none';
+  } else {
+    img.src = '';
+    streamPaused[i] = true;
+    if (btn)     { btn.textContent = '▶'; btn.style.color = 'var(--green)'; }
+    if (overlay)   overlay.style.display = 'block';
+  }
+}
+function stopAllStreams() {
+  for (let i = 0; i < 4; i++) {
+    const type = quadTypes[i];
+    if (type && type.startsWith('camera:') && !streamPaused[i]) toggleStream(i);
+  }
 }
 
 function updateCameraPanel(i, camKey, s) {
@@ -1173,7 +1223,7 @@ for (let i=0; i<4; i++) {
   const q=el(`q${i}`);
   const h=el(`q${i}-hdr`);
   q.addEventListener('dblclick', ()=>toggleExpand(i));
-  h.addEventListener('click', e=>{ e.stopPropagation(); openChooser(i); });
+  h.addEventListener('click', e=>{ if(e.target.tagName==='BUTTON') return; e.stopPropagation(); openChooser(i); });
   // Escape key to collapse
 }
 document.addEventListener('keydown', e=>{
@@ -1399,18 +1449,27 @@ def stream_cam(cam):
 
 def _stream_gen(cam_name):
     def _gen():
-        while True:
-            frame = _robot.get_frame(cam_name)
-            if frame is not None and _jpeg_encode is not None:
-                try:
-                    data = _jpeg_encode(frame)
+        _robot.add_stream_client(cam_name)
+        try:
+            while True:
+                # Fast path: use pre-encoded JPEG from camera thread (encoded once, shared by all clients)
+                data = _robot.get_jpeg(cam_name)
+                if data is None:
+                    # Cache not yet warm — fall back to get_frame() + encode
+                    frame = _robot.get_frame(cam_name)
+                    if frame is not None and _jpeg_encode is not None:
+                        try:
+                            data = _jpeg_encode(frame)
+                        except (OSError, ValueError):
+                            data = None
+                if data:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
-                except (OSError, ValueError):
-                    pass
-                time.sleep(0.1)   # 10 fps
-            else:
-                time.sleep(0.5)   # camera absent — back off
+                    time.sleep(0.1)   # 10 fps cap
+                else:
+                    time.sleep(0.5)   # camera absent — back off
+        finally:
+            _robot.remove_stream_client(cam_name)
     return Response(
         _gen(),
         mimetype='multipart/x-mixed-replace; boundary=frame',
@@ -1465,6 +1524,8 @@ def api_cmd():
             _robot.stop_cam_recording(cam)
         else:
             _robot.start_cam_recording(cam)
+    elif cmd == 'record_stop':
+        _robot.stop_cam_recording(cam)
     elif cmd == 'data_log_toggle':
         if _robot.is_data_logging():
             _robot.stop_data_log()
