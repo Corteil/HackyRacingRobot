@@ -681,6 +681,7 @@ class _Camera:
         self._aruco_enabled  = enable_aruco
         self._name           = name
         self._frame          = None   # display-resolution RGB frame
+        self._frame_ts       = 0.0   # time.monotonic() when _frame was last updated
         self._jpeg_bytes     = None   # pre-encoded JPEG bytes (cached per frame)
         self._stream_clients = 0      # number of active MJPEG stream readers
         self._aruco_state    = None   # ArUcoState or None
@@ -843,7 +844,8 @@ class _Camera:
                 frame = cam.capture_array()[:, :, ::-1]  # BGR → RGB
                 display = self._process_frame(frame, cv2)
                 with self._lock:
-                    self._frame = display
+                    self._frame    = display
+                    self._frame_ts = time.monotonic()
                 now = time.monotonic()
                 if (sw_enc is not None and self._stream_clients > 0
                         and now - last_jpeg_t >= jpeg_interval):
@@ -892,9 +894,10 @@ class _Camera:
                 if ret:
                     frame = frame[:, :, ::-1]   # BGR → RGB
                     display = self._process_frame(frame, cv2)
-                    with self._lock:
-                        self._frame = display
                     now = time.monotonic()
+                    with self._lock:
+                        self._frame    = display
+                        self._frame_ts = now
                     if (sw_enc is not None and self._stream_clients > 0
                             and now - last_jpeg_t >= jpeg_interval):
                         try:
@@ -915,6 +918,13 @@ class _Camera:
         """Return latest camera frame (numpy array, RGB) or None."""
         with self._lock:
             return self._frame
+
+    def get_frame_ts(self):
+        """Return (frame, timestamp) where timestamp is time.monotonic() at capture.
+        Both values are None / 0.0 until the first frame arrives.
+        """
+        with self._lock:
+            return self._frame, self._frame_ts
 
     def get_jpeg(self) -> Optional[bytes]:
         """Return pre-encoded JPEG bytes for the latest display frame, or None.
@@ -1754,6 +1764,7 @@ class Robot:
         self._cam_front_left:   Optional[_Camera]    = None
         self._cam_front_right:  Optional[_Camera]    = None
         self._cam_rear:         Optional[_Camera]    = None
+        self._stereo_sw_skew_ms: float               = 100.0  # ms; overwritten from robot.ini
         # Gate confirmation state (rear camera)
         self._gate_confirmed:   bool = False
         self._gate_confirmed_ts: float = 0.0
@@ -1835,6 +1846,9 @@ class Robot:
             for cam in (self._cam_front_left, self._cam_front_right, self._cam_rear):
                 if cam:
                     cam.start()
+            # Read software-sync skew limit regardless of hardware-sync setting
+            self._stereo_sw_skew_ms = _ini_cam.getfloat(
+                'stereo', 'software_sync_max_skew_ms', fallback=100.0)
             # Stereo sync: pulse GPIO to align both IMX296 frame counters
             if (_ini_cam.getboolean('stereo', 'enabled', fallback=False) and
                     self._cam_front_left and self._cam_front_right):
@@ -2043,6 +2057,27 @@ class Robot:
         """
         c = self._cam(cam)
         return c.get_frame() if c else None
+
+    def get_stereo_frames(self, max_skew_ms: float = 0.0):
+        """Return (left_frame, right_frame) from the front stereo pair.
+
+        Software-sync mode: both frames are returned only when their capture
+        timestamps are within *max_skew_ms* milliseconds of each other.
+        Use max_skew_ms=0 (default) to read from robot.ini [stereo] software_sync_max_skew_ms.
+        Returns (None, None) if either camera is unavailable or skew exceeds the threshold.
+        """
+        cl = self._cam_front_left
+        cr = self._cam_front_right
+        if not cl or not cr:
+            return None, None
+        left,  ts_l = cl.get_frame_ts()
+        right, ts_r = cr.get_frame_ts()
+        if left is None or right is None:
+            return None, None
+        limit = max_skew_ms if max_skew_ms > 0 else self._stereo_sw_skew_ms
+        if abs(ts_l - ts_r) * 1000.0 > limit:
+            return None, None
+        return left, right
 
     def get_jpeg(self, cam: str = 'front_left') -> Optional[bytes]:
         """Return pre-encoded JPEG bytes for *cam*, or None.

@@ -77,7 +77,7 @@ sudo apt install -y \
 |---------|---------|
 | `python3-picamera2` | Camera capture (IMX296); must be installed via apt, not pip |
 | `python3-lgpio` | GPIO buttons (ESTOP/start) and status LEDs on Pi 5 |
-| `python3-rpi.gpio` | Stereo camera hardware sync pulse (GPIO 24); optional |
+| `python3-rpi.gpio` | Stereo camera hardware sync pulse (GPIO 24); only needed when `[stereo] enabled = true` |
 | `python3-numpy` | Required by OpenCV and picamera2; apt version avoids build issues |
 
 ---
