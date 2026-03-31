@@ -63,6 +63,20 @@ except ImportError:
     _GPS_NAVIGATOR_AVAILABLE = False
     log.debug("gps_navigator not found — GPS auto mode disabled")
 
+try:
+    from robot.stereo_depth import StereoDepth
+    _STEREO_DEPTH_AVAILABLE = True
+except ImportError:
+    _STEREO_DEPTH_AVAILABLE = False
+    log.debug("stereo_depth not available — OpenCV may be missing")
+
+try:
+    from robot.depth_estimator import DepthEstimator
+    _DEPTH_ESTIMATOR_AVAILABLE = True
+except ImportError:
+    _DEPTH_ESTIMATOR_AVAILABLE = False
+    log.debug("depth_estimator not available — hailort may not be installed")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Mode
@@ -137,6 +151,22 @@ class LidarScan:
 
 
 @dataclass
+class DepthMap:
+    """Dense depth map produced by the depth thread.
+
+    ``data`` is a float32 numpy array (H × W) with depth in metres; 0.0 marks
+    invalid pixels.  When only monocular depth is available and no stereo anchor
+    could be fitted, depth is relative (0–1 range) and ``metric`` is False.
+    """
+    data:      object        = None    # np.ndarray (H, W) float32, or None
+    source:    str           = ''      # 'stereo' | 'mono' | 'fusion'
+    metric:    bool          = False   # True = metres; False = relative [0..1]
+    width:     int           = 0
+    height:    int           = 0
+    timestamp: float         = 0.0
+
+
+@dataclass
 class SystemState:
     cpu_percent:   float = 0.0   # 0–100 %
     cpu_temp_c:    float = 0.0   # °C
@@ -173,6 +203,7 @@ class RobotState:
     # Gate confirmation: rear camera saw the gate we just passed
     gate_confirmed:     bool = False
     current_gate_id:    int  = 0
+    depth_ok:    bool        = False
     lidar_ok:    bool        = False
     gps_ok:      bool        = False
     gps_logging:    bool        = False
@@ -1775,6 +1806,12 @@ class Robot:
         self._data_logger:      _DataLogger          = _DataLogger()
         self._navigator:        Optional[object]     = None  # ArucoNavigator when available
         self._gps_navigator:    Optional[object]     = None  # GpsNavigator when available
+        # Depth mapping
+        self._stereo_depth:     Optional[object]     = None  # StereoDepth instance
+        self._depth_estimator:  Optional[object]     = None  # DepthEstimator instance
+        self._depth_map:        DepthMap             = DepthMap()
+        self._depth_lock:       threading.Lock       = threading.Lock()
+        self._depth_enabled:    bool                 = False
 
         # Shared state
         self._mode_lock   = threading.Lock()
@@ -1883,6 +1920,52 @@ class Robot:
             )
             self._camera.start()
 
+        # ── Depth mapping setup ───────────────────────────────────────────────
+        _depth_enabled = _ini_cam.getboolean('depth', 'enabled', fallback=False)
+        if _depth_enabled:
+            _depth_mode = _ini_cam.get('depth', 'mode', fallback='stereo').strip()
+
+            if _STEREO_DEPTH_AVAILABLE and _depth_mode in ('stereo', 'fusion'):
+                # Resolve calibration file paths from [camera_front_left/right]
+                def _resolve_calib(section):
+                    tmpl = _ini_cam.get(section, 'calib_file', fallback='')
+                    cw   = _ini_cam.getint(section, 'capture_width',  fallback=640)
+                    ch   = _ini_cam.getint(section, 'capture_height', fallback=480)
+                    path = tmpl.replace('{capture_width}',  str(cw)) \
+                               .replace('{capture_height}', str(ch))
+                    return os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+
+                left_calib  = _resolve_calib('camera_front_left')
+                right_calib = _resolve_calib('camera_front_right')
+                self._stereo_depth = StereoDepth(
+                    left_calib      = left_calib,
+                    right_calib     = right_calib,
+                    min_disparity   = _ini_cam.getint('depth', 'stereo_min_disp',   fallback=0),
+                    num_disparities = _ini_cam.getint('depth', 'stereo_num_disp',   fallback=128),
+                    block_size      = _ini_cam.getint('depth', 'stereo_block_size', fallback=9),
+                    max_depth_m     = _ini_cam.getfloat('depth', 'stereo_max_depth', fallback=8.0),
+                )
+                log.info("StereoDepth ready (calib available: %s)", self._stereo_depth.available)
+
+            if _DEPTH_ESTIMATOR_AVAILABLE and _depth_mode in ('mono', 'fusion'):
+                _model_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    _ini_cam.get('depth', 'hailo_model', fallback='models/scdepthv3.hef').strip(),
+                )
+                self._depth_estimator = DepthEstimator(
+                    model_path       = _model_path,
+                    scale_mode       = _ini_cam.get('depth', 'mono_scale_mode', fallback='stereo').strip(),
+                    scale_percentile = _ini_cam.getint('depth', 'mono_scale_percentile', fallback=50),
+                )
+                log.info("DepthEstimator ready (available: %s)", self._depth_estimator.available)
+
+            self._depth_enabled = bool(self._stereo_depth or self._depth_estimator)
+            if self._depth_enabled:
+                threading.Thread(target=self._depth_thread, daemon=True, name="depth").start()
+                log.info("Depth thread started (mode=%s)", _depth_mode)
+            else:
+                log.warning("Depth mapping enabled in config but no depth module could initialise")
+
         if _NAVIGATOR_AVAILABLE:
             self._navigator = ArucoNavigator.from_ini(
                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "robot.ini")
@@ -1933,6 +2016,8 @@ class Robot:
         if self._yukon:
             self._yukon.close()
         self._gpio_buttons.stop()
+        if self._depth_estimator:
+            self._depth_estimator.stop()
         for sub in (self._cam_front_left, self._cam_front_right, self._cam_rear,
                     self._camera, self._lidar, self._gps, self._system):
             if sub:
@@ -2012,6 +2097,7 @@ class Robot:
             # Gate confirmation
             gate_confirmed  = self._gate_confirmed,
             current_gate_id = self._current_gate_id,
+            depth_ok  = bool(self._depth_enabled and self._depth_map.data is not None),
             lidar_ok  = bool(self._lidar  and self._lidar.ok),
             gps_ok    = bool(self._gps    and self._gps.ok),
             gps_logging   = self._gps_logging,
@@ -2078,6 +2164,103 @@ class Robot:
         if abs(ts_l - ts_r) * 1000.0 > limit:
             return None, None
         return left, right
+
+    # ── Depth map access ──────────────────────────────────────────────────────
+
+    def get_depth_map(self) -> DepthMap:
+        """Return the latest DepthMap snapshot (thread-safe).
+        ``depth_map.data`` is None until the first depth frame is computed.
+        """
+        with self._depth_lock:
+            return self._depth_map
+
+    def get_depth_at(self, px: int, py: int) -> Optional[float]:
+        """Return metric depth (m) at display-space pixel (px, py), or None.
+        Returns None when depth is unavailable or the pixel is invalid.
+        """
+        dm = self.get_depth_map()
+        if dm.data is None or not dm.metric:
+            return None
+        if self._stereo_depth:
+            return self._stereo_depth.get_depth_at(dm.data, px, py)
+        h, w = dm.data.shape
+        if 0 <= py < h and 0 <= px < w:
+            v = float(dm.data[py, px])
+            return v if v > 0.0 else None
+        return None
+
+    # ── depth thread ──────────────────────────────────────────────────────────
+
+    def _depth_thread(self) -> None:
+        """Depth computation thread (~15 Hz, matches stereo camera fps)."""
+        import time as _time
+        _dt = 1.0 / 15.0
+        log.info("Depth thread running")
+        while not self._stop_evt.is_set():
+            t0 = _time.monotonic()
+            try:
+                self._depth_tick()
+            except Exception as e:
+                log.error("Depth thread error: %s", e)
+            elapsed = _time.monotonic() - t0
+            self._stop_evt.wait(max(0.0, _dt - elapsed))
+        log.info("Depth thread stopped")
+
+    def _depth_tick(self) -> None:
+        """One depth computation cycle: stereo → optional monocular → store."""
+        import time as _time
+
+        stereo_map = None
+        source     = ''
+
+        # ── stereo depth (CPU) ────────────────────────────────────────────────
+        if self._stereo_depth and self._stereo_depth.available:
+            left, right = self.get_stereo_frames()
+            if left is not None and right is not None:
+                stereo_map = self._stereo_depth.compute(left, right)
+                if stereo_map is not None:
+                    source = 'stereo'
+
+        # ── monocular depth (Hailo) ───────────────────────────────────────────
+        mono_map = None
+        if self._depth_estimator and self._depth_estimator.available:
+            frame = self.get_frame('front_left')
+            if frame is not None:
+                mono_map = self._depth_estimator.infer(frame, stereo_depth=stereo_map)
+
+        # ── select best available result ──────────────────────────────────────
+        if stereo_map is not None and mono_map is not None:
+            # Fusion: blend stereo (reliable, sparse) with mono (dense)
+            # Use mono where stereo is invalid (== 0), stereo elsewhere
+            valid_stereo = stereo_map > 0
+            fused = mono_map.copy()
+            fused[valid_stereo] = stereo_map[valid_stereo]
+            result_data   = fused
+            result_source = 'fusion'
+            result_metric = True   # stereo portion is always metric
+        elif stereo_map is not None:
+            result_data   = stereo_map
+            result_source = 'stereo'
+            result_metric = True
+        elif mono_map is not None:
+            result_data   = mono_map
+            result_source = 'mono'
+            # Metric only when stereo anchor was available for scale fitting
+            result_metric = stereo_map is not None
+        else:
+            return   # nothing computed this tick
+
+        h, w = result_data.shape
+        dm = DepthMap(
+            data      = result_data,
+            source    = result_source,
+            metric    = result_metric,
+            width     = w,
+            height    = h,
+            timestamp = _time.monotonic(),
+        )
+        with self._depth_lock:
+            self._depth_map = dm
 
     def get_jpeg(self, cam: str = 'front_left') -> Optional[bytes]:
         """Return pre-encoded JPEG bytes for *cam*, or None.

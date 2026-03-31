@@ -31,6 +31,7 @@ import logging
 import os
 import sys
 import time
+from typing import Optional
 
 from flask import Flask, Response, request, jsonify
 
@@ -1453,6 +1454,8 @@ def stream_default():
 
 @app.route('/stream/<cam>')
 def stream_cam(cam):
+    if cam == 'depth_map':
+        return stream_depth_map()
     if cam not in ('front_left', 'front_right', 'rear'):
         return 'Not found', 404
     return _stream_gen(cam)
@@ -1486,6 +1489,53 @@ def _stream_gen(cam_name):
         mimetype='multipart/x-mixed-replace; boundary=frame',
         headers={'Cache-Control': 'no-store'},
     )
+
+
+@app.route('/stream/depth_map')
+def stream_depth_map():
+    """MJPEG stream of the depth map rendered as a Jet colourmap JPEG (~10 fps)."""
+    def _gen():
+        while True:
+            dm = _robot.get_depth_map()
+            if dm.data is not None:
+                data = _depth_map_to_jpeg(dm)
+                if data:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
+                    time.sleep(0.1)
+                    continue
+            time.sleep(0.5)
+    return Response(
+        _gen(),
+        mimetype='multipart/x-mixed-replace; boundary=frame',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+def _depth_map_to_jpeg(dm) -> Optional[bytes]:
+    """Convert a DepthMap to a Jet-colourmap JPEG for streaming."""
+    try:
+        import cv2 as _cv2
+        import numpy as _np
+        data = dm.data
+        if data is None:
+            return None
+        # Normalise to 0–255 using a fixed range for metric depth, percentile for relative
+        if dm.metric:
+            norm = _np.clip(data / 8.0, 0.0, 1.0)   # 0–8 m → 0–1
+        else:
+            mn, mx = float(data.min()), float(data.max())
+            norm = (data - mn) / (mx - mn + 1e-8) if mx > mn else data
+        grey  = (norm * 255).astype(_np.uint8)
+        coloured = _cv2.applyColorMap(grey, _cv2.COLORMAP_JET)
+        # Label source and metric status
+        label = f"{dm.source.upper()} {'[m]' if dm.metric else '[rel]'}"
+        _cv2.putText(coloured, label, (8, 22),
+                     _cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        ok, buf = _cv2.imencode('.jpg', coloured, [_cv2.IMWRITE_JPEG_QUALITY, 75])
+        return bytes(buf) if ok else None
+    except Exception:
+        return None
 
 
 @app.route('/api/state')
