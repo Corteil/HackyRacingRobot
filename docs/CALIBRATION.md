@@ -99,12 +99,20 @@ The tool prints the output paths and reminds you to update `robot.ini`.
 
 ## Step 4 — Configure robot.ini
 
-Set the `calib_file` key in the `[aruco]` section to the file matching your capture resolution:
+Each camera has its own `calib_file` template in its `[camera_*]` section. The template uses `{capture_width}` and `{capture_height}` placeholders that are substituted at runtime:
 
 ```ini
-[aruco]
-calib_file = camera_cal_640x480.npz
+[camera_front_left]
+calib_file = camera_cal_front_left_{capture_width}x{capture_height}.npz
+
+[camera_front_right]
+calib_file = camera_cal_front_right_{capture_width}x{capture_height}.npz
+
+[camera_rear]
+calib_file = camera_cal_rear_{capture_width}x{capture_height}.npz
 ```
+
+Calibrate each physical camera separately — lens characteristics differ between units.
 
 `CalibrationMaps` (in `robot/camera_controls.py`) loads this file lazily on the first call to `get_maps(w, h)` and caches the maps. If the file is missing or the resolution doesn't match, undistortion is skipped silently and a warning is logged.
 
@@ -152,10 +160,10 @@ Key configuration in `robot.ini`:
 
 | Key | Section | Default | Notes |
 |-----|---------|---------|-------|
-| `calib_file` | `[aruco]` | `camera_cal.npz` | Path to the per-resolution `.npz` |
+| `calib_file` | `[camera_front_left]` etc. | template | Per-camera calibration file path template |
 | `tag_size_m` | `[aruco]` | `0.15` | Physical side length of printed tags (metres) |
-| `dictionary` | `[aruco]` | `DICT_4X4_50` | Must match the dictionary used to generate the tags |
-| `rotate_degrees` | `[camera]` | `0` | Applied before detection; use `180` if camera is mounted upside-down |
+| `dictionary` | `[aruco]` | `DICT_4X4_250` | Must match the dictionary used to generate the tags |
+| `rotation` | `[camera_front_left]` / `[camera_front_right]` | `180` | Front cameras are mounted inverted; rear camera uses `0` with `mirror = true` |
 
 ---
 

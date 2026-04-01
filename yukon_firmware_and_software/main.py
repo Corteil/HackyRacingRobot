@@ -32,7 +32,10 @@ SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
 FAULT_COOLDOWN_MS      = 500   # minimum wait between recovery attempts
 NUM_LEDS               = 8     # number of NeoPixels on the LED strip module
-BENCH_VOLTAGE          = 5.0  # PowerBench regulated output voltage (V)
+BENCH_VOLTAGE          = 10.0 # PowerBench set_voltage() value to get 5 V out.
+                               # The module's feedback divider means the actual output
+                               # is half the value passed to set_voltage(), so double
+                               # the desired voltage here.
 
 # Bearing-hold proportional gain.
 # Correction = BEARING_KP * (error_degrees / 180).  Max correction = BEARING_KP.
@@ -113,6 +116,7 @@ _rc_mode              = RC_MANUAL   # 0=MANUAL, 1=AUTO, 2=ESTOP
 _rc_channels          = [1500] * 14 # last valid iBUS channel values (µs, 1000-2000)
 _rc_ts                = [0]         # [last_packet_ms] — mutable list avoids 'global' from core 1
 _pi_last_cmd_ms       = 0           # ticks_ms() of last CMD_MODE from Pi (0=never)
+_pi_last_rc_query_ms  = 0           # ticks_ms() of last CMD_RC_QUERY from Pi (0=never)
 
 IBUS_FAILSAFE_MS      = 500   # ms without iBUS packet → zero motors in MANUAL
 PI_FAILSAFE_MS        = 500   # ms without CMD_MODE from Pi → ESTOP
@@ -204,8 +208,10 @@ def _decode_ibus():
         v   = _ibus_buf[off] | (_ibus_buf[off + 1] << 8)
         ch.append(max(1000, min(2000, v)))
     # Compute motor speeds before locking (pure maths, no shared state read)
+    # No-motors mode: Pi is sending CMD_RC_QUERY but not CMD_MODE → suppress iBUS motor control
+    _pi_no_motors = (_pi_last_rc_query_ms != 0 and _pi_last_cmd_ms == 0)
     left = right = None
-    if _rc_mode == RC_MANUAL:
+    if _rc_mode == RC_MANUAL and not _pi_no_motors:
         left, right = _ibus_tank_mix_raw(ch)
     _lock.acquire()
     _rc_channels[:] = ch
@@ -721,6 +727,7 @@ try:
                             continue
 
                     elif cmd_code == CMD_RC_QUERY:
+                        _pi_last_rc_query_ms = ticks_ms()
                         _lock.acquire()
                         ch    = list(_rc_channels)
                         rc_ts = _rc_ts[0]

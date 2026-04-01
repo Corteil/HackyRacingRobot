@@ -58,7 +58,7 @@ Device replies **ACK** (`0x06`) on success, **NAK** (`0x15`) on error.
 | `CMD_LEFT` | 2 | speed byte | Left motor speed — **AUTO mode only** (ignored in MANUAL/ESTOP) |
 | `CMD_RIGHT` | 3 | speed byte | Right motor speed — **AUTO mode only** |
 | `CMD_KILL` | 4 | ignored | Zero both motors and disable bearing hold |
-| `CMD_SENSOR` | 5 | ignored | Returns 10 sensor data packets then ACK |
+| `CMD_SENSOR` | 5 | ignored | Returns 12 sensor data packets then ACK |
 | `CMD_BEARING`    | 6  | 0–254 = heading, 255 = disable | Set/clear bearing hold (NAK if no IMU) |
 | `CMD_STRIP`      | 7  | Colour preset index (0–8) | Set all LEDs to palette colour; stops any pattern |
 | `CMD_PIXEL_SET`  | 8  | `(led_index << 4) \| colour_index` | Stage one pixel colour (no hardware update) |
@@ -93,7 +93,7 @@ NAK is returned if `CMD_BEARING` (value ≠ 255) is received with no IMU fitted.
 
 ### CMD_SENSOR response
 
-The Yukon sends 10 data packets before the final ACK:
+The Yukon sends 12 data packets before the final ACK:
 
 | ID | Resp type | Encoding | Example |
 |----|-----------|----------|---------|
@@ -107,6 +107,8 @@ The Yukon sends 10 data packets before the final ACK:
 | 7 `RESP_HEADING` | IMU heading | same encoding as `CMD_BEARING`; 255 = IMU absent | |
 | 8 `RESP_PITCH` | IMU pitch | `(pitch + 90) × 254 / 180`; decode: `raw × 180/254 − 90`; 255 = absent | +45° → 127 |
 | 9 `RESP_ROLL`  | IMU roll  | `(roll + 180) × 254 / 360`; decode: `raw × 360/254 − 180`; 255 = absent | 0° → 127 |
+| 10 `RESP_BENCH_TEMP` | PowerBench module temp | `value × 3` | |
+| 11 `RESP_BENCH_FAULT` | PowerBench fault | 0 or 1 | |
 
 Each data packet: `[SYNC, RESP_TYPE, V_HIGH, V_LOW, CHK]` where `RESP_TYPE = sensor_id + 0x30`.
 
@@ -131,6 +133,8 @@ Two independent failsafe mechanisms protect the robot:
 | Pi crash / USB drop | No `CMD_MODE` received for 500 ms | Enter ESTOP — zero motors, lock mode until `CMD_MODE` resumes |
 
 ESTOP mode clears automatically once `CMD_MODE` packets resume.
+
+**`--no-motors` bench mode:** the Pi daemon detects the `--no-motors` flag internally and suppresses all drive/LED/bearing commands. The Yukon firmware independently infers this mode when it receives `CMD_RC_QUERY` queries but has never received any `CMD_MODE` heartbeat — in this state the firmware skips the RC→motor application in MANUAL mode, so the wheels stay still while RC speed data is still readable.
 
 ### LED strip
 
@@ -206,3 +210,26 @@ import i2c_scan
 ```
 
 Scans the Yukon's built-in Qw/ST I2C bus (I2C0, 400 kHz) and prints found device addresses. Useful for verifying wiring before writing drivers.
+
+---
+
+## test_neopixel.py
+
+NeoPixel LED strip hardware test — exercises the `LEDStripModule` on SLOT3 directly, without the Pi serial protocol. Confirms wiring, colour order, and module power before flashing `main.py`.
+
+```
+# Run via mpremote:
+mpremote run yukon_firmware_and_software/test_neopixel.py
+```
+
+---
+
+## test_rc.py
+
+iBUS RC receiver diagnostic running on the Yukon RP2040. Two stages:
+1. Raw byte dump from GP26 PIO — confirms the wire is alive.
+2. iBUS packet decode — confirms framing and checksum.
+
+```
+mpremote run yukon_firmware_and_software/test_rc.py
+```

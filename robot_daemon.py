@@ -563,8 +563,6 @@ class _YukonLink:
         rc_valid: True if Yukon is receiving a live iBUS signal
         """
         self._check_open()
-        if self._no_motors:
-            return ([1500] * 14, False)
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_RC_QUERY, 0))
             self._drain(1, timeout=0.5)
@@ -2288,27 +2286,50 @@ class Robot:
         c = self._cam(cam)
         return c.get_aruco_state() if c else None
 
-    def set_aruco_enabled(self, enabled: bool):
-        """Enable or disable ArUco detection on ALL cameras simultaneously."""
-        for name in self._CAM_NAMES:
+    def set_aruco_enabled(self, enabled: bool, cam: str = 'all'):
+        """Enable or disable ArUco detection. cam='all' affects every camera."""
+        targets = self._CAM_NAMES if cam == 'all' else (cam,)
+        for name in targets:
             c = self._cam(name)
             if c:
                 c.set_aruco_enabled(enabled)
-        if self._camera:
+        if cam == 'all' and self._camera:
             self._camera.set_aruco_enabled(enabled)
 
-    def toggle_aruco(self) -> bool:
-        """Toggle ArUco on all cameras. Returns the new enabled state."""
-        # Derive new state from front-left (authoritative)
-        primary = self._cam_front_left or self._camera
-        new_state = not primary.get_aruco_enabled() if primary else False
-        self.set_aruco_enabled(new_state)
+    def toggle_aruco(self, cam: str = 'all') -> bool:
+        """Toggle ArUco on the specified camera (or all). Returns the new enabled state."""
+        targets = self._CAM_NAMES if cam == 'all' else (cam,)
+        primary = self._cam(targets[0]) if targets else (self._cam_front_left or self._camera)
+        if not primary:
+            return False
+        new_state = not primary.get_aruco_enabled()
+        self.set_aruco_enabled(new_state, cam=cam)
         return new_state
 
-    def get_aruco_enabled(self) -> bool:
-        """Return True if ArUco detection is currently enabled (checks front-left)."""
-        c = self._cam_front_left or self._camera
-        return bool(c and c.get_aruco_enabled())
+    def get_aruco_enabled(self, cam: str = 'all') -> 'bool | dict':
+        """Return enabled state. cam='all' returns dict keyed by camera name; specific cam returns bool."""
+        if cam != 'all':
+            c = self._cam(cam) if cam in self._CAM_NAMES else (self._cam_front_left or self._camera)
+            return bool(c and c.get_aruco_enabled())
+        result = {}
+        for name in self._CAM_NAMES:
+            c = self._cam(name)
+            result[name] = bool(c and c.get_aruco_enabled())
+        return result
+
+    def get_cam_capture_size(self, cam: str) -> tuple:
+        """Return (capture_width, capture_height) after rotation for the named camera.
+
+        ArUco detection runs on the rotated frame, so coordinates are in rotated space.
+        For 90°/270° rotations the width and height are swapped.
+        """
+        c = self._cam(cam) if cam in self._CAM_NAMES else (self._cam_front_left or self._camera)
+        if not c:
+            return (0, 0)
+        w, h = c._capture_w, c._capture_h
+        if c._rotation in (90, 270):
+            w, h = h, w
+        return (w, h)
 
     def set_cam_rotation(self, rotation: int, cam: str = 'all'):
         """Change rotation at runtime. cam='all' applies to every camera."""
@@ -2321,9 +2342,9 @@ class Robot:
         if self._camera:
             self._camera.set_rotation(rotation)
 
-    def get_cam_rotation(self) -> int:
-        """Return the current rotation of the front-left (or legacy) camera."""
-        c = self._cam_front_left or self._camera
+    def get_cam_rotation(self, cam: str = 'front_left') -> int:
+        """Return the current rotation of a specific camera (or front-left if unspecified)."""
+        c = self._cam(cam) if cam in self._CAM_NAMES else (self._cam_front_left or self._camera)
         return c._rotation if c else self._cam_rotation
 
     def start_cam_recording(self, cam: str = 'all', path: str = None) -> bool:

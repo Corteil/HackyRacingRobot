@@ -88,26 +88,49 @@ _jpeg_encode = None
 
 # ── State serialiser ──────────────────────────────────────────────────────────
 
-def _serialise(state, cam_rotation=0, aruco_enabled=False,
-               aruco_state=None, nav_bearing_err=None):
+def _aruco_info(aruco_state, cap_w=0, cap_h=0):
+    """Serialise a single ArUcoState to a JSON-safe dict.
+
+    cap_w/cap_h: capture resolution where ArUco coordinates live.
+    Included so the JS can scale corners from capture space to display space.
+    """
+    return {
+        'tag_count':  len(aruco_state.tags),
+        'gate_count': len(aruco_state.gates),
+        'fps':        aruco_state.fps,
+        'cap_w':      cap_w,
+        'cap_h':      cap_h,
+        'tags': [
+            {'id': t2.id, 'cx': t2.center_x, 'cy': t2.center_y,
+             'area': t2.area, 'bearing': t2.bearing, 'distance': t2.distance,
+             'corners': [list(t2.top_left), list(t2.top_right),
+                         list(t2.bottom_right), list(t2.bottom_left)]}
+            for t2 in aruco_state.tags.values()
+        ],
+        'gates': [
+            {'gate_id': gx.gate_id, 'centre_x': gx.centre_x,
+             'centre_y': gx.centre_y, 'bearing': gx.bearing,
+             'distance': gx.distance, 'correct_dir': gx.correct_dir}
+            for gx in aruco_state.gates.values()
+        ],
+    }
+
+
+def _serialise(state, cam_rotation=0, aruco_enabled=None,
+               aruco_states=None, nav_bearing_err=None):
     g, t, d, li, s = (state.gps, state.telemetry, state.drive,
                       state.lidar, state.system)
 
-    aruco_info = None
-    if aruco_enabled and aruco_state is not None:
-        aruco_info = {
-            'tag_count':  len(aruco_state.tags),
-            'gate_count': len(aruco_state.gates),
-            'fps':        aruco_state.fps,
-            'tags':  [{'id': t2.id, 'cx': t2.center_x, 'cy': t2.center_y,
-                        'area': t2.area, 'bearing': t2.bearing,
-                        'distance': t2.distance}
-                      for t2 in aruco_state.tags.values()],
-            'gates': [{'gate_id': gx.gate_id, 'centre_x': gx.centre_x,
-                        'centre_y': gx.centre_y, 'bearing': gx.bearing,
-                        'distance': gx.distance, 'correct_dir': gx.correct_dir}
-                      for gx in aruco_state.gates.values()],
-        }
+    # aruco_enabled is a dict {cam_name: bool} from get_aruco_enabled('all')
+    if aruco_enabled is None:
+        aruco_enabled = {}
+
+    # Per-camera ArUco info — only include when that camera's detection is enabled
+    aruco_info = {}
+    if aruco_states:
+        for cam_name, (aruco_state, cap_w, cap_h) in aruco_states.items():
+            if aruco_enabled.get(cam_name) and aruco_state is not None:
+                aruco_info[cam_name] = _aruco_info(aruco_state, cap_w, cap_h)
 
     return {
         'mode':          state.mode.name,
@@ -130,7 +153,7 @@ def _serialise(state, cam_rotation=0, aruco_enabled=False,
         'nav_wp':        state.nav_wp,
         'nav_wp_dist':   state.nav_wp_dist,
         'nav_wp_bear':   state.nav_wp_bear,
-        'aruco':         aruco_info,
+        'aruco':         aruco_info,   # dict keyed by camera name
         # Per-camera status
         'cam_fl_ok':  state.cam_front_left_ok,
         'cam_fr_ok':  state.cam_front_right_ok,
@@ -416,9 +439,9 @@ button:active{background:#2a2a42}
             <span class="mval" id="mob-val-r">+0.00</span></div></div>
       </div>
       <div class="mob-section" style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 8px">
-        <button onclick="sendCmd('aruco_toggle')" id="mob-btn-aruco">ArUco: OFF</button>
-        <button onclick="sendCmd('rotate_ccw')">↺ CCW</button>
-        <button onclick="sendCmd('rotate_cw')">↻ CW</button>
+        <button onclick="sendCmd('aruco_toggle',{cam:'front_left'})" id="mob-btn-aruco">ArUco: OFF</button>
+        <button onclick="sendCmd('rotate_ccw',{cam:'front_left'})">↺ CCW</button>
+        <button onclick="sendCmd('rotate_cw',{cam:'front_left'})">↻ CW</button>
         <button onclick="toggleMobBearing()" id="mob-btn-bearing">Bearing: OFF</button>
         <button onclick="sendCmd('gps_bookmark')">📍 Bookmark</button>
       </div>
@@ -692,9 +715,9 @@ function renderQuad(i) {
     hdr.appendChild(titleSpan);
     if (kind === 'camera') {
       hdr.innerHTML += `
-        <button onclick="sendCmd('aruco_toggle')" style="font-size:10px" id="q${i}-btn-aruco">ArUco</button>
-        <button onclick="sendCmd('rotate_ccw')" style="font-size:10px">↺</button>
-        <button onclick="sendCmd('rotate_cw')"  style="font-size:10px">↻</button>
+        <button onclick="sendCmd('aruco_toggle',{cam:'${camKey}'})" style="font-size:10px" id="q${i}-btn-aruco">ArUco</button>
+        <button onclick="sendCmd('rotate_ccw',{cam:'${camKey}'})" style="font-size:10px">↺</button>
+        <button onclick="sendCmd('rotate_cw',{cam:'${camKey}'})"  style="font-size:10px">↻</button>
         <button onclick="toggleBearing(${i})" id="q${i}-btn-bearing" style="font-size:10px">Bearing</button>
         <button onclick="sendCmd('record_toggle',{cam:'${camKey}'})" id="q${i}-btn-rec" style="font-size:10px">⏺</button>
         <button onclick="sendCmd('record_stop',{cam:'${camKey}'})" style="font-size:10px" title="Stop recording">⏹</button>
@@ -797,12 +820,21 @@ function updateCameraPanel(i, camKey, s) {
   const badge = el(`q${i}-cam-nav-badge`);
   if (badge) updateNavBadgeEl(badge, s);
 
-  // Bearing overlay (only front_left)
+  // ArUco button highlight — per camera
+  const camEnabled = s.aruco_enabled && s.aruco_enabled[camKey];
+  const aBtn = el(`q${i}-btn-aruco`);
+  if (aBtn) {
+    aBtn.style.color       = camEnabled ? C.green : C.gray;
+    aBtn.style.borderColor = camEnabled ? C.green : C.border;
+  }
+
+  // ArUco overlay — tag boxes when ArUco active; bearing info when Bearing toggled
   const bCanvas = el(`q${i}-bearing-canvas`);
   if (bCanvas) {
-    const show = showBearing && s.aruco_enabled && camKey === 'front_left';
+    const camAruco = s.aruco && s.aruco[camKey] ? s.aruco[camKey] : null;
+    const show = camEnabled && camAruco !== null;
     bCanvas.style.display = show ? 'block' : 'none';
-    if (show) drawBearingOverlay(bCanvas, s.aruco, s.nav_gate, s.telemetry.heading);
+    if (show) drawBearingOverlay(bCanvas, camAruco, s.nav_gate, s.telemetry.heading, showBearing);
   }
 }
 
@@ -930,12 +962,14 @@ function updateMobile(s) {
             aBtn.style.color=s.aruco_enabled?C.green:C.gray; }
   const ni=el('mob-nav-info'); if(ni) updateNavInfoEl(ni,s);
 
-  // Bearing overlay on mobile
+  // Bearing overlay on mobile — tag boxes when ArUco active; bearing info when toggled
   const mc=el('mob-bearing-canvas');
   if(mc){
-    const show=mobShowBearing&&s.aruco_enabled;
+    const camAruco = s.aruco && s.aruco['front_left'] ? s.aruco['front_left'] : null;
+    const camEnabled = s.aruco_enabled && s.aruco_enabled['front_left'];
+    const show = camEnabled && camAruco !== null;
     mc.style.display=show?'block':'none';
-    if(show) drawBearingOverlay(mc,s.aruco,s.nav_gate,t.heading);
+    if(show) drawBearingOverlay(mc, camAruco, s.nav_gate, t.heading, mobShowBearing);
   }
 
   // Telem tab
@@ -1120,7 +1154,7 @@ function drawLidar(canvas, angles, distances) {
   ctx.fillStyle=C.green; ctx.fill();
 }
 
-function drawBearingOverlay(canvas, aruco, navGate, heading) {
+function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=false) {
   if (!canvas) return;
   // Resize canvas to match its CSS display size
   const W=canvas.offsetWidth||canvas.parentElement.clientWidth;
@@ -1130,56 +1164,95 @@ function drawBearingOverlay(canvas, aruco, navGate, heading) {
   const ctx=canvas.getContext('2d');
   ctx.clearRect(0,0,W,H);
   if (!aruco) return;
-  const sx=W/camNatW, sy=H/camNatH;
-  const fcx=W/2, fcy=H/2;
+
+  // The <img> uses object-fit:contain — it scales uniformly to fit within the
+  // canvas element while preserving aspect ratio, leaving letterbox/pillarbox
+  // bars.  Compute where the rendered image actually sits so we can align the
+  // canvas overlay exactly on top of it.
+  const natW = aruco.cap_w > 0 ? aruco.cap_w : camNatW;
+  const natH = aruco.cap_h > 0 ? aruco.cap_h : camNatH;
+  const fitScale = Math.min(W / natW, H / natH);
+  const rW = natW * fitScale;   // rendered image width in canvas pixels
+  const rH = natH * fitScale;   // rendered image height in canvas pixels
+  const ox = (W - rW) / 2;     // left offset (pillarbox) in canvas pixels
+  const oy = (H - rH) / 2;     // top  offset (letterbox) in canvas pixels
+
+  // ArUco coords are in capture space (natW × natH after rotation).
+  // Scale them to the rendered image area inside the canvas.
+  const csx = rW / natW;
+  const csy = rH / natH;
+  // Camera boresight = centre of the rendered image
+  const fcx = ox + rW / 2;
+  const fcy = oy + rH / 2;
+
   const targetOdd=navGate*2+1, targetEven=navGate*2+2;
   ctx.font='bold 10px monospace'; ctx.lineWidth=1.5;
   for (const tag of aruco.tags) {
-    const tx=tag.cx*sx, ty=tag.cy*sy;
+    const tx=ox+tag.cx*csx, ty=oy+tag.cy*csy;
     const isTarget=tag.id===targetOdd||tag.id===targetEven;
     const color=isTarget?C.cyan:C.yellow;
-    ctx.strokeStyle=color; ctx.globalAlpha=0.7;
-    ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(tx,ty); ctx.stroke();
-    ctx.globalAlpha=1.0;
-    ctx.beginPath(); ctx.arc(tx,ty,4,0,Math.PI*2);
-    ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
-    let lbl=`#${tag.id}`;
-    if(tag.bearing!=null) lbl+=` ${tag.bearing>=0?'+':''}${tag.bearing.toFixed(1)}°`;
-    if(tag.distance!=null) lbl+=` ${tag.distance.toFixed(2)}m`;
-    const lx=tx<fcx+W/3 ? tx+6 : tx-ctx.measureText(lbl).width-6;
-    const ly=ty-5;
-    ctx.fillStyle='rgba(18,18,30,.75)';
-    ctx.fillRect(lx-2,ly-11,ctx.measureText(lbl).width+4,13);
-    ctx.fillStyle=color; ctx.fillText(lbl,lx,ly);
+    // Bounding box from corners (always shown when ArUco active)
+    if (tag.corners && tag.corners.length===4) {
+      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.globalAlpha=0.9;
+      ctx.beginPath();
+      ctx.moveTo(ox+tag.corners[0][0]*csx, oy+tag.corners[0][1]*csy);
+      for (let c=1;c<4;c++) ctx.lineTo(ox+tag.corners[c][0]*csx, oy+tag.corners[c][1]*csy);
+      ctx.closePath(); ctx.stroke();
+      ctx.globalAlpha=1.0;
+      // Filled highlight on top-left corner to show orientation
+      ctx.fillStyle=color; ctx.globalAlpha=0.8;
+      ctx.fillRect(ox+tag.corners[0][0]*csx-3, oy+tag.corners[0][1]*csy-3, 6, 6);
+      ctx.globalAlpha=1.0;
+    }
+    if (showBearingInfo) {
+      // Line from boresight to tag centre
+      ctx.strokeStyle=color; ctx.lineWidth=1; ctx.globalAlpha=0.5;
+      ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(tx,ty); ctx.stroke();
+      ctx.globalAlpha=1.0;
+      // Centre dot
+      ctx.beginPath(); ctx.arc(tx,ty,3,0,Math.PI*2);
+      ctx.fillStyle=color; ctx.fill();
+      // Label with bearing/distance
+      let lbl=`#${tag.id}`;
+      if(tag.bearing!=null) lbl+=` ${tag.bearing>=0?'+':''}${tag.bearing.toFixed(1)}°`;
+      if(tag.distance!=null) lbl+=` ${tag.distance.toFixed(2)}m`;
+      const lx=tx<fcx+rW/3 ? tx+6 : tx-ctx.measureText(lbl).width-6;
+      const ly=ty-8;
+      ctx.fillStyle='rgba(18,18,30,.75)';
+      ctx.fillRect(lx-2,ly-11,ctx.measureText(lbl).width+4,13);
+      ctx.fillStyle=color; ctx.fillText(lbl,lx,ly);
+    }
   }
-  for (const gate of aruco.gates) {
-    if(gate.gate_id!==navGate) continue;
-    const gx=gate.centre_x*sx, gy=gate.centre_y*sy;
-    ctx.strokeStyle=C.green; ctx.lineWidth=1.5; ctx.globalAlpha=0.8;
-    ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(gx,gy); ctx.stroke();
-    ctx.globalAlpha=1.0;
-    const sz=10; ctx.strokeStyle=C.green; ctx.lineWidth=2;
+  if (showBearingInfo) {
+    for (const gate of aruco.gates) {
+      if(gate.gate_id!==navGate) continue;
+      const gx=ox+gate.centre_x*csx, gy=oy+gate.centre_y*csy;
+      ctx.strokeStyle=C.green; ctx.lineWidth=1.5; ctx.globalAlpha=0.8;
+      ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(gx,gy); ctx.stroke();
+      ctx.globalAlpha=1.0;
+      const sz=10; ctx.strokeStyle=C.green; ctx.lineWidth=2;
+      ctx.beginPath();
+      ctx.moveTo(gx-sz,gy); ctx.lineTo(gx+sz,gy);
+      ctx.moveTo(gx,gy-sz); ctx.lineTo(gx,gy+sz); ctx.stroke();
+      ctx.beginPath(); ctx.arc(gx,gy,sz,0,Math.PI*2); ctx.stroke();
+      let glbl='AIM';
+      if(gate.bearing!=null) glbl+=` ${gate.bearing>=0?'+':''}${gate.bearing.toFixed(1)}°`;
+      if(gate.distance!=null) glbl+=` ${gate.distance.toFixed(2)}m`;
+      ctx.fillStyle='rgba(18,18,30,.75)';
+      ctx.fillRect(gx+2,gy-20,ctx.measureText(glbl).width+4,13);
+      ctx.fillStyle=C.green; ctx.fillText(glbl,gx+4,gy-9);
+    }
+    // Boresight crosshair
+    ctx.strokeStyle=C.gray; ctx.lineWidth=1; ctx.globalAlpha=0.5;
     ctx.beginPath();
-    ctx.moveTo(gx-sz,gy); ctx.lineTo(gx+sz,gy);
-    ctx.moveTo(gx,gy-sz); ctx.lineTo(gx,gy+sz); ctx.stroke();
-    ctx.beginPath(); ctx.arc(gx,gy,sz,0,Math.PI*2); ctx.stroke();
-    let glbl='AIM';
-    if(gate.bearing!=null) glbl+=` ${gate.bearing>=0?'+':''}${gate.bearing.toFixed(1)}°`;
-    if(gate.distance!=null) glbl+=` ${gate.distance.toFixed(2)}m`;
-    ctx.fillStyle='rgba(18,18,30,.75)';
-    ctx.fillRect(gx+2,gy-20,ctx.measureText(glbl).width+4,13);
-    ctx.fillStyle=C.green; ctx.fillText(glbl,gx+4,gy-9);
+    ctx.moveTo(fcx-12,fcy); ctx.lineTo(fcx+12,fcy);
+    ctx.moveTo(fcx,fcy-12); ctx.lineTo(fcx,fcy+12); ctx.stroke();
+    ctx.beginPath(); ctx.arc(fcx,fcy,4,0,Math.PI*2); ctx.stroke();
+    ctx.globalAlpha=1.0;
   }
-  // Boresight
-  ctx.strokeStyle=C.gray; ctx.lineWidth=1; ctx.globalAlpha=0.5;
-  ctx.beginPath();
-  ctx.moveTo(fcx-12,fcy); ctx.lineTo(fcx+12,fcy);
-  ctx.moveTo(fcx,fcy-12); ctx.lineTo(fcx,fcy+12); ctx.stroke();
-  ctx.beginPath(); ctx.arc(fcx,fcy,4,0,Math.PI*2); ctx.stroke();
-  ctx.globalAlpha=1.0;
-  // IMU arc
-  if (heading!=null) {
-    const ccx=W/2, ccy=H-24, cr=15;
+  // IMU arc — pinned to bottom-centre of the rendered image area
+  if (showBearingInfo && heading!=null) {
+    const ccx=ox+rW/2, ccy=oy+rH-24, cr=15;
     ctx.beginPath(); ctx.arc(ccx,ccy,cr+2,0,Math.PI*2);
     ctx.fillStyle='rgba(18,18,30,.8)'; ctx.fill();
     ctx.beginPath(); ctx.arc(ccx,ccy,cr,0,Math.PI*2);
@@ -1240,8 +1313,8 @@ for (let i=0; i<4; i++) {
 }
 document.addEventListener('keydown', e=>{
   if(e.key==='Escape'){ if(expandedQuad>=0) toggleExpand(expandedQuad); closeChooser(); }
-  if(e.key==='[') sendCmd('rotate_ccw');
-  if(e.key===']') sendCmd('rotate_cw');
+  if(e.key==='[') { const k=_activeCamKey(); sendCmd('rotate_ccw',{cam:k||'front_left'}); }
+  if(e.key===']') { const k=_activeCamKey(); sendCmd('rotate_cw', {cam:k||'front_left'}); }
   if(e.key==='t'||e.key==='T') sendCmd('aruco_toggle');
   if(e.key==='e'||e.key==='E') sendCmd('estop');
   if(e.key==='r'||e.key==='R') sendCmd('reset');
@@ -1312,6 +1385,19 @@ function applyPreset(name, presets) {
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
+function _activeCamKey() {
+  // Return the camera key of the first focused (or any) camera quad panel.
+  if (expandedQuad >= 0) {
+    const t = quadTypes[expandedQuad];
+    if (t && t.startsWith('camera:')) return t.split(':')[1];
+  }
+  for (let i = 0; i < 4; i++) {
+    const t = quadTypes[i];
+    if (t && t.startsWith('camera:')) return t.split(':')[1];
+  }
+  return null;
+}
+
 async function sendCmd(cmd, extra) {
   try {
     await fetch('/api/cmd', {
@@ -1551,8 +1637,12 @@ def api_state():
                 data = _serialise(
                     _robot.get_state(),
                     cam_rotation    = _robot.get_cam_rotation(),
-                    aruco_enabled   = _robot.get_aruco_enabled(),
-                    aruco_state     = _robot.get_aruco_state(),
+                    aruco_enabled   = _robot.get_aruco_enabled('all'),
+                    aruco_states    = {
+                        cam: (_robot.get_aruco_state(cam),
+                              *_robot.get_cam_capture_size(cam))
+                        for cam in ('front_left', 'front_right', 'rear')
+                    },
                     nav_bearing_err = nav_bearing_err,
                 )
                 yield f"data: {json.dumps(data)}\n\n"
@@ -1574,12 +1664,14 @@ def api_cmd():
 
     if   cmd == 'estop':          _robot.estop()
     elif cmd == 'reset':          _robot.reset_estop()
-    elif cmd == 'aruco_toggle':   _robot.toggle_aruco()
+    elif cmd == 'aruco_toggle':   _robot.toggle_aruco(cam=cam)
     elif cmd == 'gps_bookmark':   _robot.bookmark_gps()
     elif cmd == 'rotate_cw':
-        _robot.set_cam_rotation((_robot.get_cam_rotation() + 90) % 360)
+        cur = _robot.get_cam_rotation(cam)
+        _robot.set_cam_rotation((cur + 90) % 360, cam=cam)
     elif cmd == 'rotate_ccw':
-        _robot.set_cam_rotation((_robot.get_cam_rotation() - 90 + 360) % 360)
+        cur = _robot.get_cam_rotation(cam)
+        _robot.set_cam_rotation((cur - 90 + 360) % 360, cam=cam)
     elif cmd == 'record_toggle':
         if _robot.is_cam_recording(cam):
             _robot.stop_cam_recording(cam)

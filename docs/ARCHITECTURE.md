@@ -17,21 +17,19 @@ FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
                     │  │  │  │
           ┌─────────┘  │  │  └──────────────┐
           │            │  │                 │
-    _YukonLink       _Camera            _Lidar           _Gps
-   (USB serial)   (picamera2)         (LD06 UART)    (GNSS UART)
+    _YukonLink      _Camera ×3          _Lidar           _Gps
+   (USB serial)   (picamera2/OpenCV)  (LD06 UART)    (GNSS UART)
    /dev/ttyACM0   aruco_detector       /dev/ttyAMA0   /dev/ttyUSB0
           │            │                  │                │
-    Yukon RP2040   IMX296 camera       LD06 LiDAR    TAU1308 RTK
-    main.py        ArUco detection     GPIO18 PWM    NTRIP client
-   SLOT1: BenchPowerModule (5 V)
+    Yukon RP2040   front_left/right    LD06 LiDAR    TAU1308 RTK
+    main.py        rear (OpenCV)       GPIO12 PWM    NTRIP client
+   SLOT1: BenchPowerModule (5 V)   ArUco detection
    SLOT2/SLOT5: DualMotorModule
    SLOT3: LEDStripModule
 ```
 
 Consumers of robot state:
-- `robot_gui.py` — 4-panel pygame dashboard (calls `robot.get_state()`, `robot.get_frame()`)
-- `robot_web.py` — Flask web dashboard, port 5000 (same interface)
-- `robot_mobile.py` — Mobile-optimised Flask dashboard, port 5001 (tab navigation: Drive, Telem, GPS, System, Logs)
+- `robot_dashboard.py` — Unified Flask web dashboard, port 5000 (2×2 configurable panel grid on desktop/touchscreen; tab view on mobile ≤700 px)
 - `rc_drive.py` — lightweight RC-only driver (no GUI, direct Yukon link)
 
 ---
@@ -41,10 +39,8 @@ Consumers of robot state:
 | File | Role |
 |------|------|
 | `yukon_firmware_and_software/main.py` | MicroPython firmware on the Yukon RP2040. Core 1 drives motors; Core 0 parses serial commands and monitors health |
-| `robot_daemon.py` | Pi-side daemon. Owns all subsystem threads; exposes `get_state()`, `get_frame()`, `get_aruco_state()` |
-| `robot_gui.py` | Pygame 4-panel monitor (Drive, Telemetry, GPS, Camera+LiDAR) |
-| `robot_web.py` | Flask web dashboard with MJPEG camera stream (port 5000) |
-| `robot_mobile.py` | Mobile Flask dashboard with tab navigation (port 5001); same Robot backend as robot_web.py |
+| `robot_daemon.py` | Pi-side daemon. Owns all subsystem threads; exposes `get_state()`, `get_frame(cam)`, `get_aruco_state(cam)` |
+| `robot_dashboard.py` | Unified Flask web dashboard (port 5000) — 2×2 configurable panel grid on desktop/touchscreen; tab view on mobile |
 | `camera_monitor.py` | Standalone pygame camera tool — resolution cycling, ArUco overlay, sharpness, lens calibration toggle, spacebar capture |
 | `camera_web.py` | Standalone mobile Flask camera tool with MJPEG stream, ArUco toggle, calibration toggle, capture (port 8080) |
 | `rc_drive.py` | Minimal RC-to-motor bridge without full robot stack |
@@ -57,14 +53,13 @@ Consumers of robot state:
 | `gnss/` | GNSS driver package (TAU1308, UBlox7, UBloxM8P, NTRIP client) |
 | `robot.ini` | Runtime configuration for all subsystems |
 | `tools/upload.py` | MicroPython uploader (handles Yukon double-USB-reset) |
-| `tools/yukon_sim.py` | PTY-based Yukon serial simulator for offline testing (headless) |
-| `tools/yukon_sim_gui.py` | Yukon simulator with Pygame UI — live motor/LED/fault display |
-| `tools/yukon_sim_web.py` | Yukon simulator with web UI at port 5002 — fault injection, LED toggle |
+| `tools/yukon_sim.py` | PTY-based Yukon serial simulator — `--mode gui\|web\|headless` (default: gui); web UI at port 5002 |
 | `tools/read_data_log.py` | Flask JSONL data-log viewer at port 5004 — Drive, Telemetry, GPS map, LiDAR, Inspector tabs |
 | `tools/calibrate_camera.py` | Interactive calibration tool — zone guidance, auto-capture, mirror mode; saves `camera_cal.npz` at 1456×1088 |
 | `tools/derive_calibrations.py` | Scales a master calibration to any set of target resolutions; writes per-resolution `.npz` files |
 | `tools/generate_aruco_tags.py` | CLI tool to generate ArUco tag PDFs (custom IDs, paper size, dictionary) |
 | `tools/make_checkerboard_pdf.py` | Generates printable checkerboard calibration target PDF |
+| `tools/nav_visualiser.py` | Real-time overhead navigation view — `--live`, `--sim`, or `--udp` modes |
 | `yukon_firmware_and_software/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
 | `tools/test_gnss.py` | 57 unit tests for the `gnss/` package — no hardware required |
 | `tools/test_*.py` | Unit tests and live-display tools for iBUS, LiDAR, protocol, GPS, BNO085, ArUco, robot integration |
@@ -87,8 +82,12 @@ RC receiver ──► Yukon GP26 (PIO UART) ──► main.py iBUS poll (Core 0)
                                                         Core1: applies speeds
                                                         Core0: ACK/NAK + sensors
 
-_Camera._run() ──► capture_array() ──► BGR→RGB ──► rotate ──► ArUco detect
-                ──► RobotState.camera_ok, latest frame, aruco_state
+_Camera._run() × 3  (front_left / front_right / rear)
+    front_left / front_right: picamera2 CSI (IMX296, 180° rotation)
+    rear: OpenCV UVC (IMX477, rotation=0, mirror=true)
+    ──► capture_array() ──► BGR→RGB ──► rotate ──► ArUco detect
+    ──► RobotState.cam_front_left_ok / cam_front_right_ok / cam_rear_ok,
+        latest frame and aruco_state per camera
 
 _Lidar._run() ──► LD06 packets ──► LidarScan(angles, distances)
                ──► RobotState.lidar
@@ -117,12 +116,22 @@ class RobotState:
     lidar:          LidarScan       # angles[], distances[], timestamp
     system:         SystemState     # CPU%, temp, mem, disk
     rc_active:      bool
+    # Legacy single-camera flags (backward compat)
     camera_ok:      bool
+    aruco_ok:       bool
+    # Per-camera status (triple-camera setup)
+    cam_front_left_ok:         bool
+    cam_front_right_ok:        bool
+    cam_rear_ok:               bool
+    cam_front_left_recording:  bool
+    cam_front_right_recording: bool
+    cam_rear_recording:        bool
+    gate_confirmed:            bool  # rear camera confirmed last gate passage
+    current_gate_id:           int
     lidar_ok:       bool
     gps_ok:         bool
-    aruco_ok:       bool
     gps_logging:    bool
-    cam_recording:  bool
+    cam_recording:  bool            # True if any camera is recording
     data_logging:   bool
     no_motors:      bool            # drive commands suppressed (bench testing)
     speed_scale:    float           # current speed limit (0.0–1.0)

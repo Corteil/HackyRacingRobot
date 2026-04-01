@@ -248,6 +248,66 @@ python3 tools/test_aruco.py --live --camera 0
 
 ---
 
+### test_aruco_detector.py
+
+Unit tests for `robot/aruco_detector.py` using synthetic OpenCV-generated frames — no camera required.
+
+```
+python3 tools/test_aruco_detector.py
+```
+
+Tests: blank frame, single tag, gate pair formation, wrong-direction gate, gate centre calculation, multiple gates, non-consecutive tags, FPS/timestamp fields, calibrated distance/bearing, `draw=False`.
+
+---
+
+### test_aruco_navigator.py
+
+Unit tests for `robot/aruco_navigator.py` state machine using synthetic `ArUcoState` inputs — no camera, motors, or IMU required.
+
+```
+python3 tools/test_aruco_navigator.py
+```
+
+Tests all state transitions (IDLE → SEARCHING → ALIGNING → APPROACHING → PASSING → RECOVERING → COMPLETE), obstacle stop, single-tag fallback, IMU search stepping, and `from_ini()` config loading.
+
+---
+
+### test_hardware.py
+
+Interactive real-world hardware tests requiring physical robot hardware.
+Guides the operator through verifying the Yukon connection, telemetry, motors (forward/reverse per side), IMU heading, and ArUco tag detection.
+
+```
+python3 tools/test_hardware.py [--port PORT]
+```
+
+---
+
+### test_tag_approach.py
+
+Fluid ArUco tag approach tests.  Requires a running robot with camera and motors.
+Three tests: direct approach, arc from left, arc from right.  The robot uses a continuous
+steering law — no stop-and-pivot phases.
+
+```
+python3 tools/test_tag_approach.py [flags]
+```
+
+---
+
+### nav_visualiser.py
+
+Real-time overhead navigation view — shows robot position, visible ArUco tags, gate lines, camera bearing cone, planned aim point, navigator state, motor bars, IMU compass, and LiDAR returns.
+
+```bash
+python3 tools/nav_visualiser.py --live      # poll running robot_dashboard.py at :5000
+python3 tools/nav_visualiser.py --sim       # closed-loop simulation (no hardware)
+python3 tools/nav_visualiser.py --udp       # listen for UDP telemetry broadcast
+python3 tools/nav_visualiser.py --live --url http://pi-ip:5000
+```
+
+---
+
 ### yukon_firmware_and_software/test_bno085_yukon.py
 
 BNO085 IMU driver tests — runs directly on the Yukon RP2040 (MicroPython).
@@ -419,60 +479,30 @@ python3 tools/yukon_sim_gui.py --ibus-port /dev/pts/3
 
 ### yukon_sim.py
 
-PTY-based Yukon USB serial simulator for offline development and testing.
+Consolidated PTY-based Yukon USB serial simulator for offline development and testing.
+Supports three display modes selected via `--mode` (default: gui).
 
 ```bash
-python3 tools/yukon_sim.py
-python3 tools/yukon_sim.py --ibus-port /dev/pts/3
+python3 tools/yukon_sim.py                        # GUI mode (default)
+python3 tools/yukon_sim.py --mode gui
+python3 tools/yukon_sim.py --mode web [--port 5002]
+python3 tools/yukon_sim.py --mode headless
+python3 tools/yukon_sim.py --ibus-port /dev/pts/3  # pipe ibus_sim into RC channels
 ```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from (e.g. `ibus_sim.py` PTY) |
 
 Creates a virtual serial port (PTY) that emulates `/dev/ttyACM0`:
 - Parses 5-byte command packets and responds with ACK/NAK.
-- Returns simulated sensor data for `CMD_SENSOR`.
-- Responds to `CMD_RC_QUERY` with the current simulated RC channels.
-- In MANUAL mode, derives motor bar values from `rc_channels` (mirrors Yukon firmware iBUS tank-mix).
+- Returns simulated sensor data for `CMD_SENSOR` and RC channel data for `CMD_RC_QUERY`.
+- Tracks `--no-motors` mode (sees `CMD_RC_QUERY` but no `CMD_MODE` heartbeat).
+- Optionally reads live RC channels from `ibus_sim.py` via `--ibus-port`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mode MODE` | `gui` | Display mode: `gui` \| `web` \| `headless` |
+| `--port N` | `5002` | HTTP port (web mode only) |
+| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from (e.g. `ibus_sim.py` PTY) |
 
 Point any client (`robot_daemon.py`, `tools/test_main.py`) at the PTY path printed on startup.
-
----
-
-### yukon_sim_gui.py
-
-Pygame GUI front-end for the Yukon simulator — shows live motor bars, compass, sensor sliders, and LED strip.
-
-```bash
-python3 tools/yukon_sim_gui.py
-python3 tools/yukon_sim_gui.py --ibus-port /dev/pts/3
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from |
-| `--no-terminal` | off | Suppress terminal draw() output |
-
-Motor bars update in both MANUAL mode (driven from RC channels) and AUTO mode (driven from `CMD_LEFT`/`CMD_RIGHT`).
-
----
-
-### yukon_sim_web.py
-
-Web front-end for the Yukon simulator — serves a browser dashboard for motor and sensor state.
-
-```bash
-python3 tools/yukon_sim_web.py
-python3 tools/yukon_sim_web.py --ibus-port /dev/pts/3
-python3 tools/yukon_sim_web.py --host 0.0.0.0 --port 5002
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from |
-| `--host HOST` | `0.0.0.0` | Bind address |
-| `--port N` | `5002` | HTTP port |
 
 ---
 

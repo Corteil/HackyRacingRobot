@@ -9,7 +9,7 @@ Run every script from the repo root unless noted otherwise.
 
 ### Common flags
 
-All four robot scripts — `robot_daemon.py`, `robot_gui.py`, `robot_web.py`, `robot_mobile.py` —
+All robot scripts — `robot_daemon.py`, `robot_dashboard.py` —
 accept the same core flags.  All are optional — config file values are used when a
 flag is omitted.
 
@@ -30,7 +30,7 @@ flag is omitted.
 | `--no-camera` | off | Disable camera subsystem |
 | `--no-lidar` | off | Disable LiDAR subsystem |
 | `--no-gps` | off | Disable GPS subsystem |
-| `--no-motors` | off | Suppress all motor commands (bench-test mode) |
+| `--no-motors` | off | Suppress all motor commands (bench-test mode). RC speed data is still read and shown in the dashboard. The Yukon firmware detects this mode by receiving `CMD_RC_QUERY` without any `CMD_MODE` heartbeat. |
 
 ---
 
@@ -59,9 +59,18 @@ Key public API:
 robot = Robot(...)
 robot.start()                       # connect hardware, launch all threads
 state = robot.get_state()           # RobotState snapshot (thread-safe)
-frame = robot.get_frame()           # latest camera frame (numpy RGB) or None
-aruco = robot.get_aruco_state()     # latest ArUcoState or None
+frame = robot.get_frame(cam='front_left')      # latest camera frame (numpy RGB) or None
+                                               # cam: 'front_left' | 'front_right' | 'rear'
+aruco = robot.get_aruco_state(cam='front_left') # latest ArUcoState or None
 hdg   = robot.get_heading()         # IMU heading in degrees or None
+
+# Per-camera ArUco control
+robot.set_aruco_enabled(enabled, cam='all')  # cam: 'all' | 'front_left' | 'front_right' | 'rear'
+robot.toggle_aruco(cam='all') -> bool        # returns new enabled state
+robot.get_aruco_enabled(cam='all')           # cam='all' returns dict; specific cam returns bool
+
+# Post-rotation capture size (ArUco runs on the rotated frame)
+robot.get_cam_capture_size(cam) -> (width, height)  # swapped for 90°/270° rotations
 
 robot.start_cam_recording()         # save video to ~/Videos/HackyRacingRobot/
 robot.stop_cam_recording()
@@ -148,82 +157,48 @@ log_path = setup_logging('/tmp')    # custom log directory
 
 ---
 
-### robot_gui.py
+### robot_dashboard.py
 
-4-panel pygame status display.  Reads `robot.get_state()` and `robot.get_frame()`
-at the configured GUI fps (default 10 Hz).
+Unified Flask web dashboard (port 5000).  Same `Robot` backend as `robot_daemon.py`.
 
-**Panels**
+On desktop and touchscreen the UI shows a configurable 2×2 panel grid; on mobile browsers (≤700 px) it switches to a tab view.
+
+**Panel types**
 
 | Panel | Contents |
 |-------|----------|
-| Drive | Left / right motor speed bars, throttle, steer, speed scale, RC status |
-| Telemetry | Voltage, current, board + motor temperatures, fault indicators, IMU heading / pitch / roll |
-| GPS | Fix quality, position, horizontal error, HDOP, satellites |
-| Camera | Live frame with optional ArUco / bearing overlay and IMU compass arc |
-| LiDAR | Polar distance scan (distance-coloured points, range rings) |
-| Log | Scrolling terminal showing recent log output, colour-coded by level |
-| Footer | Subsystem health badges, mode badge, no-motors warning |
+| `front_left` | Front-left camera stream with optional ArUco / bearing overlay |
+| `front_right` | Front-right camera stream with optional ArUco / bearing overlay |
+| `rear` | Rear camera stream |
+| `lidar` | LiDAR polar plot |
+| `gps_sky` | GPS sky view (satellites) |
+| `gps_track` | GPS track map |
+| `depth_map` | Depth map visualisation |
+| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll |
+| `system` | CPU, memory, disk, system stats |
+| `imu` | IMU compass and orientation display |
 
-**Keyboard**
+The 2×2 panel layout is configurable via `[layout_presets]` in `robot.ini`.  Double-tap any panel to expand it.
 
-| Key | Action |
-|-----|--------|
-| `E` | ESTOP — kill motors immediately |
-| `R` | Reset ESTOP → MANUAL mode |
-| `[` / `]` | Rotate camera −90° / +90° |
-| `T` | Toggle ArUco detection |
-| `B` | Toggle bearing overlay on camera panel |
-| `V` | Toggle camera video recording (flashing REC badge + red dot on feed) |
-| `D` | Toggle ML data logging (DLOG badge in footer) |
-| `C` | Open / close config overlay (live edit of `robot.ini` values) |
-| `Q` / `Esc` | Quit |
-
-**Bearing overlay** (press `B`)
-- Line from frame centre to each visible ArUco tag
-- Distance label in metres (when calibrated) or pixel-area proxy
-- Bearing angle in degrees from camera centre
-- Cyan crosshair and aim line for the active gate target
-- IMU compass arc at the bottom of the camera panel
-- Navigator state and target gate label in AUTO·Camera mode
-
-```bash
-python3 robot_gui.py
-python3 robot_gui.py --fps 15
-python3 robot_gui.py --no-motors
-```
-
-Accepts all [common flags](#common-flags), plus:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--fps N` | from config | GUI update rate |
-
----
-
-### robot_web.py
-
-Flask web dashboard (port 5000).  Same `Robot` backend as `robot_gui.py`.
+**ArUco overlay** — two levels, controlled per camera:
+- ArUco button (level 1): enables ArUco detection and shows tag bounding boxes
+- Bearing button (level 2): additionally shows bearing lines, distance labels, boresight crosshair, and IMU arc
 
 **Features**
-- Real-time telemetry via Server-Sent Events at 10 Hz
-- Live camera as MJPEG stream with toggleable bearing overlay
-- LiDAR polar plot on Canvas
-- IMU heading display (compass rose + numeric)
-- Navigator state and target gate badge
+- Real-time telemetry via Server-Sent Events
+- MJPEG camera streams for all three cameras
+- LiDAR polar plot
 - ESTOP / Reset controls
-- Camera rotation, ArUco toggle, bearing overlay toggle
+- ArUco toggle and bearing overlay toggle (per camera)
 - No-motors warning banner
 - GPS logging badge
-- Camera recording button (⏺ REC) — flashing badge + red dot on live feed
-- ML data logging button (⬤ DLOG) — DLOG badge in footer while active
-- Terminal log panel — colour-coded by level, filter bar, auto-scroll (`/api/logs`)
-- Mobile-responsive layout
+- Camera recording and ML data logging buttons
+- Terminal log panel with filter bar and auto-scroll
 
 ```bash
-python3 robot_web.py                    # 0.0.0.0:5000
-python3 robot_web.py --port 8080
-python3 robot_web.py --no-motors
+python3 robot_dashboard.py              # 0.0.0.0:5000
+python3 robot_dashboard.py --port 5000
+python3 robot_dashboard.py --no-motors
 ```
 
 Accepts all [common flags](#common-flags), plus:
@@ -235,38 +210,6 @@ Accepts all [common flags](#common-flags), plus:
 | `--debug` | off | Enable Flask debug mode |
 
 Open `http://<pi-ip>:5000/` in any browser on the same network.
-
----
-
-### robot_mobile.py
-
-Mobile-optimised Flask dashboard (port 5001).  Same `Robot` backend as
-`robot_web.py`; touch-friendly tab UI designed for phones.
-
-**Tabs**
-
-| Tab | Contents |
-|-----|----------|
-| Drive | Camera stream (with flashing REC dot), bearing overlay, motor bars, mode / speed, ArUco, recording and DLOG buttons |
-| Telem | Voltage, current, temperatures, IMU heading / pitch / roll compass, faults |
-| GPS | Fix quality, position, horizontal error, satellites, bookmark button |
-| System | CPU, temperature, memory, disk, LiDAR polar plot |
-| Logs | Live log viewer — colour-coded by level, filter bar, auto-scroll |
-
-ESTOP button is always visible at the bottom of every tab.
-
-```bash
-python3 robot_mobile.py                 # 0.0.0.0:5001
-python3 robot_mobile.py --port 8080
-python3 robot_mobile.py --no-motors
-```
-
-Accepts all [common flags](#common-flags), plus:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--host HOST` | `0.0.0.0` | Bind address |
-| `--port N` | `5001` | HTTP port |
 
 ---
 
@@ -308,14 +251,14 @@ Failsafe: sends `CMD_KILL` if no valid iBUS packet is received for 0.5 s.
 
 ```bash
 python3 rc_drive.py
-python3 rc_drive.py --port /dev/ttyACM0 --ibus-port /dev/ttyAMA3
+python3 rc_drive.py --yukon-port /dev/ttyACM0 --ibus-port /dev/ttyAMA3
 python3 rc_drive.py --reverse-left      # flip left motor direction
 python3 rc_drive.py --reverse-right     # flip right motor direction
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port PORT` | auto-detect | Yukon USB serial port |
+| `--yukon-port PORT` | auto-detect | Yukon USB serial port |
 | `--ibus-port PORT` | `/dev/ttyAMA3` | iBUS UART device |
 | `--throttle-ch N` | `3` | Throttle channel (1-based) |
 | `--steer-ch N` | `1` | Steering channel (1-based) |
@@ -452,7 +395,7 @@ lidar.stop()
 ```
 
 Hardware: GPIO 15 (RX) ← LD06 Tx @ 230400 8N1 via `uart0-pi5` overlay.
-GPIO 18 (PWM) → LD06 PWM control @ 30 kHz, 40% duty ≈ 10 Hz scan rate.
+GPIO 12 (PWM) → LD06 PWM control @ 30 kHz, 40% duty ≈ 10 Hz scan rate.
 
 ---
 
@@ -544,7 +487,11 @@ comment in the file.  Key sections:
 |---------|----------|
 | `[robot]` | Yukon serial port, iBUS port (iBUS port only used by `rc_drive.py`) |
 | `[rc]` | Channel mapping, deadzone, failsafe, control rate |
-| `[camera]` | Resolution, fps, rotation |
+| `[camera]` | Legacy single-camera settings (backward compat fallback) |
+| `[camera_front_left]` | IMX296 CSI CAM0 — resolution, fps, rotation (180°), ArUco, calibration file |
+| `[camera_front_right]` | IMX296 CSI CAM1 — resolution, fps, rotation (180°), ArUco, calibration file |
+| `[camera_rear]` | IMX477 USB/UVC — resolution, fps, rotation (0°), mirror, ArUco, calibration file |
+| `[stereo]` | Hardware XVS sync GPIO for front stereo pair |
 | `[aruco]` | Detection dict, calibration file template, tag size |
 | `[camera_calibrations]` | Target resolutions for `derive_calibrations.py` |
 | `[navigator]` | ArUco gate navigator tuning (obstacle stop, recovery, search) |
@@ -553,6 +500,9 @@ comment in the file.  Key sections:
 | `[gps]` | GPS port, log directory, log rate |
 | `[ntrip]` | RTK correction caster credentials |
 | `[output]` | Output directories, `max_recording_minutes` |
-| `[gui]` | Pygame GUI fps |
-| `[web]` | Web dashboard host / port |
-| `[mobile]` | Mobile dashboard host / port |
+| `[gui]` | Pygame GUI fps, display mode, layout presets |
+| `[layout_presets]` | Named 2×2 panel grid layouts for `robot_dashboard.py` |
+| `[dashboard]` | Unified web dashboard host / port |
+| `[battery]` | Battery chemistry and cell count for voltage thresholds |
+| `[imu]` | BNO085 rotation vector mode (game / absolute) |
+| `[gpio]` | Physical buttons (GPIO 17/27) and status LEDs (GPIO 22/23/25) |

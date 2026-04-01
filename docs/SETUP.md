@@ -132,9 +132,9 @@ pip install -r requirements.txt
 |---------|---------|
 | `pyserial` | Yukon serial link, iBUS, LiDAR, GNSS |
 | `picamera2` | Camera capture (IMX296) |
-| `pygame` | `robot_gui.py`, `camera_monitor.py` |
+| `pygame` | `camera_monitor.py`, `lidar_gui.py` |
 | `opencv-python-headless` | ArUco detection, image processing |
-| `flask` | `robot_web.py`, `robot_mobile.py`, `camera_web.py` |
+| `flask` | `robot_dashboard.py`, `camera_web.py` |
 | `pillow` | `tools/generate_aruco_tags.py`, `tools/make_checkerboard_pdf.py` |
 | `psutil` | System stats (CPU, memory, disk) |
 
@@ -158,13 +158,13 @@ Adjust the repo path if your clone is elsewhere.
 
 ## Uploading MicroPython firmware to the Yukon
 
-Use `tools/upload.py` (not `mpremote` or `ampy` — these fail because `yukon.reset()` drops USB on every Ctrl+C):
+Use **Thonny** to upload `yukon_firmware_and_software/main.py`:
 
-```bash
-python3 tools/upload.py yukon_firmware_and_software/main.py
-```
+1. Open `yukon_firmware_and_software/main.py` in Thonny.
+2. Select **File → Save as… → MicroPython device** and save as `main.py`.
+3. Press **Stop / Restart** to reboot the Yukon with the new firmware.
 
-This handles the double USB reconnect caused by `yukon.reset()` on each Ctrl+C interrupt before entering the raw REPL.
+> **Note:** `tools/upload.py`, `mpremote`, and `ampy` all fail reliably because `yukon.reset()` drops the USB connection on every Ctrl+C before the raw REPL handshake completes. Use Thonny instead.
 
 ---
 
@@ -202,9 +202,7 @@ See [`docs/CALIBRATION.md`](CALIBRATION.md) for the full walk-through. Quick sum
 ## Running frontends
 
 > **Run only ONE frontend at a time.**
-> `robot_gui.py`, `robot_web.py`, and `robot_mobile.py` each create their own `Robot` instance and claim the same hardware ports (Yukon USB serial, iBUS UART, LiDAR UART, GPS USB serial). Launching two simultaneously causes port-already-open errors and undefined behaviour.
-
-If you need both a GUI and a web interface consider running `robot_daemon.py` headlessly and accessing it via the web dashboard only.
+> `robot_dashboard.py` and `robot_daemon.py` each create their own `Robot` instance and claim the same hardware ports (Yukon USB serial, LiDAR UART, GPS USB serial). Launching two simultaneously causes port-already-open errors and undefined behaviour.
 
 ---
 
@@ -212,11 +210,11 @@ If you need both a GUI and a web interface consider running `robot_daemon.py` he
 
 | Script | Port | Description |
 |--------|------|-------------|
-| `robot_web.py` | 5000 | Desktop robot dashboard |
-| `robot_mobile.py` | 5001 | Mobile robot dashboard (tabs: Drive, Telem, GPS, System) |
-| `tools/yukon_sim_web.py` | 5002 | Yukon hardware simulator web UI (offline testing, fault injection) |
+| `robot_dashboard.py` | 5000 | Unified robot dashboard — 2×2 panel grid (desktop/touchscreen) or tab view (mobile) |
+| `tools/yukon_sim.py --mode web` | 5002 | Yukon hardware simulator web UI (offline testing, fault injection) |
+| `tools/gps_route_builder_web.py` | 5003 | GPS route builder web UI |
 | `tools/read_data_log.py` | 5004 | JSONL data-log viewer (Drive, Telemetry, GPS map, LiDAR, Inspector) |
-| `camera_web.py` | 8080 | Mobile camera interface (MJPEG stream, ArUco, capture) |
+| `camera_web.py` | 8080 | Standalone camera interface (MJPEG stream, ArUco, capture) |
 
 Access from any browser on the same network: `http://<pi-ip>:<port>/`
 
@@ -224,4 +222,4 @@ Access from any browser on the same network: `http://<pi-ip>:<port>/`
 
 ## Configuration
 
-All runtime settings live in `robot.ini`. See the file for section-by-section documentation. The config overlay in `robot_gui.py` (press `C`) allows live editing without restarting.
+All runtime settings live in `robot.ini`. See the file for section-by-section documentation.

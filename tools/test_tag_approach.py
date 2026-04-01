@@ -78,7 +78,7 @@ log = logging.getLogger("test_tag_approach")
 
 # ── Emergency stop — registered as soon as robot is created ──────────────────
 #
-# SIGINT (Ctrl+C) and SIGTERM both call robot.kill() immediately, before any
+# SIGINT (Ctrl+C) and SIGTERM both call robot.estop() immediately, before any
 # Python stack unwinding.  This sends CMD_KILL directly to the Yukon over
 # serial — the fastest possible motor stop — then exits.
 #
@@ -92,8 +92,7 @@ def _emergency_stop(signum, frame):
     print("\n\n  *** EMERGENCY STOP ***", flush=True)
     if _robot_ref is not None:
         try:
-            _robot_ref.kill()          # CMD_KILL direct to Yukon
-            _robot_ref.set_mode(RobotMode.MANUAL)
+            _robot_ref.estop()         # CMD_KILL direct to Yukon
         except Exception:
             pass
     sys.exit(1)
@@ -340,7 +339,7 @@ def _run(robot, args, result: TestResult,
                 robot.drive(l2, r2)
             time.sleep(dt)
         if not args.no_motors:
-            robot.kill()   # CMD_KILL — zeroes both motors on the Yukon
+            robot.estop()   # CMD_KILL — zeroes both motors on the Yukon
 
     try:
         while True:
@@ -433,12 +432,12 @@ def _run(robot, args, result: TestResult,
         # Should not normally reach here — SIGINT handler fires first.
         # Belt-and-braces in case signal fires between handler registration.
         if not args.no_motors:
-            robot.kill()
+            robot.estop()
         return result.fail("interrupted by operator",
                            tag_found_s=tag_found_at or -1.0)
     finally:
         if not args.no_motors:
-            robot.kill()   # CMD_KILL — always zeroes motors on exit
+            robot.estop()   # CMD_KILL — always zeroes motors on exit
 
 
 # ── Three tests ───────────────────────────────────────────────────────────────
@@ -525,31 +524,32 @@ def _print_setup(num: int, args):
 # ── Robot init ────────────────────────────────────────────────────────────────
 
 def _make_robot(args) -> Robot:
+    from robot_utils import _cfg
     cfg = configparser.ConfigParser()
     if os.path.exists(args.config):
         cfg.read(args.config)
-    else:
-        cfg["robot"]  = {"yukon_port": "auto", "ibus_port": "/dev/null"}
-        cfg["camera"] = {"disabled": "false", "width": "640",
-                         "height": "480", "fps": "30", "rotation": "180"}
 
-    if not cfg.has_section("aruco"):
-        cfg.add_section("aruco")
-    cfg["aruco"]["tag_size"]   = str(args.tag_size)
-    cfg["aruco"]["calib_file"] = args.calib
+    bool_val = lambda x: x.lower() == 'true'
+    port_val = lambda x: None if x.lower() in ('auto', '') else x
 
-    for sec, key, val in [("lidar", "disabled", "true"),
-                           ("gps",   "disabled", "true")]:
-        if not cfg.has_section(sec):
-            cfg.add_section(sec)
-        cfg[sec][key] = val
+    yukon_port = args.yukon_port or _cfg(cfg, 'robot', 'yukon_port', None, port_val)
 
-    if args.no_motors:
-        if not cfg.has_section("robot"):
-            cfg.add_section("robot")
-        cfg["robot"]["no_motors"] = "true"
-
-    return Robot(cfg)
+    return Robot(
+        yukon_port     = yukon_port,
+        ibus_port      = _cfg(cfg, 'robot',  'ibus_port',   '/dev/null'),
+        enable_camera  = not _cfg(cfg, 'camera', 'disabled', False, bool_val),
+        cam_width      = _cfg(cfg, 'camera', 'width',       640,   int),
+        cam_height     = _cfg(cfg, 'camera', 'height',      480,   int),
+        cam_fps        = _cfg(cfg, 'camera', 'fps',         30,    int),
+        cam_rotation   = _cfg(cfg, 'camera', 'rotation',    180,   int),
+        enable_aruco   = True,
+        aruco_dict     = _cfg(cfg, 'aruco',  'dict',        'DICT_4X4_1000'),
+        aruco_calib    = args.calib,
+        aruco_tag_size = args.tag_size,
+        enable_lidar   = False,
+        enable_gps     = False,
+        no_motors      = args.no_motors,
+    )
 
 
 def _wait_ready(robot, timeout=8.0):
@@ -599,6 +599,8 @@ def main():
                    help=f"UDP port for nav_visualiser (0=off, default {VIS_PORT_DEFAULT})")
     p.add_argument("--vis-host",       default="127.0.0.1",
                    help="UDP host for nav_visualiser (default 127.0.0.1)")
+    p.add_argument("--yukon-port",     default=None,
+                   help="Override Yukon serial port (e.g. /dev/ttyACM0)")
     p.add_argument("--config",         default="robot.ini")
     p.add_argument("--log-level",      default="WARNING")
     args = p.parse_args()
@@ -687,7 +689,7 @@ def main():
     finally:
         emitter.close()
         if not args.no_motors:
-            robot.kill()
+            robot.estop()
         robot.set_mode(RobotMode.MANUAL)
         robot.stop()
 

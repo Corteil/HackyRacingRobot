@@ -17,14 +17,8 @@ Raspberry Pi–hosted controller for a Pimoroni Yukon robot. A Pi reads an RC tr
 ## Quick start
 
 ```bash
-# Run the full robot stack with pygame GUI
-python3 robot_gui.py
-
-# Run the desktop web dashboard
-python3 robot_web.py
-
-# Run the mobile web dashboard (port 5001)
-python3 robot_mobile.py
+# Unified web dashboard (port 5000) — desktop, touchscreen, and mobile
+python3 robot_dashboard.py
 
 # RC drive only (no GUI)
 python3 rc_drive.py
@@ -35,7 +29,7 @@ python3 lidar_gui.py
 # Camera focus/ArUco monitor (pygame)
 python3 camera_monitor.py
 
-# Camera web interface (mobile, port 8080)
+# Camera web interface (standalone, port 8080)
 python3 camera_web.py
 ```
 
@@ -48,10 +42,11 @@ python3 camera_web.py
 | Pimoroni Yukon | RP2040-based motor controller board |
 | Left motors | `DualMotorModule` in SLOT2 |
 | Right motors | `DualMotorModule` in SLOT5 |
-| RC receiver | FlySky iBUS on GPIO 9 / `/dev/ttyAMA3` (`uart3-pi5` overlay) |
+| RC receiver | FlySky iBUS → Yukon GP26 (PIO UART, decoded by Yukon firmware) |
 | Host ↔ Yukon | USB serial `/dev/ttyACM0` at 115200 baud |
-| Camera | IMX296 (global shutter, fixed focus) via picamera2 |
-| LiDAR | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 18 |
+| Front cameras | IMX296 global shutter (×2) via picamera2 CSI (180° rotation — mounted inverted) |
+| Rear camera | IMX477 HQ camera via USB/UVC (OpenCV, mirror=true) |
+| LiDAR | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 12 |
 
 ---
 
@@ -60,12 +55,10 @@ python3 camera_web.py
 | File | Purpose |
 |------|---------|
 | `yukon_firmware_and_software/main.py` | MicroPython firmware for the Yukon RP2040 |
-| `robot_daemon.py` | Pi-side robot daemon (camera, LiDAR, GPS, RC, Yukon serial) |
-| `robot_gui.py` | 4-panel pygame monitor |
-| `robot_web.py` | Flask web dashboard with MJPEG stream (port 5000) |
-| `robot_mobile.py` | Mobile-optimised Flask dashboard with tab navigation (port 5001) |
+| `robot_daemon.py` | Pi-side robot daemon (cameras, LiDAR, GPS, RC, Yukon serial) |
+| `robot_dashboard.py` | Unified Flask web dashboard — 2×2 panel grid + mobile tab view (port 5000) |
 | `camera_monitor.py` | Pygame camera monitor with ArUco overlay, sharpness, and calibration |
-| `camera_web.py` | Mobile Flask camera interface with MJPEG stream (port 8080) |
+| `camera_web.py` | Standalone Flask camera interface with MJPEG stream (port 8080) |
 | `rc_drive.py` | Minimal RC-to-motor bridge |
 | `drivers/ibus.py` | FlySky iBUS receiver library |
 | `drivers/ld06.py` | LD06 LiDAR driver |
@@ -74,9 +67,8 @@ python3 camera_web.py
 | `robot/gps_navigator.py` | GPS waypoint navigator |
 | `gnss/` | GNSS driver package (TAU1308, UBlox variants, NTRIP) |
 | `robot.ini` | Runtime configuration |
-| `tools/upload.py` | MicroPython file uploader |
-| `tools/yukon_sim.py` | Yukon serial simulator (PTY) |
-| `tools/calibrate_camera.py` | Interactive camera lens calibration tool (outputs `camera_cal.npz`) |
+| `tools/yukon_sim.py` | Yukon serial simulator (`--mode gui\|web\|headless`) |
+| `tools/calibrate_camera.py` | Interactive camera lens calibration tool |
 | `tools/generate_aruco_tags.py` | Generate ArUco tag PDFs (custom IDs, paper size, dictionary) |
 | `tools/make_checkerboard_pdf.py` | Generate printable checkerboard calibration target PDF |
 | `yukon_firmware_and_software/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
