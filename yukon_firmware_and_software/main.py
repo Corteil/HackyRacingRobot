@@ -6,7 +6,6 @@ import random
 
 from pimoroni_yukon import Yukon, SLOT1, SLOT2, SLOT3, SLOT5
 from pimoroni_yukon.modules import BenchPowerModule, DualMotorModule, LEDStripModule
-from pimoroni_yukon.timing import ticks_ms
 from pimoroni_yukon.errors import (FaultError, OverVoltageError,
                                    OverCurrentError, OverTemperatureError)
 import rp2
@@ -436,6 +435,11 @@ def motor_core(module_left, module_right):
                     _decode()
     except Exception as e:
         print("motor_core CRASHED:", type(e).__name__, e)
+        _lk.acquire()
+        _sp[0] = 0.0
+        _sp[1] = 0.0
+        _lk.release()
+        _running = False
 
 
 
@@ -469,7 +473,7 @@ try:
     yukon.enable_main_output()
 
     module_bench.enable()
-    sleep_ms(500)                # allow module to come up before setting voltage
+    sleep_ms(200)                # allow module to come up before setting voltage
     module_bench.set_voltage(BENCH_VOLTAGE)
 
     module1.enable()
@@ -607,6 +611,10 @@ try:
                         elif value == 1: yukon.set_led(LED_A, True)
                         elif value == 2: yukon.set_led(LED_B, False)
                         elif value == 3: yukon.set_led(LED_B, True)
+                        else:
+                            _nak()
+                            state = 'SYNC'
+                            continue
 
                     elif cmd_code == CMD_LEFT:
                         if _rc_mode == RC_AUTO:
@@ -798,10 +806,14 @@ try:
             try:
                 yukon.enable_main_output()
                 module_bench.enable()
-                sleep_ms(500)
+                sleep_ms(200)
                 module_bench.set_voltage(BENCH_VOLTAGE)
                 module2.enable()
+                for motor in module2.motors:
+                    motor.enable()
                 module5.enable()
+                for motor in module5.motors:
+                    motor.enable()
                 _pattern = 0
                 _set_strip(0, 0, 0)     # clear fault pattern after successful recovery
             except Exception as e2:
