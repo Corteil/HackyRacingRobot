@@ -30,15 +30,19 @@ Open `http://<pi-ip>:5000/` in any browser. On desktop/touchscreen the UI shows 
 | Component | Detail |
 |-----------|--------|
 | Pimoroni Yukon | RP2040-based motor controller |
-| LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT3 |
+| Bench power | `BenchPowerModule` (5 V regulated output) in SLOT1 |
 | Left motors | `DualMotorModule` in SLOT2 |
+| LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT3 |
 | Right motors | `DualMotorModule` in SLOT5 |
 | RC receiver | FlySky iBUS → Yukon GP26 (PIO UART, decoded by firmware) |
 | Host ↔ Yukon | USB serial `/dev/ttyACM0` at 115200 baud |
-| Camera | IMX296 global shutter via picamera2 |
-| LiDAR | LD06 on `/dev/ttyAMA0` |
-| GNSS | Allystar TAU1308 RTK receiver |
+| Front cameras | IMX296 global shutter (×2) via picamera2 CSI (180° rotation — mounted inverted) |
+| Rear camera | IMX477 HQ camera via USB/UVC (OpenCV, mirror=true) |
+| LiDAR | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 12 |
+| GNSS | Allystar TAU1308 RTK receiver on `/dev/ttyUSB0` |
 | IMU | BNO085 on Yukon I2C (Qw/ST port) |
+| GPIO buttons | ESTOP (GPIO 17) / START (GPIO 27) |
+| GPIO LEDs | Status LEDs on GPIO 22, 23, 25 |
 
 ---
 
@@ -61,6 +65,8 @@ robot/
   aruco_detector.py         OpenCV ArUco marker detector
   aruco_navigator.py        Autonomous gate navigator (ArUco + IMU)
   gps_navigator.py          GPS waypoint navigator
+  stereo_depth.py           OpenCV stereo depth (BM algorithm)
+  depth_estimator.py        Hailo-8L monocular depth (scdepthv3, optional)
 gnss/                       GNSS driver package (TAU1308, UBlox, NTRIP)
 yukon_firmware_and_software/
   main.py                   MicroPython firmware for the Yukon RP2040
@@ -68,11 +74,16 @@ yukon_firmware_and_software/
 tools/
   upload.py                 MicroPython uploader (handles Yukon USB reset)
   calibrate_camera.py       Lens calibration tool (outputs camera_cal.npz)
+  derive_calibrations.py    Scale master calibration to all target resolutions
   generate_aruco_tags.py    Generate ArUco tag PDFs
   ibus_sim.py               Interactive iBUS RC receiver simulator (PTY)
-  yukon_sim.py              PTY-based Yukon serial simulator (headless)
-  yukon_sim_gui.py          Yukon simulator with Pygame GUI
-  yukon_sim_web.py          Yukon simulator with browser dashboard (port 5002)
+  pygame_gamepad_ibus_rx.py Gamepad → iBUS PTY simulator (physical joystick)
+  depth_viewer.py           Standalone depth map visualiser (connects to :5000)
+  setup_depth_model.py      Download scdepthv3 HEF model for Hailo-8L
+  nav_visualiser.py         Real-time overhead navigation view
+  yukon_sim.py              PTY-based Yukon serial simulator (headless/GUI/web)
+  gps_route_builder.py      Pygame GPS waypoint editor
+  gps_route_builder_web.py  Web GPS waypoint editor (port 5003)
   read_data_log.py          Web viewer for JSONL data logs (port 5004)
   test_*.py                 Unit tests and live-display tools
 docs/
@@ -103,6 +114,8 @@ Set `max_recording_minutes` in `[output]` to roll video to a new file automatica
 - [ROBOT_FILES.md](docs/ROBOT_FILES.md) — All Pi-side Python files: usage, keys, flags, API
 - [PROTOCOL.md](docs/PROTOCOL.md) — 5-byte serial protocol specification
 - [SETUP.md](docs/SETUP.md) — Wiring, device tree overlays, dependencies, firmware upload
+- [CALIBRATION.md](docs/CALIBRATION.md) — Camera lens calibration workflow
+- [GPIO.md](docs/GPIO.md) — GPIO pin allocation reference
 - [tools/README.md](tools/README.md) — All tools and tests reference
 
 ---

@@ -435,6 +435,41 @@ Output: `docs/checkerboard_9x6.pdf`
 
 ## Simulators
 
+### pygame_gamepad_ibus_rx.py
+
+Physical gamepad → iBUS PTY simulator. Uses a pygame joystick/gamepad to drive iBUS packets on a PTY, replacing the keyboard-based `ibus_sim.py` for use with a physical controller.
+
+Channel layout matches `robot.ini` defaults: CH1 aileron, CH2 elevator, CH3 throttle, CH4 rudder, CH5–CH8 mode switches, CH10 bookmark.
+
+```bash
+python3 tools/pygame_gamepad_ibus_rx.py                          # default joystick 0
+python3 tools/pygame_gamepad_ibus_rx.py --list-joysticks         # list available devices
+python3 tools/pygame_gamepad_ibus_rx.py --joystick 1 --hz 143
+python3 tools/pygame_gamepad_ibus_rx.py --axis-aileron 3 --axis-elevator 4  # Xbox layout
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--list-joysticks` | off | Print available joystick devices and exit |
+| `--joystick N` | `0` | Joystick device index |
+| `--hz N` | `143` | iBUS packet rate in Hz |
+| `--deadzone N` | `0.05` | Axis deadzone (0.0–1.0) |
+| `--axis-rudder N` | `0` | Axis index for CH4 rudder (left stick H) |
+| `--axis-throttle N` | `1` | Axis index for CH3 throttle (left stick V, inverted) |
+| `--axis-aileron N` | `2` | Axis index for CH1 aileron (right stick H) |
+| `--axis-elevator N` | `3` | Axis index for CH2 elevator (right stick V) |
+| `--btn-mode N` | `0` | Button for CH5 mode toggle |
+| `--btn-speed N` | `1` | Button for CH6 speed cycle |
+| `--btn-type N` | `2` | Button for CH7 type cycle |
+| `--btn-gpslog N` | `3` | Button for CH8 GPS log toggle |
+| `--btn-bookmark N` | `4` | Button for CH10 momentary bookmark |
+| `--btn-centre N` | `6` | Button to centre sticks and drop throttle |
+| `--btn-signal N` | `7` | Button to toggle RC signal loss |
+
+On startup the PTY path is printed to stderr. Pass it to `yukon_sim.py` or `rc_drive.py` via `--ibus-port`.
+
+---
+
 ### ibus_sim.py
 
 Interactive iBUS RC receiver simulator — creates a PTY and emits iBUS packets at ~143 Hz, mimicking a FlySky receiver connected to a RadioMaster TX-16S.
@@ -592,6 +627,51 @@ python3 tools/read_data_log.py --dir /path/to/logs --port 5004
 | Inspector | Raw JSON for any frame |
 
 Charts downsample long runs to 800 points; full LiDAR data is fetched on demand per frame.
+
+---
+
+### depth_viewer.py
+
+Standalone depth map visualiser. Connects to a running `robot_dashboard.py` and displays the left/right rectified camera frames, a Jet-colourmap depth map (stereo, mono, or fusion), a depth histogram, and source/metric status overlay.
+
+Does not instantiate `Robot` directly — reads over the web stream, so it works against a remote Pi.
+
+```bash
+python3 tools/depth_viewer.py                       # local robot at :5000
+python3 tools/depth_viewer.py --host 192.168.1.42
+python3 tools/depth_viewer.py --max-depth 5.0 --fps 20
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host HOST` | `localhost` | Dashboard host |
+| `--port N` | `5000` | Dashboard port |
+| `--max-depth M` | `8.0` | Depth range for colour scale in metres |
+| `--fps N` | `15` | Display refresh rate in Hz |
+
+**Keys:** `Q` / `Esc` — quit.
+
+---
+
+### setup_depth_model.py
+
+Download and verify the `scdepthv3` HEF model for the Hailo-8L depth accelerator.
+Downloads from the Hailo Model Zoo S3 bucket and places the file at `models/scdepthv3.hef` relative to the project root. Also verifies the Hailo device is reachable.
+
+```bash
+python3 tools/setup_depth_model.py
+python3 tools/setup_depth_model.py --model-dir /path/to/models/
+python3 tools/setup_depth_model.py --force         # re-download even if file exists
+python3 tools/setup_depth_model.py --no-verify     # skip Hailo device check
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model-dir DIR` | `<project_root>/models/` | Destination directory |
+| `--force` | off | Re-download even if the file already exists |
+| `--no-verify` | off | Skip Hailo device verification after download |
+
+Enable depth in `robot.ini` (`[depth] enabled = true`) then configure `mode` and `hailo_model` as needed.
 
 ---
 

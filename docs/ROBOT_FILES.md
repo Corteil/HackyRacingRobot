@@ -72,9 +72,16 @@ robot.get_aruco_enabled(cam='all')           # cam='all' returns dict; specific 
 # Post-rotation capture size (ArUco runs on the rotated frame)
 robot.get_cam_capture_size(cam) -> (width, height)  # swapped for 90°/270° rotations
 
-robot.start_cam_recording()         # save video to ~/Videos/HackyRacingRobot/
-robot.stop_cam_recording()
-robot.is_cam_recording()            # bool
+robot.start_cam_recording(cam='all') # cam: 'all' | 'front_left' | 'front_right' | 'rear'
+robot.stop_cam_recording(cam='all') # returns list of saved file paths
+robot.is_cam_recording(cam='any')   # cam='any' returns True if any camera is recording
+
+# Bench power (BenchPowerModule in SLOT1)
+robot.set_bench(on: bool)           # enable / disable 5 V regulated output
+
+# Depth map (requires [depth] enabled = true in robot.ini)
+robot.get_depth_map() -> DepthMap                    # latest depth map snapshot
+robot.get_depth_at(px: int, py: int) -> float | None # metric depth at pixel coords
 
 robot.start_data_log()              # save JSONL to ~/Documents/HackyRacingRobot/
 robot.stop_data_log()
@@ -504,5 +511,6 @@ comment in the file.  Key sections:
 | `[layout_presets]` | Named 2×2 panel grid layouts for `robot_dashboard.py` |
 | `[dashboard]` | Unified web dashboard host / port |
 | `[battery]` | Battery chemistry and cell count for voltage thresholds |
+| `[depth]` | Depth mapping: enable, mode (stereo/mono/fusion), Hailo model path, BM params |
 | `[imu]` | BNO085 rotation vector mode (game / absolute) |
 | `[gpio]` | Physical buttons (GPIO 17/27) and status LEDs (GPIO 22/23/25) |
