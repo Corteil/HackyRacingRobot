@@ -223,23 +223,26 @@ class BNO085:
     def roll(self):
         """Return roll in degrees (-180.0 to +180.0), derived from stored quaternion.
 
-        Uses standard aerospace ZYX Euler convention, matching heading().
         Positive roll = right side down.
+        The BNO085 Y-axis points forward on this robot, so pitch/roll axes are
+        swapped relative to the default aerospace ZYX convention.
         """
         qx, qy, qz, qw = self._quat
-        sinr_cosp = 2.0 * (qw * qx + qy * qz)
-        cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
-        return math.degrees(math.atan2(sinr_cosp, cosr_cosp))
+        sinp = 2.0 * (qw * qy - qz * qx)
+        sinp = max(-1.0, min(1.0, sinp))
+        return math.degrees(math.asin(sinp))
 
     def pitch(self):
         """Return pitch in degrees (-90.0 to +90.0), derived from stored quaternion.
 
         Positive pitch = nose up.
+        The BNO085 Y-axis points forward on this robot, so pitch/roll axes are
+        swapped relative to the default aerospace ZYX convention.
         """
         qx, qy, qz, qw = self._quat
-        sinp = 2.0 * (qw * qy - qz * qx)
-        sinp = max(-1.0, min(1.0, sinp))   # clamp for numerical safety at ±90°
-        return math.degrees(math.asin(sinp))
+        sinr_cosp = 2.0 * (qw * qx + qy * qz)
+        cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+        return math.degrees(math.atan2(sinr_cosp, cosr_cosp))
 
     def linear_acceleration(self):
         """Return linear acceleration as (x, y, z) tuple in m/s², gravity removed.
