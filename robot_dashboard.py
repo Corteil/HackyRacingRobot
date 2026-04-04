@@ -1538,9 +1538,9 @@ function drawArtificialHorizon(canvas, pitch, roll) {
     ctx.restore(); return;
   }
 
-  const rollRad  = roll  * Math.PI / 180;
-  // Pitch shift: each degree moves the horizon ~r/45 px
-  const pitchPx  = pitch * (r / 45);
+  const rollRad  = -roll  * Math.PI / 180;  // negate: sensor +roll = right-down → CCW on screen
+  // Pitch shift: negate so nose-up moves horizon line down (more sky above reference)
+  const pitchPx  = -pitch * (r / 45);
 
   // Draw tilted sky/ground
   ctx.save();
