@@ -907,12 +907,23 @@ class _Camera:
             self._aruco_ok = False
             log.info(f"{self._name}: Picamera2 stopped")
 
+    @staticmethod
+    def _find_usb_video_device() -> str:
+        """Return the first USB UVC /dev/videoN device found via sysfs, or /dev/video0."""
+        import glob
+        for vpath in sorted(glob.glob('/dev/video*')):
+            name = os.path.basename(vpath)
+            sys_dev = f'/sys/class/video4linux/{name}/device'
+            if os.path.islink(sys_dev) and '/usb' in os.path.realpath(sys_dev):
+                return vpath
+        return '/dev/video0'
+
     def _run_opencv(self):
         import cv2
         device = self._device
         if not os.path.exists(device):
-            log.warning(f"{self._name}: device {device!r} not found — trying /dev/video0")
-            device = '/dev/video0'
+            device = self._find_usb_video_device()
+            log.warning(f"{self._name}: device {self._device!r} not found — trying {device}")
         cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._capture_w)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._capture_h)
@@ -2527,7 +2538,7 @@ class Robot:
             if self._yukon:
                 try:
                     result = self._yukon.query_sensor()
-                except (_serial.SerialException, OSError):
+                except (_serial.SerialException, OSError, TypeError):
                     self._reconnect_yukon()
                     self._stop_evt.wait(interval)
                     continue
@@ -2693,7 +2704,7 @@ class Robot:
                     if led_b != last_led_b:
                         yukon.set_led_b(led_b)
                         last_led_b = led_b
-                except (_serial.SerialException, OSError):
+                except (_serial.SerialException, OSError, TypeError):
                     self._reconnect_yukon()
 
             if mode is RobotMode.ESTOP:
@@ -2702,7 +2713,7 @@ class Robot:
                     if self._yukon:
                         try:
                             self._yukon.kill()
-                        except (_serial.SerialException, OSError):
+                        except (_serial.SerialException, OSError, TypeError):
                             self._reconnect_yukon()
                     last_left = last_right = 0.0
                 if last_mode is not RobotMode.ESTOP:
@@ -2802,7 +2813,7 @@ class Robot:
                 if left_b != last_left or right_b != last_right:
                     try:
                         self._yukon.drive(left, right)
-                    except (_serial.SerialException, OSError):
+                    except (_serial.SerialException, OSError, TypeError):
                         self._reconnect_yukon()
                     last_left, last_right = left_b, right_b
 

@@ -5,12 +5,14 @@
 | Component     | Detail |
 |---------------|--------|
 | Pimoroni Yukon | RP2040-based motor controller board |
-| PowerBench    | `BenchPowerModule` in SLOT1 (5 V regulated output) |
+| PowerBench    | `BenchPowerModule` in SLOT4 (5 V regulated output; GPIO13=PWM6B) |
 | Left motors   | `DualMotorModule` in SLOT2 |
 | Right motors  | `DualMotorModule` in SLOT5 |
 | RC receiver   | FlySky iBUS → Yukon GP26 (PIO UART, decoded by Yukon firmware) |
 | Host ↔ Yukon  | USB serial `/dev/ttyACM0` at 115200 baud |
-| Camera        | IMX296 (global shutter, fixed focus) via picamera2 |
+| Camera FL     | IMX296 global shutter, CSI CAM0 (`/base/.../i2c@80000`) via Picamera2 |
+| Camera FR     | IMX296 global shutter, CSI CAM1 (`/base/.../i2c@88000`) via Picamera2 |
+| Camera Rear   | IMX477 HQ camera via USB/UVC adapter → `/dev/camera_rear` (OpenCV) |
 | LiDAR         | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 12 |
 
 ---
@@ -119,6 +121,37 @@ SUBSYSTEM=="pwm", KERNEL=="pwm[0-9]*", ACTION=="add", \
 ```
 
 Reload rules: `sudo udevadm control --reload-rules`
+
+---
+
+## Rear camera udev symlink
+
+The USB/UVC rear camera gets assigned a `/dev/videoN` node that can change on reboot. Install a stable symlink so `robot.ini`'s `device = /dev/camera_rear` always resolves correctly.
+
+1. Find the vendor/product ID and device node of your USB camera adapter:
+   ```bash
+   lsusb
+   # e.g.  Bus 002 Device 002: ID 0c45:636d ...
+
+   v4l2-ctl --list-devices
+   # shows each camera and its /dev/videoN node(s)
+   ```
+
+2. Create the rule (replace `0c45` and `636d` with your adapter's IDs):
+   ```
+   # /etc/udev/rules.d/99-camera-rear.rules
+   SUBSYSTEM=="video4linux", ATTRS{idVendor}=="0c45", ATTRS{idProduct}=="636d", \
+       SYMLINK+="camera_rear"
+   ```
+
+3. Reload and trigger:
+   ```bash
+   sudo udevadm control --reload-rules
+   sudo udevadm trigger
+   ls -la /dev/camera_rear   # should point to /dev/videoN
+   ```
+
+> Without this rule the daemon falls back automatically to the first USB video device it finds via sysfs, but the stable symlink is more reliable.
 
 ---
 
