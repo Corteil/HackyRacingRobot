@@ -1534,7 +1534,7 @@ _SPEED_MIN    = 0.25  # scale factor at CH6=1000
 _DEADZONE        = 30     # µs either side of mid treated as zero
 _FAILSAFE_S      = 0.5    # seconds without iBUS packet → failsafe in AUTO
 _CONTROL_HZ      = 50
-_TELEMETRY_HZ    = 1
+_TELEMETRY_HZ    = 10
 
 
 def _auto_type_from_ch(ch_val: int) -> AutoType:
@@ -2537,7 +2537,7 @@ class Robot:
     def _telemetry_thread(self):
         """Poll Yukon sensors and trigger ESTOP on fault."""
         import serial as _serial
-        interval = 1.0 / _TELEMETRY_HZ   # sensor poll is fixed at 1 Hz
+        interval = 1.0 / _TELEMETRY_HZ
         _MAX_SILENT_POLLS = 5   # consecutive None results before treating as disconnect
         silent_count = 0
         while not self._stop_evt.is_set():

@@ -1042,9 +1042,8 @@ function updateGpsPanel(i, s) {
 function updateSkyviewPanel(i, s) {
   const g = s.gps;
   const c = el(`q${i}-sky-canvas`); if (!c) return;
-  const W = c.clientWidth, H = c.clientHeight;
-  if (!W || !H) return;
-  c.width = W; c.height = H;
+  if (!_syncCanvasSize(c)) return;
+  const W = c.width, H = c.height;
   const ctx = c.getContext('2d');
   const cx = W/2, cy = H/2, r = Math.min(W,H)/2 - 10;
   ctx.clearRect(0,0,W,H);
@@ -1081,9 +1080,8 @@ function updateSkyviewPanel(i, s) {
 function updateTrackPanel(i, s) {
   gpsTrackPush(s.gps);
   const c = el(`q${i}-trk-canvas`); if (!c) return;
-  const W = c.clientWidth, H = c.clientHeight;
-  if (!W || !H) return;
-  c.width = W; c.height = H;
+  if (!_syncCanvasSize(c)) return;
+  const W = c.width, H = c.height;
   const ctx = c.getContext('2d');
   ctx.clearRect(0,0,W,H);
   const pts = el(`q${i}-trk-pts`);
@@ -1116,9 +1114,8 @@ function updateTrackPanel(i, s) {
 function updateScatterPanel(i, s) {
   gpsTrackPush(s.gps);
   const c = el(`q${i}-scat-canvas`); if (!c) return;
-  const W = c.clientWidth, H = c.clientHeight;
-  if (!W || !H) return;
-  c.width = W; c.height = H;
+  if (!_syncCanvasSize(c)) return;
+  const W = c.width, H = c.height;
   const ctx = c.getContext('2d');
   ctx.clearRect(0,0,W,H);
   const pts = el(`q${i}-scat-pts`);
@@ -1162,9 +1159,8 @@ function updateScatterPanel(i, s) {
 // ── GPS Signals panel ─────────────────────────────────────────────────────────
 function updateSignalsPanel(i, s) {
   const c = el(`q${i}-gsig-canvas`); if (!c) return;
-  const W = c.clientWidth, H = c.clientHeight;
-  if (!W || !H) return;
-  c.width = W; c.height = H;
+  if (!_syncCanvasSize(c)) return;
+  const W = c.width, H = c.height;
   const ctx = c.getContext('2d');
   ctx.clearRect(0,0,W,H);
   const sats = [...(s.gps.satellites_data||[])].sort((a,b)=>a.svid<b.svid?-1:1);
@@ -1441,11 +1437,16 @@ function drawCompass(canvas, heading) {
   ctx.fillStyle=C.cyan; ctx.fill();
 }
 
+function _syncCanvasSize(canvas) {
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (!W || !H) return false;
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  return true;
+}
 function drawCompassLarge(canvas, heading) {
   if (!canvas) return;
-  const W = canvas.clientWidth, H = canvas.clientHeight;
-  if (!W || !H) return;
-  canvas.width = W; canvas.height = H;
+  if (!_syncCanvasSize(canvas)) return;
+  const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext('2d');
   const cx = W/2, cy = H/2, r = Math.min(W,H)/2 - 4;
   ctx.clearRect(0,0,W,H);
@@ -1518,9 +1519,8 @@ function drawCompassLarge(canvas, heading) {
 
 function drawArtificialHorizon(canvas, pitch, roll) {
   if (!canvas) return;
-  const W = canvas.clientWidth, H = canvas.clientHeight;
-  if (!W || !H) return;
-  canvas.width = W; canvas.height = H;
+  if (!_syncCanvasSize(canvas)) return;
+  const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext('2d');
   const cx = W/2, cy = H/2;
   const r  = Math.min(W,H)/2 - 2;
