@@ -305,6 +305,11 @@ button:active{background:#2a2a42}
 /* Telemetry */
 .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:5px 8px}
 .tgrid.three{grid-template-columns:1fr 1fr 1fr}
+/* Telemetry instruments */
+.telem-instruments{flex:1;min-height:0;display:flex;gap:4px;padding:4px}
+.telem-inst-wrap{flex:1;display:flex;flex-direction:column;align-items:center;min-width:0}
+.telem-inst-canvas{width:100%;flex:1;min-height:0;display:block}
+.telem-inst-lbl{font-size:10px;color:var(--gray);text-align:center;padding:1px 0}
 .field label{font-size:10px;color:var(--gray);display:block}
 .field span{font-size:13px}
 .compass-wrap{display:inline-flex;align-items:center;gap:5px}
@@ -663,23 +668,26 @@ function htmlTelemetry(i) {
       <div class="field"><label>Voltage</label><span id="q${i}-volt">--</span></div>
       <div class="field"><label>Current</label><span id="q${i}-curr">--</span></div>
     </div>
-    <div class="tgrid three">
+    <div class="tgrid three" style="padding-top:0">
       <div class="field"><label>Board</label><span id="q${i}-board">--</span></div>
       <div class="field"><label>Left</label><span id="q${i}-ltmp">--</span></div>
       <div class="field"><label>Right</label><span id="q${i}-rtmp">--</span></div>
     </div>
-    <div class="tgrid">
-      <div class="field"><label>Heading</label>
-        <div class="compass-wrap">
-          <canvas class="compass-canvas" id="q${i}-compass" width="32" height="32"></canvas>
-          <span id="q${i}-hdg" style="font-size:13px;color:var(--cyan)">---</span>
+    <div class="telem-instruments">
+      <div class="telem-inst-wrap">
+        <canvas class="telem-inst-canvas" id="q${i}-compass-large"></canvas>
+        <div class="telem-inst-lbl">
+          Heading <span id="q${i}-hdg" style="color:var(--cyan)">---</span>
+          &nbsp;<span id="q${i}-fault" style="color:var(--green)">OK</span>
         </div>
       </div>
-      <div class="field"><label>Faults</label><span id="q${i}-fault" style="color:var(--green)">OK</span></div>
-    </div>
-    <div class="tgrid">
-      <div class="field"><label>Pitch</label><span id="q${i}-pitch" style="color:var(--gray)">---</span></div>
-      <div class="field"><label>Roll</label><span id="q${i}-roll"  style="color:var(--gray)">---</span></div>
+      <div class="telem-inst-wrap">
+        <canvas class="telem-inst-canvas" id="q${i}-horizon"></canvas>
+        <div class="telem-inst-lbl">
+          P <span id="q${i}-pitch" style="color:var(--cyan)">---</span>
+          &nbsp; R <span id="q${i}-roll" style="color:var(--cyan)">---</span>
+        </div>
+      </div>
     </div>`;
 }
 function htmlGps(i) {
@@ -941,7 +949,7 @@ function updateMotorPanel(i, s) {
 
 function updateTelemPanel(i, s) {
   const t = s.telemetry;
-  const se = (id, v) => { const e=el(id); if(e) e.textContent=v; };
+  const se = (id, v, c) => { const e=el(id); if(!e)return; e.textContent=v; if(c)e.style.color=c; };
   se(`q${i}-volt`,  fmt(t.voltage,1,' V'));
   se(`q${i}-curr`,  fmt(t.current,2,' A'));
   se(`q${i}-board`, fmt(t.board_temp,0,'°C'));
@@ -951,16 +959,14 @@ function updateTelemPanel(i, s) {
   const fEl = el(`q${i}-fault`);
   if (fEl){ fEl.textContent=(t.left_fault?'FAULT-L ':'')+(t.right_fault?'FAULT-R':'')||'OK';
             fEl.style.color=fault?C.red:C.green; }
-  const hdgEl = el(`q${i}-hdg`);
-  if (hdgEl) { hdgEl.textContent=t.heading!=null?t.heading.toFixed(1)+'°':'---';
-               hdgEl.style.color=t.heading!=null?C.cyan:C.gray; }
-  drawCompass(el(`q${i}-compass`), t.heading);
-  const pitEl=el(`q${i}-pitch`);
-  if (pitEl){ pitEl.textContent=t.pitch!=null?(t.pitch>=0?'+':'')+t.pitch.toFixed(1)+'°':'---';
-              pitEl.style.color=t.pitch!=null?C.cyan:C.gray; }
-  const rolEl=el(`q${i}-roll`);
-  if (rolEl){ rolEl.textContent=t.roll!=null?(t.roll>=0?'+':'')+t.roll.toFixed(1)+'°':'---';
-              rolEl.style.color=t.roll!=null?C.cyan:C.gray; }
+  se(`q${i}-hdg`,   t.heading!=null ? t.heading.toFixed(1)+'°' : '---',
+                    t.heading!=null ? C.cyan : C.gray);
+  se(`q${i}-pitch`, t.pitch!=null ? (t.pitch>=0?'+':'')+t.pitch.toFixed(1)+'°' : '---',
+                    t.pitch!=null ? C.cyan : C.gray);
+  se(`q${i}-roll`,  t.roll!=null  ? (t.roll>=0?'+':'')+t.roll.toFixed(1)+'°'   : '---',
+                    t.roll!=null  ? C.cyan : C.gray);
+  drawCompassLarge(el(`q${i}-compass-large`), t.heading);
+  drawArtificialHorizon(el(`q${i}-horizon`), t.pitch, t.roll);
 }
 
 // ── SNR colour helper ─────────────────────────────────────────────────────────
@@ -1432,6 +1438,184 @@ function drawCompass(canvas, heading) {
   ctx.beginPath(); ctx.moveTo(cx,cy);
   ctx.lineTo(cx+r*Math.cos(rad), cy+r*Math.sin(rad)); ctx.stroke();
   ctx.beginPath(); ctx.arc(cx,cy,2,0,Math.PI*2);
+  ctx.fillStyle=C.cyan; ctx.fill();
+}
+
+function drawCompassLarge(canvas, heading) {
+  if (!canvas) return;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (!W || !H) return;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const cx = W/2, cy = H/2, r = Math.min(W,H)/2 - 4;
+  ctx.clearRect(0,0,W,H);
+
+  const avail = heading != null;
+  ctx.globalAlpha = avail ? 1 : 0.35;
+
+  // Rotating card — the whole rose turns so the robot's forward direction stays at top
+  const cardAngle = avail ? -heading * Math.PI / 180 : 0;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(cardAngle);
+
+  // Outer ring
+  ctx.beginPath(); ctx.arc(0,0,r,0,2*Math.PI);
+  ctx.strokeStyle='#444'; ctx.lineWidth=1.5; ctx.stroke();
+
+  // Tick marks
+  for (let deg=0; deg<360; deg+=5) {
+    const rad = deg*Math.PI/180;
+    const inner = deg%30===0 ? r-10 : deg%10===0 ? r-6 : r-4;
+    ctx.strokeStyle = deg%90===0 ? '#888' : '#444';
+    ctx.lineWidth   = deg%90===0 ? 1.5 : 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.sin(rad)*r,     -Math.cos(rad)*r);
+    ctx.lineTo(Math.sin(rad)*inner, -Math.cos(rad)*inner);
+    ctx.stroke();
+  }
+
+  // Degree labels every 30°
+  ctx.font = `${Math.max(8, Math.round(r*0.14))}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const cardinals = {0:'N',90:'E',180:'S',270:'W'};
+  for (let deg=0; deg<360; deg+=30) {
+    const rad = deg*Math.PI/180;
+    const lr = r - 18;
+    const tx = Math.sin(rad)*lr, ty = -Math.cos(rad)*lr;
+    ctx.save(); ctx.translate(tx,ty); ctx.rotate(deg*Math.PI/180);
+    if (cardinals[deg]) {
+      ctx.fillStyle = deg===0 ? C.red : '#ccc';
+      ctx.font = `bold ${Math.max(10, Math.round(r*0.18))}px sans-serif`;
+      ctx.fillText(cardinals[deg], 0, 0);
+      ctx.font = `${Math.max(8, Math.round(r*0.14))}px sans-serif`;
+    } else {
+      ctx.fillStyle = '#666';
+      ctx.fillText(deg, 0, 0);
+    }
+    ctx.restore();
+  }
+  ctx.restore(); // end rotating card
+
+  // Fixed lubber line (forward marker) — top, always stationary
+  ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx, cy-r+2); ctx.lineTo(cx, cy-r+12); ctx.stroke();
+
+  // Fixed aircraft/robot reference symbol
+  if (avail) {
+    ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
+    const ws = r*0.45;
+    // Wings
+    ctx.beginPath(); ctx.moveTo(cx-ws,cy); ctx.lineTo(cx+ws,cy); ctx.stroke();
+    // Nose tick
+    ctx.beginPath(); ctx.moveTo(cx,cy-ws*0.3); ctx.lineTo(cx,cy+ws*0.3); ctx.stroke();
+    // Centre dot
+    ctx.beginPath(); ctx.arc(cx,cy,3,0,2*Math.PI);
+    ctx.fillStyle=C.cyan; ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawArtificialHorizon(canvas, pitch, roll) {
+  if (!canvas) return;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (!W || !H) return;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const cx = W/2, cy = H/2;
+  const r  = Math.min(W,H)/2 - 2;
+
+  ctx.clearRect(0,0,W,H);
+
+  // Clip to a circle
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI); ctx.clip();
+
+  if (pitch == null || roll == null) {
+    ctx.fillStyle='#222'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#555'; ctx.font='11px sans-serif';
+    ctx.textAlign='center'; ctx.fillText('No IMU', cx, cy+4);
+    ctx.restore(); return;
+  }
+
+  const rollRad  = roll  * Math.PI / 180;
+  // Pitch shift: each degree moves the horizon ~r/45 px
+  const pitchPx  = pitch * (r / 45);
+
+  // Draw tilted sky/ground
+  ctx.save();
+  ctx.translate(cx, cy + pitchPx);
+  ctx.rotate(rollRad);
+
+  // Sky
+  ctx.fillStyle = '#1a3a6e';
+  ctx.fillRect(-W*1.5, -H*1.5, W*3, H*1.5);
+  // Ground
+  ctx.fillStyle = '#5c3317';
+  ctx.fillRect(-W*1.5, 0, W*3, H*1.5);
+  // Horizon line
+  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(-W*1.5, 0); ctx.lineTo(W*1.5, 0); ctx.stroke();
+
+  // Pitch ladder (every 10°, ±40°)
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+  ctx.fillStyle   = 'rgba(255,255,255,0.6)';
+  ctx.font = '8px sans-serif'; ctx.textAlign = 'center';
+  for (let p = -40; p <= 40; p += 10) {
+    if (p === 0) continue;
+    const py = -(p * r / 45);
+    const hw = p%20===0 ? r*0.35 : r*0.2;
+    ctx.beginPath(); ctx.moveTo(-hw, py); ctx.lineTo(hw, py); ctx.stroke();
+    ctx.fillText(Math.abs(p), hw+8, py+3);
+  }
+  ctx.restore(); // end pitch/roll transform
+
+  ctx.restore(); // end clip
+
+  // Outer bezel ring
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI);
+  ctx.strokeStyle='#555'; ctx.lineWidth=2; ctx.stroke();
+
+  // Roll arc at top of bezel
+  const arcR = r - 3;
+  ctx.strokeStyle='#666'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(cx,cy,arcR,-Math.PI*5/6,-Math.PI/6); ctx.stroke();
+  // Roll tick marks on bezel: ±10, ±20, ±30, ±45, ±60
+  [10,20,30,45,60].forEach(deg => {
+    [-deg, deg].forEach(d => {
+      const a = (-90 + d) * Math.PI/180;
+      const inner = d%30===0 ? arcR-6 : arcR-4;
+      ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx+arcR*Math.cos(a), cy+arcR*Math.sin(a));
+      ctx.lineTo(cx+inner*Math.cos(a), cy+inner*Math.sin(a));
+      ctx.stroke();
+    });
+  });
+
+  // Roll triangle pointer (fixed at top, points inward along roll angle)
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rollRad);
+  ctx.fillStyle = C.cyan;
+  ctx.beginPath();
+  ctx.moveTo(0, -(r-2));
+  ctx.lineTo(-5, -(r-11));
+  ctx.lineTo(5,  -(r-11));
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // Fixed aircraft reference marks
+  ctx.strokeStyle = C.cyan; ctx.lineWidth = 2;
+  const aw = r * 0.45;
+  // Left wing
+  ctx.beginPath(); ctx.moveTo(cx-aw, cy); ctx.lineTo(cx-aw*0.4, cy);
+  ctx.lineTo(cx-aw*0.4, cy+6); ctx.stroke();
+  // Right wing
+  ctx.beginPath(); ctx.moveTo(cx+aw, cy); ctx.lineTo(cx+aw*0.4, cy);
+  ctx.lineTo(cx+aw*0.4, cy+6); ctx.stroke();
+  // Centre dot
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, 2*Math.PI);
   ctx.fillStyle=C.cyan; ctx.fill();
 }
 
