@@ -115,6 +115,7 @@ _rc_channels          = [1500] * 14 # last valid iBUS channel values (µs, 1000-
 _rc_ts                = [0]         # [last_packet_ms] — mutable list avoids 'global' from core 1
 _pi_last_cmd_ms       = 0           # ticks_ms() of last CMD_MODE from Pi (0=never)
 _pi_last_rc_query_ms  = 0           # ticks_ms() of last CMD_RC_QUERY from Pi (0=never)
+_bench_enabled        = False       # tracks Pi CMD_BENCH state; fault recovery uses this
 
 IBUS_FAILSAFE_MS      = 500   # ms without iBUS packet → zero motors in MANUAL
 PI_FAILSAFE_MS        = 500   # ms without CMD_MODE from Pi → ESTOP
@@ -482,7 +483,12 @@ try:
     for motor in module5.motors:
         motor.enable()
 
-    module_bench.set_voltage(BENCH_VOLTAGE)  # pre-program voltage; output stays off until CMD_BENCH enable
+    # Bench module: must enable() before set_voltage() per SDK requirement,
+    # then disable() so the output stays off until CMD_BENCH(1) is received.
+    module_bench.enable()
+    sleep_ms(200)
+    module_bench.set_voltage(BENCH_VOLTAGE)
+    module_bench.disable()
 
     sleep(0.1)   # let motor drivers settle before monitoring starts
 
@@ -759,9 +765,12 @@ try:
                             continue
 
                     elif cmd_code == CMD_BENCH:
+                        global _bench_enabled
                         if value == 0:
+                            _bench_enabled = False
                             module_bench.disable()
                         else:
+                            _bench_enabled = True
                             module_bench.enable()
                             module_bench.set_voltage(BENCH_VOLTAGE)
 
@@ -826,9 +835,12 @@ try:
                 module5.enable()
                 for motor in module5.motors:
                     motor.enable()
-                module_bench.enable()
-                sleep_ms(500)
-                module_bench.set_voltage(BENCH_VOLTAGE)
+                if _bench_enabled:
+                    module_bench.enable()
+                    sleep_ms(500)
+                    module_bench.set_voltage(BENCH_VOLTAGE)
+                else:
+                    module_bench.disable()
                 _pattern = 0
                 _set_strip(0, 0, 0)     # clear fault pattern after successful recovery
             except Exception as e2:
