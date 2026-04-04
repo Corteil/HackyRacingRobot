@@ -552,7 +552,10 @@ class _YukonLink:
         self._check_open()
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_SENSOR, 0))
-            self._drain(1, timeout=0.5)          # wait for ACK (arrives after data)
+            # ACK arrives after ~12 data packets (~6 ms at 115200).  Keep well
+            # under PI_FAILSAFE_MS (500 ms) so the set_mode() watchdog heartbeat
+            # can always get through while this lock is held.
+            self._drain(1, timeout=0.1)
         try:
             return self._sensor_q.get(timeout=0.1)
         except queue.Empty:
@@ -576,7 +579,7 @@ class _YukonLink:
         self._check_open()
         with self._cmd_lock:
             self._ser.write(self._encode(self.CMD_RC_QUERY, 0))
-            self._drain(1, timeout=0.5)
+            self._drain(1, timeout=0.1)
         try:
             return self._rc_q.get(timeout=0.1)
         except queue.Empty:
