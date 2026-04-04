@@ -184,12 +184,17 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
             'latitude':         g.latitude,
             'longitude':        g.longitude,
             'altitude':         g.altitude,
+            'speed':            g.speed,
+            'heading':          g.heading,
             'fix_quality':      g.fix_quality,
             'fix_quality_name': g.fix_quality_name,
             'h_error_m':        g.h_error_m,
             'satellites':       g.satellites,
             'satellites_view':  g.satellites_view,
+            'satellites_data':  g.satellites_data,
             'hdop':             g.hdop,
+            'ntrip_status':     g.ntrip_status,
+            'ntrip_bytes_recv': g.ntrip_bytes_recv,
         },
         'lidar': {
             'angles':    li.angles,
@@ -308,6 +313,24 @@ button:active{background:#2a2a42}
 /* GPS */
 .ggrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:5px 8px}
 .ggrid.three{grid-template-columns:1fr 1fr 1fr}
+.gps-row{display:flex;align-items:center;gap:6px;padding:2px 8px;font-size:11px}
+.gps-row label{color:var(--gray);min-width:36px;flex-shrink:0}
+.rtk-dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:4px;background:var(--gray);flex-shrink:0}
+/* Signal bars */
+.sig-wrap{padding:4px 8px;flex:1;overflow:hidden}
+.sig-bars{display:flex;align-items:flex-end;gap:2px;height:42px}
+.sig-bar{flex:1;min-width:4px;border-radius:2px 2px 0 0;position:relative;transition:height .3s}
+.sig-lbl{font-size:8px;text-align:center;color:var(--gray);overflow:hidden;white-space:nowrap}
+/* Canvas panels */
+.gps-canvas-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:4px}
+.sky-canvas,.track-canvas,.scatter-canvas,.sig-canvas{width:100%;flex:1;display:block}
+/* Terminal */
+.term-box{flex:1;overflow-y:auto;background:#0a0a0a;font-size:11px;font-family:monospace;
+  line-height:1.35;padding:4px 6px;color:#00cc44}
+.term-line{white-space:pre-wrap;word-break:break-all}
+.term-line.warning{color:#ccaa00}.term-line.error,.term-line.critical{color:#ff4444}
+.term-line.debug{color:#448844}
 
 /* System bars */
 .sys-row{display:flex;align-items:center;gap:4px;padding:3px 8px}
@@ -586,15 +609,20 @@ let logPolling      = null;
 // Panel type strings: 'camera:front_left', 'camera:front_right', 'camera:rear',
 //                     'lidar', 'motor', 'telemetry', 'gps', 'system', 'logs'
 const PANEL_DEFS = [
-  { type:'camera:front_left',  label:'Camera FL'   },
-  { type:'camera:front_right', label:'Camera FR'   },
-  { type:'camera:rear',        label:'Camera Rear' },
-  { type:'lidar',              label:'LiDAR'       },
-  { type:'motor',              label:'Motors'      },
-  { type:'telemetry',          label:'Telemetry'   },
-  { type:'gps',                label:'GPS'         },
-  { type:'system',             label:'System'      },
-  { type:'logs',               label:'Logs'        },
+  { type:'camera:front_left',  label:'Camera FL'    },
+  { type:'camera:front_right', label:'Camera FR'    },
+  { type:'camera:rear',        label:'Camera Rear'  },
+  { type:'lidar',              label:'LiDAR'        },
+  { type:'motor',              label:'Motors'       },
+  { type:'telemetry',          label:'Telemetry'    },
+  { type:'gps',                label:'GPS'          },
+  { type:'gps:skyview',        label:'GPS Sky View' },
+  { type:'gps:track',          label:'GPS Track'    },
+  { type:'gps:scatter',        label:'GPS Scatter'  },
+  { type:'gps:signals',        label:'GPS Signals'  },
+  { type:'system',             label:'System'       },
+  { type:'logs',               label:'Logs'         },
+  { type:'terminal',           label:'Terminal'     },
 ];
 
 // Default layout — overridden by preset buttons
@@ -667,9 +695,70 @@ function htmlGps(i) {
       <div class="field"><label>Sats</label><span id="q${i}-sats">--</span></div>
       <div class="field"><label>HDOP</label><span id="q${i}-hdop">--</span></div>
     </div>
-    <div style="padding:5px 8px">
+    <div class="ggrid">
+      <div class="field"><label>Speed</label><span id="q${i}-spd">--</span></div>
+      <div class="field"><label>Course</label><span id="q${i}-crs">--</span></div>
+    </div>
+    <div class="gps-row">
+      <label>RTK</label>
+      <span class="rtk-dot" id="q${i}-rtk-dot"></span>
+      <span id="q${i}-rtk-st" style="font-size:11px">--</span>
+      <span id="q${i}-rtk-bytes" style="font-size:10px;color:var(--gray);margin-left:4px"></span>
+    </div>
+    <div class="sig-wrap">
+      <div style="font-size:9px;color:var(--gray);margin-bottom:2px">Signal (SNR)</div>
+      <div class="sig-bars" id="q${i}-sig-bars"></div>
+      <div class="sig-lbl" id="q${i}-sig-lbls" style="display:flex;gap:2px;margin-top:1px"></div>
+    </div>
+    <div style="padding:3px 8px">
       <span id="q${i}-nav-info" style="font-size:11px;color:var(--gray)"></span>
     </div>`;
+}
+function htmlGpsSkyview(i) {
+  return `
+    <div class="gps-canvas-wrap">
+      <div style="font-size:9px;color:var(--gray);padding:0 2px 2px">
+        Sky View · N↑ · colour = SNR · <span id="q${i}-sky-sats" style="color:var(--cyan)">0 sats</span>
+      </div>
+      <canvas class="sky-canvas" id="q${i}-sky-canvas"></canvas>
+    </div>`;
+}
+function htmlGpsTrack(i) {
+  return `
+    <div class="gps-canvas-wrap">
+      <div style="font-size:9px;color:var(--gray);padding:0 2px 2px">
+        GPS Track · <span id="q${i}-trk-pts" style="color:var(--cyan)">0 pts</span>
+        <button onclick="gpsTrackClear()" style="font-size:9px;padding:0 4px;margin-left:6px">Clear</button>
+      </div>
+      <canvas class="track-canvas" id="q${i}-trk-canvas"></canvas>
+    </div>`;
+}
+function htmlGpsScatter(i) {
+  return `
+    <div class="gps-canvas-wrap">
+      <div style="font-size:9px;color:var(--gray);padding:0 2px 2px">
+        Position Scatter · <span id="q${i}-scat-pts" style="color:var(--cyan)">0 pts</span>
+        <button onclick="gpsTrackClear()" style="font-size:9px;padding:0 4px;margin-left:6px">Clear</button>
+      </div>
+      <canvas class="scatter-canvas" id="q${i}-scat-canvas"></canvas>
+    </div>`;
+}
+function htmlGpsSignals(i) {
+  return `
+    <div class="gps-canvas-wrap">
+      <div style="font-size:9px;color:var(--gray);padding:0 2px 2px">Satellite SNR (dB-Hz)</div>
+      <canvas class="sig-canvas" id="q${i}-gsig-canvas"></canvas>
+    </div>`;
+}
+function htmlTerminal(i) {
+  return `
+    <div class="log-toolbar">
+      <input class="log-filter" id="q${i}-log-filter" type="search" placeholder="Filter…"
+             oninput="filterLog('q${i}-term-box','q${i}-log-filter')">
+      <button onclick="logAutoScroll=!logAutoScroll;this.style.color=logAutoScroll?'#00cc44':'var(--gray)'"
+              style="color:#00cc44">↓</button>
+    </div>
+    <div class="term-box" id="q${i}-term-box"></div>`;
 }
 function htmlSystem(i) {
   return `
@@ -734,10 +823,15 @@ function renderQuad(i) {
   if      (kind === 'camera')   html = htmlCamera(i, camKey);
   else if (kind === 'motor')    html = htmlMotor(i);
   else if (kind === 'telemetry')html = htmlTelemetry(i);
+  else if (kind === 'gps' && camKey === 'skyview')  html = htmlGpsSkyview(i);
+  else if (kind === 'gps' && camKey === 'track')    html = htmlGpsTrack(i);
+  else if (kind === 'gps' && camKey === 'scatter')  html = htmlGpsScatter(i);
+  else if (kind === 'gps' && camKey === 'signals')  html = htmlGpsSignals(i);
   else if (kind === 'gps')      html = htmlGps(i);
   else if (kind === 'system')   html = htmlSystem(i);
   else if (kind === 'lidar')    html = htmlLidar(i);
   else if (kind === 'logs')     html = htmlLogs(i);
+  else if (kind === 'terminal') html = htmlTerminal(i);
   body.innerHTML = html;
 
   if (kind === 'lidar') resizeLidar(`q${i}-lidar-canvas`);
@@ -748,7 +842,7 @@ function renderQuad(i) {
       if (this.naturalHeight) camNatH = this.naturalHeight;
     });
   }
-  if (kind === 'logs') startLogPolling();
+  if (kind === 'logs' || kind === 'terminal') startLogPolling();
 }
 
 function renderAllQuads() {
@@ -869,6 +963,26 @@ function updateTelemPanel(i, s) {
               rolEl.style.color=t.roll!=null?C.cyan:C.gray; }
 }
 
+// ── SNR colour helper ─────────────────────────────────────────────────────────
+function snrColor(snr) {
+  if (snr == null || snr < 10) return C.red;
+  if (snr < 25) return C.orange;
+  if (snr < 35) return C.yellow;
+  if (snr < 42) return C.green;
+  return C.cyan;
+}
+// ── GPS position history (client-side, shared across panels) ──────────────────
+const GPS_TRACK_MAX = 600;
+let gpsTrackPts = [];   // [{lat,lon}]
+function gpsTrackClear() { gpsTrackPts = []; }
+function gpsTrackPush(g) {
+  if (g.latitude == null || g.longitude == null) return;
+  const last = gpsTrackPts.length ? gpsTrackPts[gpsTrackPts.length-1] : null;
+  if (last && last.lat === g.latitude && last.lon === g.longitude) return;
+  gpsTrackPts.push({lat: g.latitude, lon: g.longitude});
+  if (gpsTrackPts.length > GPS_TRACK_MAX) gpsTrackPts.shift();
+}
+
 function updateGpsPanel(i, s) {
   const g=s.gps, ok=s.gps_ok;
   const fixColor=FIX_COLORS[g.fix_quality]||C.gray;
@@ -880,7 +994,208 @@ function updateGpsPanel(i, s) {
   se(`q${i}-sats`, g.satellites!=null ? g.satellites+(g.satellites_view?'/'+g.satellites_view:'') : '--');
   se(`q${i}-hdop`, fmt(g.hdop,2));
   se(`q${i}-fix`,  ok ? g.fix_quality_name : 'No GPS', ok?fixColor:C.gray);
+  se(`q${i}-spd`,  g.speed   !=null ? (g.speed*3.6).toFixed(1)+' km/h' : '--');
+  se(`q${i}-crs`,  g.heading !=null ? g.heading.toFixed(1)+'°' : '--');
+  // RTK link
+  const rtkDot = el(`q${i}-rtk-dot`);
+  const rtkSt  = el(`q${i}-rtk-st`);
+  const rtkBy  = el(`q${i}-rtk-bytes`);
+  if (rtkDot && rtkSt) {
+    const st = g.ntrip_status || '';
+    const dotColor = st==='connected'?C.green:st==='connecting'?C.yellow:st==='error'?C.red:C.gray;
+    const label    = st||'No RTK';
+    rtkDot.style.background = dotColor;
+    rtkSt.textContent = label;
+    rtkSt.style.color = dotColor;
+  }
+  if (rtkBy) {
+    rtkBy.textContent = g.ntrip_bytes_recv > 0
+      ? (g.ntrip_bytes_recv < 1024 ? g.ntrip_bytes_recv+'B'
+         : g.ntrip_bytes_recv < 1048576 ? (g.ntrip_bytes_recv/1024).toFixed(1)+'KB'
+         : (g.ntrip_bytes_recv/1048576).toFixed(2)+'MB')
+      : '';
+  }
+  // Compact signal bars
+  const barsEl = el(`q${i}-sig-bars`);
+  const lblsEl = el(`q${i}-sig-lbls`);
+  if (barsEl && g.satellites_data) {
+    const sats = [...g.satellites_data].sort((a,b)=>(b.snr||0)-(a.snr||0)).slice(0,16);
+    barsEl.innerHTML = sats.map(sv => {
+      const h = Math.max(2, Math.round(((sv.snr||0)/55)*100));
+      const c = snrColor(sv.snr);
+      return `<div class="sig-bar" style="height:${h}%;background:${c}" title="${sv.svid||''} ${sv.snr||0}dB"></div>`;
+    }).join('');
+    if (lblsEl) lblsEl.innerHTML = sats.map(sv =>
+      `<div style="flex:1;font-size:8px;text-align:center;color:${snrColor(sv.snr)};overflow:hidden">${sv.svid||'?'}</div>`
+    ).join('');
+  }
   const ni=el(`q${i}-nav-info`); if(ni) updateNavInfoEl(ni, s);
+}
+
+// ── Sky View panel ────────────────────────────────────────────────────────────
+function updateSkyviewPanel(i, s) {
+  const g = s.gps;
+  const c = el(`q${i}-sky-canvas`); if (!c) return;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  const cx = W/2, cy = H/2, r = Math.min(W,H)/2 - 10;
+  ctx.clearRect(0,0,W,H);
+  // Rings
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+  [1, 2/3, 1/3].forEach(f => {
+    ctx.beginPath(); ctx.arc(cx,cy,r*f,0,2*Math.PI); ctx.stroke();
+  });
+  // Cardinal labels
+  ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('N',cx,cy-r+10); ctx.fillText('S',cx,cy+r-2);
+  ctx.textAlign='right';  ctx.fillText('W',cx-r+2,cy+4);
+  ctx.textAlign='left';   ctx.fillText('E',cx+r-2,cy+4);
+  // Satellites
+  const sats = g.satellites_data || [];
+  sats.forEach(sv => {
+    const elev = sv.elev || 0, azim = sv.azim || 0;
+    const dist = r * (1 - elev/90);
+    const rad  = (azim - 90) * Math.PI / 180;
+    const sx = cx + dist * Math.cos(rad);
+    const sy = cy + dist * Math.sin(rad);
+    const col = snrColor(sv.snr);
+    ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 2*Math.PI);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.lineWidth=0.5; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font='8px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(sv.svid||'', sx, sy+3);
+  });
+  const cntEl = el(`q${i}-sky-sats`);
+  if (cntEl) cntEl.textContent = sats.length + ' sat' + (sats.length===1?'':'s');
+}
+
+// ── GPS Track panel ───────────────────────────────────────────────────────────
+function updateTrackPanel(i, s) {
+  gpsTrackPush(s.gps);
+  const c = el(`q${i}-trk-canvas`); if (!c) return;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const pts = el(`q${i}-trk-pts`);
+  if (pts) pts.textContent = gpsTrackPts.length + ' pts';
+  if (gpsTrackPts.length < 2) return;
+  const lats = gpsTrackPts.map(p=>p.lat), lons = gpsTrackPts.map(p=>p.lon);
+  const minLat=Math.min(...lats), maxLat=Math.max(...lats);
+  const minLon=Math.min(...lons), maxLon=Math.max(...lons);
+  const spanLat=maxLat-minLat||1e-6, spanLon=maxLon-minLon||1e-6;
+  const pad=16;
+  const toX = lon => pad + (lon-minLon)/spanLon * (W-pad*2);
+  const toY = lat => H - pad - (lat-minLat)/spanLat * (H-pad*2);
+  // Trail — fade older segments
+  ctx.lineWidth = 1.5;
+  for (let k=1; k<gpsTrackPts.length; k++) {
+    const alpha = 0.3 + 0.7*(k/gpsTrackPts.length);
+    ctx.strokeStyle = `rgba(0,200,100,${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(toX(gpsTrackPts[k-1].lon), toY(gpsTrackPts[k-1].lat));
+    ctx.lineTo(toX(gpsTrackPts[k].lon),   toY(gpsTrackPts[k].lat));
+    ctx.stroke();
+  }
+  // Current position dot
+  const cur = gpsTrackPts[gpsTrackPts.length-1];
+  ctx.beginPath(); ctx.arc(toX(cur.lon), toY(cur.lat), 5, 0, 2*Math.PI);
+  ctx.fillStyle = C.cyan; ctx.fill();
+}
+
+// ── GPS Scatter panel ─────────────────────────────────────────────────────────
+function updateScatterPanel(i, s) {
+  gpsTrackPush(s.gps);
+  const c = el(`q${i}-scat-canvas`); if (!c) return;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const pts = el(`q${i}-scat-pts`);
+  if (pts) pts.textContent = gpsTrackPts.length + ' pts';
+  if (!gpsTrackPts.length) return;
+  const lats = gpsTrackPts.map(p=>p.lat), lons = gpsTrackPts.map(p=>p.lon);
+  const minLat=Math.min(...lats), maxLat=Math.max(...lats);
+  const minLon=Math.min(...lons), maxLon=Math.max(...lons);
+  const spanLat=maxLat-minLat||1e-6, spanLon=maxLon-minLon||1e-6;
+  const span = Math.max(spanLat, spanLon);
+  const midLat=(minLat+maxLat)/2, midLon=(minLon+maxLon)/2;
+  const pad=16;
+  const scale = (Math.min(W,H)-pad*2)/span;
+  const toX = lon => W/2 + (lon-midLon)*scale;
+  const toY = lat => H/2 - (lat-midLat)*scale;
+  // Cross-hair
+  ctx.strokeStyle='#333'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(W/2,pad); ctx.lineTo(W/2,H-pad); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(pad,H/2); ctx.lineTo(W-pad,H/2); ctx.stroke();
+  // Dots — colour oldest→newest
+  const n = gpsTrackPts.length;
+  gpsTrackPts.forEach((p, k) => {
+    const t = k/Math.max(n-1,1);
+    ctx.beginPath(); ctx.arc(toX(p.lon), toY(p.lat), 2, 0, 2*Math.PI);
+    ctx.fillStyle = `rgba(${Math.round(255*(1-t))},${Math.round(200*t)},100,0.8)`;
+    ctx.fill();
+  });
+  // Current position
+  const cur = gpsTrackPts[n-1];
+  ctx.beginPath(); ctx.arc(toX(cur.lon), toY(cur.lat), 5, 0, 2*Math.PI);
+  ctx.fillStyle = C.cyan; ctx.fill();
+  // Scale bar — approx metres
+  const mPerDeg = 111320;
+  const spanM = span * mPerDeg;
+  ctx.fillStyle='#666'; ctx.font='9px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(spanM<1 ? (spanM*100).toFixed(0)+'cm'
+               : spanM<1000 ? spanM.toFixed(1)+'m'
+               : (spanM/1000).toFixed(2)+'km', W/2, H-2);
+}
+
+// ── GPS Signals panel ─────────────────────────────────────────────────────────
+function updateSignalsPanel(i, s) {
+  const c = el(`q${i}-gsig-canvas`); if (!c) return;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const sats = [...(s.gps.satellites_data||[])].sort((a,b)=>a.svid<b.svid?-1:1);
+  if (!sats.length) {
+    ctx.fillStyle='#444'; ctx.font='12px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('No satellite data', W/2, H/2); return;
+  }
+  const pad=20, barW=Math.max(4, Math.floor((W-pad*2)/sats.length)-2);
+  const maxSnr=55, barArea=H-pad-10;
+  // Scale labels
+  ctx.fillStyle='#555'; ctx.font='8px sans-serif'; ctx.textAlign='right';
+  [0,20,40].forEach(v => {
+    const y = pad + barArea - (v/maxSnr)*barArea;
+    ctx.fillText(v, pad-2, y+3);
+    ctx.strokeStyle='#2a2a2a'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(pad,y); ctx.lineTo(W,y); ctx.stroke();
+  });
+  sats.forEach((sv, idx) => {
+    const snr = sv.snr || 0;
+    const bh  = Math.max(2, (snr/maxSnr)*barArea);
+    const x   = pad + idx*(barW+2);
+    const y   = pad + barArea - bh;
+    ctx.fillStyle = snrColor(snr);
+    ctx.fillRect(x, y, barW, bh);
+    // Label
+    ctx.fillStyle = '#666'; ctx.font = '8px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(sv.svid||'?', x+barW/2, H-2);
+    ctx.fillStyle = snrColor(snr); ctx.font = '8px sans-serif';
+    ctx.fillText(snr||'', x+barW/2, y-1);
+  });
+}
+
+// ── Terminal panel ────────────────────────────────────────────────────────────
+function updateTerminalPanel(i, s) {
+  // terminal boxes pick up log lines via the shared fetchLogs() / logPolling mechanism
+  // The term-box is treated the same as log-box by fetchLogs — it has class term-box
+  // but we hook into the same querySelectorAll by adding it to the selector
 }
 
 function updateSystemPanel(i, s) {
@@ -938,9 +1253,14 @@ function updateAllQuads(s) {
     if      (kind==='camera')    updateCameraPanel(i, camKey, s);
     else if (kind==='motor')     updateMotorPanel(i, s);
     else if (kind==='telemetry') updateTelemPanel(i, s);
+    else if (kind==='gps' && camKey==='skyview')  updateSkyviewPanel(i, s);
+    else if (kind==='gps' && camKey==='track')    updateTrackPanel(i, s);
+    else if (kind==='gps' && camKey==='scatter')  updateScatterPanel(i, s);
+    else if (kind==='gps' && camKey==='signals')  updateSignalsPanel(i, s);
     else if (kind==='gps')       updateGpsPanel(i, s);
     else if (kind==='system')    updateSystemPanel(i, s);
     else if (kind==='lidar')     updateLidarPanel(i, s);
+    else if (kind==='terminal')  updateTerminalPanel(i, s);
     // logs: updated by polling, not state
   }
 }
@@ -1018,6 +1338,7 @@ function applyState(s) {
   lastState = s;
   updateStatusBar(s);
   el('no-motors-banner').style.display = s.no_motors ? 'block' : 'none';
+  if (s.gps_ok && s.gps) gpsTrackPush(s.gps);
   updateAllQuads(s);
   updateMobile(s);
 }
@@ -1450,15 +1771,18 @@ async function fetchLogs() {
   try {
     const data=await (await fetch('/api/logs?n=200')).json();
     const lines=data.lines||[];
-    // Update all log boxes (quad panels + mobile)
-    const boxes=document.querySelectorAll('.log-box');
+    // Update all log boxes (quad panels + mobile) and terminal boxes
+    const boxes=[...document.querySelectorAll('.log-box'),
+                 ...document.querySelectorAll('.term-box')];
+    const isTerminal = b => b.classList.contains('term-box');
     for (const box of boxes) {
-      const filterId=box.id.replace('-box','-filter');
+      const filterId=box.id.replace(/-(?:log|term)-box$/,'-log-filter');
       const q=(el(filterId)||{}).value||'';
       box.innerHTML='';
       for (const line of lines) {
         const d=document.createElement('div');
-        d.className='tlog '+_logLevel(line);
+        const lvl=_logLevel(line);
+        d.className=(isTerminal(box)?'term-line ':'tlog ')+lvl;
         d.textContent=line;
         if(q&&!line.toLowerCase().includes(q.toLowerCase())) d.style.display='none';
         box.appendChild(d);

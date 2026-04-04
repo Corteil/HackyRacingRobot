@@ -140,6 +140,8 @@ class GpsState:
     satellites_view: Optional[int]   = None
     satellites_data: list            = field(default_factory=list)
     hdop:            Optional[float] = None
+    ntrip_status:    str             = ''   # 'connected'|'connecting'|'error'|'disconnected'|''
+    ntrip_bytes_recv: int            = 0    # cumulative RTCM bytes received from caster/serial
     timestamp:       float            = 0.0
 
 
@@ -1218,6 +1220,8 @@ class _Gps:
         try:
             while not self._stop.is_set():
                 gnss.update(max_sentences=10)
+                _ntrip_st    = getattr(correction_src, 'status',         '') if correction_src else ''
+                _ntrip_bytes = getattr(correction_src, 'bytes_received', 0)  if correction_src else 0
                 with self._lock:
                     self._state = GpsState(
                         latitude         = gnss.latitude,
@@ -1233,6 +1237,8 @@ class _Gps:
                         satellites_view  = gnss.satellites_in_view,
                         satellites_data  = list(gnss.satellites_data),
                         hdop             = gnss.hdop,
+                        ntrip_status     = _ntrip_st,
+                        ntrip_bytes_recv = _ntrip_bytes,
                         timestamp        = time.monotonic(),
                     )
                 self._stop.wait(0.05)   # ~20 Hz poll, TAU1308 outputs up to 10 Hz
