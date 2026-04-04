@@ -638,6 +638,7 @@ try:
 
                     elif cmd_code == CMD_SENSOR:
                         # ── Send all sensor data then ACK ──────────────────
+                        # Core sensors: NAK on failure (Yukon itself is required)
                         try:
                             _send_data(RESP_VOLTAGE, yukon.read_input_voltage() * 10)
                             _send_data(RESP_CURRENT, yukon.read_current()       * 100)
@@ -646,29 +647,34 @@ try:
                             _send_data(RESP_TEMP_R,  module5.read_temperature() * 3)
                             _send_data(RESP_FAULT_L, int(module2.read_fault()))
                             _send_data(RESP_FAULT_R, int(module5.read_fault()))
-                            _send_data(RESP_BENCH_TEMP,  module_bench.read_temperature() * 3)
-                            _send_data(RESP_BENCH_FAULT, int(not module_bench.read_power_good()))
-                            # RESP_HEADING / RESP_PITCH / RESP_ROLL: 255 if IMU absent
-                            _lock.acquire()
-                            hdg = _current_heading
-                            pit = _current_pitch
-                            rol = _current_roll
-                            _lock.release()
-                            if _imu_ok:
-                                _send_data(RESP_HEADING, _bearing_encode(hdg))
-                                _send_data(RESP_PITCH,
-                                           int((pit + 90.0)  * 254.0 / 180.0 + 0.5))
-                                _send_data(RESP_ROLL,
-                                           int((rol + 180.0) * 254.0 / 360.0 + 0.5))
-                            else:
-                                _send_data(RESP_HEADING, 255)
-                                _send_data(RESP_PITCH,   255)
-                                _send_data(RESP_ROLL,    255)
                         except Exception as se:
                             print("Sensor error:", se)
                             _nak()
                             state = 'SYNC'
                             continue
+                        # Bench module: optional — send 0 if not ready/enabled
+                        try:
+                            _send_data(RESP_BENCH_TEMP,  module_bench.read_temperature() * 3)
+                            _send_data(RESP_BENCH_FAULT, int(not module_bench.read_power_good()))
+                        except Exception:
+                            _send_data(RESP_BENCH_TEMP,  0)
+                            _send_data(RESP_BENCH_FAULT, 0)
+                        # RESP_HEADING / RESP_PITCH / RESP_ROLL: 255 if IMU absent
+                        _lock.acquire()
+                        hdg = _current_heading
+                        pit = _current_pitch
+                        rol = _current_roll
+                        _lock.release()
+                        if _imu_ok:
+                            _send_data(RESP_HEADING, _bearing_encode(hdg))
+                            _send_data(RESP_PITCH,
+                                       int((pit + 90.0)  * 254.0 / 180.0 + 0.5))
+                            _send_data(RESP_ROLL,
+                                       int((rol + 180.0) * 254.0 / 360.0 + 0.5))
+                        else:
+                            _send_data(RESP_HEADING, 255)
+                            _send_data(RESP_PITCH,   255)
+                            _send_data(RESP_ROLL,    255)
 
                     elif cmd_code == CMD_BEARING:
                         if value == 255:

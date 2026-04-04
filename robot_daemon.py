@@ -2541,8 +2541,6 @@ class Robot:
         """Poll Yukon sensors and trigger ESTOP on fault."""
         import serial as _serial
         interval = 1.0 / _TELEMETRY_HZ
-        _MAX_SILENT_POLLS = 5   # consecutive None results before treating as disconnect
-        silent_count = 0
         while not self._stop_evt.is_set():
             if self._yukon:
                 try:
@@ -2552,20 +2550,15 @@ class Robot:
                     self._stop_evt.wait(interval)
                     continue
                 if result:
-                    silent_count = 0
                     with self._mode_lock:
                         self._telemetry = result
                         if result.left_fault or result.right_fault:
                             if self._mode is not RobotMode.ESTOP:
                                 log.warning("Motor fault detected — ESTOP")
                                 self._mode = RobotMode.ESTOP
-                else:
-                    silent_count += 1
-                    if silent_count >= _MAX_SILENT_POLLS:
-                        log.warning("Yukon not responding (%d silent polls) — reconnecting",
-                                    silent_count)
-                        silent_count = 0
-                        self._reconnect_yukon()
+                # None (timeout or NAK) is ignored — keep the existing telemetry
+                # and let the control thread's SerialException handler trigger
+                # reconnect if the link is genuinely gone.
             self._stop_evt.wait(interval)
 
     def _control_thread(self):
