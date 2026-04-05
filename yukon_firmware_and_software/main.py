@@ -765,7 +765,6 @@ try:
                             continue
 
                     elif cmd_code == CMD_BENCH:
-                        global _bench_enabled
                         if value == 0:
                             _bench_enabled = False
                             module_bench.disable()
