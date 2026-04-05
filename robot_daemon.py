@@ -937,7 +937,7 @@ class _Camera:
                         last_jpeg_t = now
                     except Exception:
                         pass
-                self._record_frame(frame)
+                self._record_frame(display)
                 remaining = deadline - time.monotonic()
                 if remaining > 0:
                     time.sleep(remaining)
@@ -1008,7 +1008,7 @@ class _Camera:
                             last_jpeg_t = now
                         except Exception:
                             pass
-                    self._record_frame(frame)
+                    self._record_frame(display)
         finally:
             cap.release()
             self._ok       = False
@@ -1088,12 +1088,11 @@ class _Camera:
         with self._rec_lock:
             if self._writer is not None:
                 return False          # already recording
-            # Frame size for recording uses capture resolution.
-            # 90/270° rotation swaps width and height.
-            if self._rotation in (90, 270):
-                w, h = self._capture_h, self._capture_w
-            else:
-                w, h = self._capture_w, self._capture_h
+            # Record at display resolution — _record_frame() receives the
+            # already-rotated, already-scaled display frame.  This keeps
+            # encoding fast even when capture resolution is very high
+            # (e.g. 4032×3040 rear camera → 640×480 display).
+            w, h = self._display_w, self._display_h
             fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264; falls back to mp4v
             writer = cv2.VideoWriter(path, fourcc, self._fps, (w, h))
             if not writer.isOpened():
@@ -1143,7 +1142,7 @@ class _Camera:
                 ts_str   = time.strftime("%Y%m%d_%H%M%S")
                 new_path = os.path.join(self._rec_dir, f"recording_{ts_str}.mp4")
                 os.makedirs(self._rec_dir, exist_ok=True)
-                w, h = (self._capture_h, self._capture_w) if self._rotation in (90, 270) else (self._capture_w, self._capture_h)
+                w, h = self._display_w, self._display_h
                 fourcc = cv2.VideoWriter_fourcc(*'avc1')
                 writer = cv2.VideoWriter(new_path, fourcc, self._fps, (w, h))
                 if not writer.isOpened():
