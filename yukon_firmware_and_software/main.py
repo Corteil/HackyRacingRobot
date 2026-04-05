@@ -115,7 +115,7 @@ _rc_channels          = [1500] * 14 # last valid iBUS channel values (µs, 1000-
 _rc_ts                = [0]         # [last_packet_ms] — mutable list avoids 'global' from core 1
 _pi_last_cmd_ms       = 0           # ticks_ms() of last CMD_MODE from Pi (0=never)
 _pi_last_rc_query_ms  = 0           # ticks_ms() of last CMD_RC_QUERY from Pi (0=never)
-_bench_enabled        = False       # tracks Pi CMD_BENCH state; fault recovery uses this
+_bench_enabled        = True        # tracks Pi CMD_BENCH state; True = bench on at startup
 
 IBUS_FAILSAFE_MS      = 500   # ms without iBUS packet → zero motors in MANUAL
 PI_FAILSAFE_MS        = 500   # ms without CMD_MODE from Pi → ESTOP

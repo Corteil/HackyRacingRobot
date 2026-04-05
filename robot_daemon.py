@@ -219,7 +219,7 @@ class RobotState:
     nav_wp_bear:     Optional[float] = None  # bearing to current GPS waypoint
     nav_bearing_err: Optional[float] = None  # ArUco navigator bearing error (degrees)
     no_motors:       bool        = False  # drive commands suppressed
-    bench_enabled:   bool        = False  # bench power output enabled
+    bench_enabled:   bool        = True   # bench power output enabled (on at startup)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1801,7 +1801,7 @@ class Robot:
         self._speed_min   = speed_min
         self._control_hz  = control_hz
         self._no_motors   = no_motors
-        self._bench_enabled = False
+        self._bench_enabled = True   # matches firmware startup state
         # LED strip config — read directly from robot.ini so it's consistent
         # across all frontends without each one needing to pass these values.
         _ini = configparser.ConfigParser(inline_comment_prefixes=('#',))
@@ -2526,7 +2526,6 @@ class Robot:
                 while not self._stop_evt.is_set():
                     try:
                         link = _YukonLink(self._yukon_port, no_motors=self._no_motors)
-                        link.set_bench(False)   # bench enabled at startup — disable immediately
                         self._yukon = link
                         log.info("Yukon reconnected.")
                         return
