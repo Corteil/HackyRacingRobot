@@ -2459,9 +2459,13 @@ class Robot:
         for name in targets:
             c = self._cam(name)
             if c:
-                p = c.stop_recording()
-                if p:
-                    paths.append(p)
+                if c.is_recording():
+                    p = c.stop_recording()
+                    if p:
+                        paths.append(p)
+                # else: not recording, nothing to do
+            else:
+                log.debug(f"stop_cam_recording: camera '{name}' is None — skipped")
         if self._camera:
             p = self._camera.stop_recording()
             if p:

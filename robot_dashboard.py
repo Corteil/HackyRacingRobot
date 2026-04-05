@@ -414,7 +414,7 @@ button:active{background:#2a2a42}
     <button class="btn-reset" id="btn-reset" onclick="sendCmd('reset')" style="display:none">Reset ESTOP</button>
     <button class="btn-mode" id="btn-mode" onclick="toggleMode()">AUTO</button>
     <button onclick="sendCmd('record_start')" id="btn-rec" title="Start recording all cameras">⏺ REC</button>
-    <button onclick="sendCmd('record_stop')"  id="btn-rec-stop" title="Stop recording all cameras">⏹ REC</button>
+    <button onclick="sendCmd('record_stop')"  id="btn-rec-stop" title="Stop recording all cameras">⏹ STOP</button>
     <button onclick="sendCmd('data_log_toggle')" id="btn-dlog" title="Toggle data log">⬤ DLOG</button>
     <button onclick="sendCmd('bench_toggle')" id="btn-bench" title="Toggle bench power output">⚡ BENCH</button>
     <button onclick="stopAllStreams()" title="Pause all camera streams">📷 Off</button>
