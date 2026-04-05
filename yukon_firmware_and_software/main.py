@@ -760,8 +760,6 @@ try:
                         _lock.release()
                         age   = ticks_diff(ticks_ms(), rc_ts) if rc_ts != 0 else -1
                         rc_ok = 1 if (rc_ts != 0 and age < IBUS_FAILSAFE_MS) else 0
-                        if rc_ok == 0:
-                            print("RC_QUERY: rc_ok=0 age=%d" % age)
                         try:
                             for i in range(14):
                                 _send_data(RESP_RC_BASE + i,
@@ -877,12 +875,11 @@ try:
                 pit = _current_pitch
                 rol = _current_roll
                 tgt = _bearing_target
-                rc_age_ms = ticks_diff(ticks_ms(), _rc_ts[0]) if _rc_ts[0] else -1
                 _lock.release()
                 tgt_str = 'off' if tgt is None else '%.1f' % tgt
                 print("SENS v=%.2f i=%.3f t=%.1f tL=%.1f tR=%.1f tBP=%.1f fL=%d fR=%d fBP=%d "
-                      "hdg=%.1f pit=%.1f rol=%.1f tgt=%s rc_age=%d"
-                      % (v, i, t, tL, tR, tBP, int(fL), int(fR), int(fBP), hdg, pit, rol, tgt_str, rc_age_ms))
+                      "hdg=%.1f pit=%.1f rol=%.1f tgt=%s"
+                      % (v, i, t, tL, tR, tBP, int(fL), int(fR), int(fBP), hdg, pit, rol, tgt_str))
             except Exception as se:
                 print("Sensor error:", se)
 

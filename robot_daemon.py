@@ -337,7 +337,14 @@ class _YukonLink:
                 # Printable ASCII or newline — firmware print() output
                 if b in (0x0A, 0x0D):
                     if txt_buf:
-                        log.warning("Yukon: %s", txt_buf.decode('ascii', errors='replace').rstrip())
+                        txt = txt_buf.decode('ascii', errors='replace').rstrip()
+                        # Promote to WARNING for fault/watchdog lines; rest is DEBUG
+                        if any(kw in txt for kw in
+                               ('WATCHDOG', 'Fault', 'CRITICAL', 'error', 'CRASH',
+                                'Recovery failed', 'Too many', 'Shutting down')):
+                            log.warning("Yukon: %s", txt)
+                        else:
+                            log.debug("Yukon: %s", txt)
                         txt_buf = bytearray()
                 else:
                     txt_buf.extend(bytes([b]))
