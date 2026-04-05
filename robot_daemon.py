@@ -276,6 +276,13 @@ class _YukonLink:
         self._rx.start()
         if no_motors:
             log.warning("NO-MOTORS mode: all drive/LED/bearing commands suppressed")
+        else:
+            # Send an initial CMD_MODE=MANUAL immediately after connecting.
+            # On process restart the firmware still has the old _pi_last_cmd_ms
+            # from the previous run; without this keepalive the ~0.5–1 s gap
+            # between the old process's last CMD_MODE and the control thread's
+            # first CMD_MODE triggers a spurious startup WATCHDOG ESTOP.
+            self.set_mode(0)   # 0 = MANUAL
 
     # ── background reader ────────────────────────────────────────────────────
 
@@ -1100,16 +1107,24 @@ class _Camera:
             return True
 
     def stop_recording(self) -> str:
-        """Flush and close the VideoWriter. Returns the saved file path."""
+        """Stop recording. Marks recording stopped immediately; VideoWriter
+        flushes to disk in a background thread (can be slow for large files).
+        Returns the saved file path, or "" if not recording."""
         with self._rec_lock:
             if self._writer is None:
                 return ""
-            self._writer.release()
+            # Detach writer — is_recording() returns False immediately.
+            writer = self._writer
             self._writer = None
             path = self._rec_path
             self._rec_path = ""
-            log.info(f"Camera recording saved → {path}")
-            return path
+        # Release (flush) in a daemon thread — cv2.VideoWriter.release() can
+        # take many seconds for high-resolution / long recordings (e.g. 4K).
+        def _flush(w, p):
+            w.release()
+            log.info(f"Camera recording saved → {p}")
+        threading.Thread(target=_flush, args=(writer, path), daemon=True).start()
+        return path
 
     def is_recording(self) -> bool:
         return self._writer is not None
