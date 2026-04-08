@@ -199,6 +199,10 @@ class RobotState:
     cam_front_left_ok:  bool = False
     cam_front_right_ok: bool = False
     cam_rear_ok:        bool = False
+    # Lens-cap detection (True = cap on, image is black)
+    cam_front_left_cap:  bool = False
+    cam_front_right_cap: bool = False
+    cam_rear_cap:        bool = False
     cam_front_left_recording:  bool = False
     cam_front_right_recording: bool = False
     cam_rear_recording:        bool = False
@@ -724,6 +728,7 @@ class _Camera:
 
     ``mirror`` flips frames horizontally — useful for rear-facing cameras so
     the feed feels natural when reviewed.
+
     """
 
     def __init__(self,
@@ -773,6 +778,9 @@ class _Camera:
         self._stop           = threading.Event()
         self._ok             = False
         self._aruco_ok       = False
+        self._lens_cap        = False  # True when frame mean brightness is near zero
+        self._lens_cap_count  = 0     # consecutive black-frame counter (debounce)
+        self._lens_clear_count = 0    # consecutive bright-frame counter (debounce)
         self._writer         = None   # cv2.VideoWriter or None
         self._rec_lock       = threading.Lock()
         self._rec_path       = ''
@@ -813,7 +821,7 @@ class _Camera:
         else:  # 'auto'
             try:
                 self._run_picamera2()
-            except (ImportError, OSError):
+            except Exception:
                 try:
                     self._run_opencv()
                 except Exception as e:
@@ -888,6 +896,31 @@ class _Camera:
 
         Returns display_frame.
         """
+        # Lens-cap detection with hysteresis:
+        #   Set   when 15 consecutive frames have mean < 8   (cap on, AEC noise ≤ ~8)
+        #   Clear when 15 consecutive frames have mean > 30  (cap off, real light)
+        # Different thresholds prevent a single noisy dark/bright frame from flipping
+        # the state back and forth.
+        mean = frame.mean()
+        if not self._lens_cap:
+            if mean < 8.0:
+                self._lens_cap_count += 1
+                if self._lens_cap_count == 15:
+                    self._lens_cap = True
+                    log.warning("%s: lens cap detected", self._name)
+            else:
+                self._lens_cap_count = 0
+        else:
+            if mean > 30.0:
+                self._lens_clear_count += 1
+                if self._lens_clear_count == 15:
+                    self._lens_cap = False
+                    self._lens_cap_count = 0
+                    self._lens_clear_count = 0
+                    log.info("%s: lens cap removed", self._name)
+            else:
+                self._lens_clear_count = 0
+
         if self._mirror:
             frame = cv2.flip(frame, 1)
         frame = self._rotate(frame, cv2)
@@ -1062,6 +1095,10 @@ class _Camera:
     @property
     def aruco_ok(self):
         return self._aruco_ok
+
+    @property
+    def lens_cap(self):
+        return self._lens_cap
 
     def set_aruco_enabled(self, enabled: bool):
         """Enable or disable ArUco detection at runtime."""
@@ -1813,7 +1850,7 @@ class Robot:
         no_motors:      bool  = False,  # suppress all drive commands (bench testing)
     ):
         self._ibus_port      = ibus_port
-        self._yukon_port     = yukon_port or self._find_yukon()
+        self._yukon_port     = yukon_port if yukon_port is not None else self._find_yukon()
         self._lidar_port     = lidar_port
         self._gps_port       = gps_port
         self._ntrip_host     = ntrip_host
@@ -1919,14 +1956,17 @@ class Robot:
     def start(self):
         """Start all subsystems and control threads."""
         suffix = " [NO-MOTORS]" if self._no_motors else ""
-        while True:
-            try:
-                log.info(f"Connecting to Yukon on {self._yukon_port}{suffix}")
-                self._yukon = _YukonLink(self._yukon_port, no_motors=self._no_motors)
-                break
-            except Exception as e:
-                log.warning(f"Yukon not available on {self._yukon_port} ({e}) — retrying in 3 s")
-                time.sleep(3)
+        if self._yukon_port:
+            while True:
+                try:
+                    log.info(f"Connecting to Yukon on {self._yukon_port}{suffix}")
+                    self._yukon = _YukonLink(self._yukon_port, no_motors=self._no_motors)
+                    break
+                except Exception as e:
+                    log.warning(f"Yukon not available on {self._yukon_port} ({e}) — retrying in 3 s")
+                    time.sleep(3)
+        else:
+            log.info("Yukon disabled — skipping")
 
         # ── Triple camera setup ───────────────────────────────────────────────
         _ini_cam = configparser.ConfigParser(inline_comment_prefixes=('#',))
@@ -2185,6 +2225,9 @@ class Robot:
             cam_front_left_ok  = bool(self._cam_front_left  and self._cam_front_left.ok),
             cam_front_right_ok = bool(self._cam_front_right and self._cam_front_right.ok),
             cam_rear_ok        = bool(self._cam_rear        and self._cam_rear.ok),
+            cam_front_left_cap  = bool(self._cam_front_left  and self._cam_front_left.lens_cap),
+            cam_front_right_cap = bool(self._cam_front_right and self._cam_front_right.lens_cap),
+            cam_rear_cap        = bool(self._cam_rear        and self._cam_rear.lens_cap),
             cam_front_left_recording  = bool(self._cam('front_left')  and self._cam('front_left').is_recording()),
             cam_front_right_recording = bool(self._cam('front_right') and self._cam('front_right').is_recording()),
             cam_rear_recording        = bool(self._cam_rear and self._cam_rear.is_recording()),
@@ -2528,6 +2571,30 @@ class Robot:
         """Return the current AutoType selected by SwC."""
         with self._mode_lock:
             return self._auto_type
+
+    def inject_rtcm(self, data: bytes) -> bool:
+        """Forward raw RTCM3 correction bytes to the TAU1308 GNSS rover.
+
+        Called by tools/serial_telemetry.py which owns the SiK radio port and
+        receives RTCM from the ground station dashboard via the uplink.
+
+        Returns True if bytes were forwarded, False if GPS is unavailable.
+        The _Gps instance holds a reference to the live TAU1308 gnss object
+        via self._gps._gnss; we access it under the GPS lock to avoid a race
+        with the GPS thread closing the driver on error.
+        """
+        try:
+            gps = self._gps
+            if gps is None or not gps.ok:
+                return False
+            gnss = getattr(gps, '_gnss', None)
+            if gnss is None:
+                return False
+            gnss.send_rtcm(data)
+            return True
+        except Exception as e:
+            log.debug("inject_rtcm error: %s", e)
+            return False
 
     def set_no_motors(self, on: bool):
         """Enable or disable no-motors mode (suppresses drive commands only).

@@ -196,6 +196,7 @@ Tests covered:
 | 9 | Reset ESTOP | `reset_estop()` returns mode to `MANUAL` |
 | 10 | AUTO mode | `set_mode(AUTO/MANUAL)` transitions; `set_mode(ESTOP)` raises; `drive()` clamps and stores values |
 | 11 | Data logging | `start_data_log()` / `stop_data_log()` create valid JSONL with `ts`, `mode`, `drive` fields |
+| 12 | Bearing hold | `set_bearing()` sets target in sim; heading drifts to target at 90°/s within 2.5 s; `clear_bearing()` removes target |
 
 The iBUS port is set to a non-existent path — this is expected and harmless; the main robot stack no longer uses Pi-side iBUS (RC input moved to Yukon GP26).
 
@@ -269,6 +270,44 @@ python3 tools/test_aruco_navigator.py
 ```
 
 Tests all state transitions (IDLE → SEARCHING → ALIGNING → APPROACHING → PASSING → RECOVERING → COMPLETE), obstacle stop, single-tag fallback, IMU search stepping, and `from_ini()` config loading.
+
+---
+
+### test_gps_navigator.py
+
+Unit tests for `robot/gps_navigator.py` using synthetic GPS fixes and a mock Yukon — no hardware, radio, or GNSS receiver required.
+
+```
+python3 tools/test_gps_navigator.py
+```
+
+Tests covered:
+
+| # | Section | What is checked |
+|---|---------|-----------------|
+| 1 | Idle state | `update()` before `start()` returns (0, 0) and state is IDLE |
+| 2 | No fix → WAITING | `start()` with no GPS fix → state WAITING_FIX, motors stopped |
+| 3 | Fix → NAVIGATING | Valid fix acquired → transitions to NAVIGATING |
+| 4 | Heading toward WP | Bearing-to-waypoint ≈ compass heading to target |
+| 5 | Arrival detection | Robot within `arrival_radius` → state ARRIVED |
+| 6 | ARRIVED pause | Motors stopped during arrival pause; resumes after |
+| 7 | Waypoint advance | After arriving at WP0, advances to WP1 |
+| 8 | Final waypoint | After last WP → COMPLETE; returns (0, 0) |
+| 9 | Loop mode | COMPLETE → restarts from WP0 when `loop=True` |
+| 10 | No-loop mode | COMPLETE stays COMPLETE when `loop=False` |
+| 11 | Reset | `reset()` returns to IDLE and clears waypoint index |
+| 12 | Speed ramping | Motor output ramps up from zero at start of each leg |
+| 13 | Max speed clamp | `fwd_speed` clamps output to ≤ 1.0 |
+| 14 | Steer left | Negative heading error (target left of heading) → left > right |
+| 15 | Steer right | Positive heading error (target right of heading) → right > left |
+| 16 | Steer clamp | Steering clamped at `steer_max` regardless of heading error |
+| 17 | Dead ahead | Zero heading error → symmetric motor outputs |
+| 18 | Steer direction | heading_err = −20° → left > right (counter-clockwise correction) |
+| 19 | LiDAR obstacle stop | Obstacle within `obstacle_stop_dist` in cone → motors halted |
+| 20 | Look-ahead blending | Near final waypoint, `heading_err` reflects blend toward next WP |
+| 21 | IMU priority | IMU heading used in preference to GPS course when available |
+| 22 | `from_ini()` all keys | All config keys loaded correctly from a `ConfigParser` section |
+| 23 | `from_ini()` defaults | Missing `[gps_navigator]` section → all values use defaults |
 
 ---
 
@@ -538,6 +577,109 @@ Creates a virtual serial port (PTY) that emulates `/dev/ttyACM0`:
 | `--ibus-port DEV` | none | iBUS PTY/device to read RC channels from (e.g. `ibus_sim.py` PTY) |
 
 Point any client (`robot_daemon.py`, `tools/test_main.py`) at the PTY path printed on startup.
+
+---
+
+## Ground Station
+
+### ground_station.py
+
+Web-based operator dashboard for remote use. Runs on the **operator's laptop** and
+connects to the robot over a Holybro SiK V3 433 MHz radio link (or TCP over LAN for testing).
+Serves the same panel layout as `robot_dashboard.py` with an added FPV Camera panel and
+📡 / RTK link-quality badges.
+
+Three backends — select with `--backend`:
+
+| Backend | Description |
+|---------|-------------|
+| `real` (default) | Physical SiK radio on a USB serial port |
+| `network` | TCP socket — use with `serial_telemetry.py --tcp-port` for LAN/WiFi testing |
+| `fake` | Synthetic telemetry, no hardware needed — great for UI testing |
+
+```bash
+# Physical SiK radio
+python3 tools/ground_station.py --serial-port /dev/ttyUSB0
+
+# LAN/WiFi (robot running serial_telemetry.py --tcp-port 5010)
+python3 tools/ground_station.py --backend network --network-host 192.168.1.10
+
+# Fake data, no hardware at all
+python3 tools/ground_station.py --backend fake
+
+# Fake data with local webcam as FPV
+python3 tools/ground_station.py --backend fake --fpv-device 0
+```
+
+Open **http://localhost:5000** (or the IP shown) in any browser.
+
+Full setup and NTRIP configuration: see [GROUND_STATION.md](GROUND_STATION.md).
+
+---
+
+### serial_telemetry.py
+
+SiK radio telemetry bridge — runs on the **robot Pi**.
+Owns the SiK radio serial port, streams `RobotState` JSON at 5 Hz and subsampled
+LiDAR at 1 Hz. Receives RTCM corrections and JSON commands over the uplink.
+
+Also exposes a TCP port (`--tcp-port`) for LAN/WiFi testing without a physical radio.
+
+```bash
+# With SiK radio on /dev/ttyUSB1
+python3 tools/serial_telemetry.py
+
+# Override port and baud
+python3 tools/serial_telemetry.py --port /dev/ttyUSB1 --baud 115200
+
+# TCP-only — no radio needed (for LAN testing)
+python3 tools/serial_telemetry.py --tcp-port 5010 --no-serial
+
+# Skip camera and GPS for faster startup during bench testing
+python3 tools/serial_telemetry.py --tcp-port 5010 --no-camera --no-gps --no-serial
+```
+
+| Flag | Description |
+|------|-------------|
+| `--port DEV` | SiK radio serial port (default: from `robot.ini`) |
+| `--baud N` | Baud rate (default: 57600) |
+| `--hz N` | Telemetry packet rate in Hz (default: 5) |
+| `--no-lidar` | Disable 1 Hz LiDAR downlink |
+| `--no-serial` | Skip serial port entirely — TCP-only mode |
+| `--tcp-port N` | Also listen for TCP connections on this port |
+| `--no-camera` | Disable cameras |
+| `--no-gps` | Disable GPS (RTCM uplink will be silently dropped) |
+| `--no-motors` | Suppress all drive commands |
+| `--no-yukon` | Skip Yukon connection — use when `robot_dashboard.py` is already running and owns `/dev/ttyACM0` |
+
+The `[telemetry_radio]` section is already in `robot.ini` (set `disabled = false` to enable it).
+Set `[rtcm] disabled = true` when the SiK radio is active to avoid port conflicts.
+
+**Local same-Pi testing** (no radio hardware needed):
+
+```bash
+# Terminal 1 — telemetry bridge with TCP, no hardware conflicts
+python3 tools/serial_telemetry.py --no-serial --no-yukon --no-camera --no-gps --tcp-port 5010
+
+# Terminal 2 — ground station connects via loopback
+python3 tools/ground_station.py --backend network --network-host localhost --network-port 5010 --web-port 8080
+```
+
+Open **http://localhost:8080/** for the ground station UI. The `--no-yukon` flag is required when `robot_dashboard.py` is already running to avoid both processes fighting over `/dev/ttyACM0`.
+
+---
+
+### build_gs_html.py
+
+Generates `tools/ground_station.html` from `robot_dashboard.py`.
+Run once after cloning, and again whenever `robot_dashboard.py` changes.
+
+```bash
+python3 tools/build_gs_html.py
+```
+
+Applies seven patches to the dashboard HTML: adds the FPV Camera panel, updates the
+Race preset, injects 📡/RTK badges into the status bar, and hides robot-only controls.
 
 ---
 
