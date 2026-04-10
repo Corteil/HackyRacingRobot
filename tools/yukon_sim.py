@@ -463,6 +463,44 @@ def yukon_server(master_fd):
             else:
                 cmd_code = pkt_cmd - 0x20
                 value    = ((pkt_vhigh - 0x40) << 4) | (pkt_vlow - 0x50)
+                # CMD_SENSOR is handled outside the main lock because _tick_imu()
+                # acquires _lock itself — calling it from within would deadlock.
+                if cmd_code == CMD_SENSOR:
+                    with _lock:
+                        _state['cmds_rx'] += 1
+                    _tick_imu()   # advance IMU heading drift (acquires _lock internally)
+                    with _lock:
+                        imu_present = _state['imu_present']
+                        imu_heading = _state['imu_heading']
+                        imu_pitch   = _state['imu_pitch']
+                        imu_roll    = _state['imu_roll']
+                        fault_l     = _state.get('fault_l', False)
+                        fault_r     = _state.get('fault_r', False)
+                        bench_fault = _state.get('bench_fault', False)
+                    _send_sensor_packet(master_fd, RESP_VOLTAGE, SIM_VOLTAGE  * 10)
+                    _send_sensor_packet(master_fd, RESP_CURRENT, SIM_CURRENT  * 100)
+                    _send_sensor_packet(master_fd, RESP_TEMP,    SIM_TEMP     * 3)
+                    _send_sensor_packet(master_fd, RESP_TEMP_L,  SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_TEMP_R,  SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_FAULT_L, int(fault_l))
+                    _send_sensor_packet(master_fd, RESP_FAULT_R, int(fault_r))
+                    _send_sensor_packet(master_fd, RESP_BENCH_TEMP,  SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_BENCH_FAULT, int(bench_fault))
+                    if imu_present:
+                        _send_sensor_packet(master_fd, RESP_HEADING,
+                                            _bearing_encode(imu_heading))
+                        _send_sensor_packet(master_fd, RESP_PITCH,
+                            int((imu_pitch + 90.0)  * 254.0 / 180.0 + 0.5))
+                        _send_sensor_packet(master_fd, RESP_ROLL,
+                            int((imu_roll  + 180.0) * 254.0 / 360.0 + 0.5))
+                    else:
+                        _send_sensor_packet(master_fd, RESP_HEADING, 255)
+                        _send_sensor_packet(master_fd, RESP_PITCH,   255)
+                        _send_sensor_packet(master_fd, RESP_ROLL,    255)
+                    os.write(master_fd, bytes([ACK]))
+                    sm = 'SYNC'
+                    continue
+
                 with _lock:
                     _state['cmds_rx'] += 1
                     if cmd_code == CMD_LEFT:
@@ -529,27 +567,6 @@ def yukon_server(master_fd):
                         _send_sensor_packet(master_fd, RESP_RC_BASE + 14, valid)
                     elif cmd_code == CMD_BENCH:
                         _state['bench_enabled'] = bool(value)
-                    elif cmd_code == CMD_SENSOR:
-                        _send_sensor_packet(master_fd, RESP_VOLTAGE, SIM_VOLTAGE  * 10)
-                        _send_sensor_packet(master_fd, RESP_CURRENT, SIM_CURRENT  * 100)
-                        _send_sensor_packet(master_fd, RESP_TEMP,    SIM_TEMP     * 3)
-                        _send_sensor_packet(master_fd, RESP_TEMP_L,  SIM_TEMP_MOD * 3)
-                        _send_sensor_packet(master_fd, RESP_TEMP_R,  SIM_TEMP_MOD * 3)
-                        _send_sensor_packet(master_fd, RESP_FAULT_L, int(_state.get('fault_l', False)))
-                        _send_sensor_packet(master_fd, RESP_FAULT_R, int(_state.get('fault_r', False)))
-                        _send_sensor_packet(master_fd, RESP_BENCH_TEMP,  SIM_TEMP_MOD * 3)
-                        _send_sensor_packet(master_fd, RESP_BENCH_FAULT, int(_state.get('bench_fault', False)))
-                        if _state['imu_present']:
-                            _send_sensor_packet(master_fd, RESP_HEADING,
-                                                _bearing_encode(_state['imu_heading']))
-                            _send_sensor_packet(master_fd, RESP_PITCH,
-                                int((_state['imu_pitch'] + 90.0)  * 254.0 / 180.0 + 0.5))
-                            _send_sensor_packet(master_fd, RESP_ROLL,
-                                int((_state['imu_roll']  + 180.0) * 254.0 / 360.0 + 0.5))
-                        else:
-                            _send_sensor_packet(master_fd, RESP_HEADING, 255)
-                            _send_sensor_packet(master_fd, RESP_PITCH,   255)
-                            _send_sensor_packet(master_fd, RESP_ROLL,    255)
                 os.write(master_fd, bytes([ACK]))
             sm = 'SYNC'
 

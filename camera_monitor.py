@@ -8,6 +8,7 @@ Controls
   S          : cycle capture resolution
   R          : rotate 90° clockwise
   H          : toggle histogram overlay
+  V          : cycle video source (Picamera2 / OpenCV /dev/video0)
   ↑ / ↓     : exposure +/- (switches to manual; A to restore auto)
   [ / ]      : analogue gain down / up
   A          : auto exposure / gain
@@ -30,6 +31,7 @@ Usage
   D          : cycle ArUco dictionary
 """
 
+import configparser
 import sys
 import time
 from datetime import datetime
@@ -43,11 +45,119 @@ from picamera2 import Picamera2
 from robot.aruco_detector import ArucoDetector, ArUcoState, ARUCO_DICT
 from robot.camera_controls import (
     CAPTURE_SIZES, GAINS, EXP_STEPS, EXP_DEFAULT, ARUCO_DICTS,
-    IMAGE_DIR, CALIB_FILE,
+    CALIB_FILE,
     sharpness as _sharpness, rotate as _rotate,
     make_cam as _make_cam, draw_aruco_on_frame as _draw_aruco_on_frame,
     CalibrationMaps,
 )
+
+# ── Video sources ─────────────────────────────────────────────────────────────
+# 0 = Picamera2 CAM0 (IMX296, CSI port 0)
+# 1 = Picamera2 CAM1 (IMX296, CSI port 1)
+# 2 = OpenCV UVC     (USB webcam, V4L2 backend)
+
+VIDEO_SOURCES = ["Picamera2 CAM0", "Picamera2 CAM1", "OpenCV UVC"]
+
+
+class _CvCam:
+    """Minimal OpenCV camera wrapper matching the Picamera2 interface used here.
+
+    Uses the V4L2 backend explicitly to avoid GStreamer pipeline errors.
+    capture_array() returns a BGR array so the existing ``[:, :, ::-1]``
+    slice in the main loop converts it to RGB, exactly as with Picamera2.
+    """
+
+    def __init__(self, device: int = 0, width: int = 640, height: int = 480):
+        self._cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._cap.set(cv2.CAP_PROP_FPS, 30)
+
+    def capture_array(self) -> np.ndarray:
+        ok, frame = self._cap.read()
+        if not ok or frame is None:
+            raise RuntimeError("OpenCV frame capture failed")
+        return frame  # BGR — caller does [:, :, ::-1] → RGB
+
+    def set_controls(self, _controls: dict) -> None:
+        pass  # exposure/gain not wired for OpenCV source
+
+    def stop(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self._cap.release()
+
+
+def _open_cam(source_idx: int, cap_w: int, cap_h: int):
+    """Open a camera for the given source index."""
+    if source_idx == 0:
+        return _make_cam(cap_w, cap_h, camera_num=0)
+    if source_idx == 1:
+        return _make_cam(cap_w, cap_h, camera_num=1)
+    # source_idx == 2: UVC webcam via V4L2
+    # Use device index 0; on Pi5 with PiSP the CSI cameras don't occupy
+    # /dev/video0 as a V4L2 node, so the UVC cam lands there.
+    return _CvCam(0, cap_w, cap_h)
+
+
+# ── camera_monitor.ini config ─────────────────────────────────────────────────
+
+_MONITOR_INI = Path(__file__).parent / "camera_monitor.ini"
+_ROBOT_INI   = Path(__file__).parent / "robot.ini"
+
+_DEFAULTS = {
+    'monitor': {'source': '0', 'size': '2',
+                'rotation_0': '0', 'rotation_1': '0', 'rotation_2': '0'},
+    'output':  {'images_dir': ''},
+}
+
+
+def _load_monitor_cfg() -> configparser.ConfigParser:
+    cfg = configparser.ConfigParser(inline_comment_prefixes=('#',))
+    cfg.read_dict(_DEFAULTS)
+    cfg.read(_MONITOR_INI)
+    return cfg
+
+
+def _save_monitor_cfg(cfg: configparser.ConfigParser) -> None:
+    """Write back only the [monitor] and [output] sections, preserving
+    comment lines in camera_monitor.ini by patching values in-place."""
+    text  = _MONITOR_INI.read_text()
+    lines = text.splitlines(keepends=True)
+    section = None
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            section = stripped[1:-1].lower()
+        elif section and not stripped.startswith('#') and '=' in stripped:
+            key = stripped.split('=', 1)[0].strip().lower()
+            if cfg.has_option(section, key):
+                indent  = len(line) - len(line.lstrip())
+                comment = ''
+                val_part = stripped.split('=', 1)[1]
+                if '#' in val_part:
+                    comment = '  ' + val_part[val_part.index('#'):]
+                line = (' ' * indent + f"{key:<20}= "
+                        + cfg.get(section, key)
+                        + comment.rstrip() + '\n')
+        out.append(line)
+    _MONITOR_INI.write_text(''.join(out))
+
+
+def _resolve_images_dir(cfg: configparser.ConfigParser) -> Path:
+    """Return the snapshot directory: camera_monitor.ini > robot.ini > default."""
+    override = cfg.get('output', 'images_dir', fallback='').strip()
+    if override:
+        return Path(override)
+    robot_cfg = configparser.ConfigParser(inline_comment_prefixes=('#',))
+    robot_cfg.read(_ROBOT_INI)
+    robot_dir = robot_cfg.get('output', 'images_dir', fallback='').strip()
+    if robot_dir:
+        return Path(robot_dir)
+    return Path.home() / "Pictures" / "HackyRacingRobot"
+
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 
@@ -68,7 +178,7 @@ COLOUR_MODES = ["Colour", "Greyscale", "False Colour", "Edges", "Focus Peak"]
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 W, H     = 1024, 768
-BAR_H    = 72
+BAR_H    = 84
 PANEL_W  = 214          # right-hand info panel
 IMG_Y    = BAR_H
 IMG_H    = H - BAR_H * 2
@@ -240,12 +350,23 @@ def run():
     FONT_BIG  = pygame.font.SysFont("monospace", 22, bold=True)
     FONT_MD   = pygame.font.SysFont("monospace", 16)
     FONT_SM   = pygame.font.SysFont("monospace", 14)
-    FONT_TINY = pygame.font.SysFont("monospace", 11)
+    FONT_TINY = pygame.font.SysFont("monospace", 13)
+
+    # ── Config ────────────────────────────────────────────────────────────
+    _cfg       = _load_monitor_cfg()
+    _image_dir = _resolve_images_dir(_cfg)
+
+    # Per-source rotations — list indexed by source_idx
+    rotations = [
+        _cfg.getint('monitor', f'rotation_{i}', fallback=0)
+        for i in range(len(VIDEO_SOURCES))
+    ]
 
     # ── State ─────────────────────────────────────────────────────────────
     mode_idx   = 0
-    size_idx   = 2          # start at native 1456×1088 (IMX296 global shutter)
-    rotation   = 0
+    size_idx   = _cfg.getint('monitor', 'size',   fallback=2)
+    source_idx = _cfg.getint('monitor', 'source', fallback=0)
+    rotation   = rotations[source_idx]
     gain_idx   = 0
     exp_idx    = EXP_DEFAULT
     auto_exp   = True        # AeEnable
@@ -264,7 +385,7 @@ def run():
     aruco_state: ArUcoState = ArUcoState()
 
     cap_w, cap_h = CAPTURE_SIZES[size_idx]
-    cam   = _make_cam(cap_w, cap_h)
+    cam   = _open_cam(source_idx, cap_w, cap_h)
 
     raw_frame  = None
     disp_frame = None
@@ -278,10 +399,12 @@ def run():
         cam.stop()
         cam.close()
         cap_w, cap_h = CAPTURE_SIZES[size_idx]
-        cam = _make_cam(cap_w, cap_h)
+        cam = _open_cam(source_idx, cap_w, cap_h)
         _apply_controls()
 
     def _apply_controls():
+        if source_idx >= 2:
+            return  # exposure/gain only supported on Picamera2
         if auto_exp:
             cam.set_controls({"AeEnable": True,
                                "AnalogueGain": GAINS[gain_idx]})
@@ -289,6 +412,13 @@ def run():
             cam.set_controls({"AeEnable":     False,
                                "ExposureTime": EXP_STEPS[exp_idx],
                                "AnalogueGain": GAINS[gain_idx]})
+
+    def _persist():
+        _cfg.set('monitor', 'source', str(source_idx))
+        _cfg.set('monitor', 'size',   str(size_idx))
+        for i, rot in enumerate(rotations):
+            _cfg.set('monitor', f'rotation_{i}', str(rot))
+        _save_monitor_cfg(_cfg)
 
     running = True
     while running:
@@ -304,8 +434,11 @@ def run():
                 elif ev.key == pygame.K_s:
                     size_idx = (size_idx + 1) % len(CAPTURE_SIZES)
                     restart_cam()
+                    _persist()
                 elif ev.key == pygame.K_r:
                     rotation = (rotation + 90) % 360
+                    rotations[source_idx] = rotation
+                    _persist()
                 elif ev.key == pygame.K_h:
                     show_hist = not show_hist
                 elif ev.key == pygame.K_a:
@@ -336,6 +469,11 @@ def run():
                 elif ev.key == pygame.K_d:
                     dict_idx = (dict_idx + 1) % len(ARUCO_DICTS)
                     detector  = ArucoDetector(ARUCO_DICTS[dict_idx], draw=False)
+                elif ev.key == pygame.K_v:
+                    source_idx = (source_idx + 1) % len(VIDEO_SOURCES)
+                    rotation   = rotations[source_idx]
+                    restart_cam()
+                    _persist()
                 elif ev.key == pygame.K_f:
                     frozen = not frozen
                     if not frozen:
@@ -348,9 +486,9 @@ def run():
                 elif ev.key == pygame.K_SPACE:
                     frame_to_save = disp_frame if disp_frame is not None else raw_frame
                     if frame_to_save is not None:
-                        IMAGE_DIR.mkdir(exist_ok=True)
+                        _image_dir.mkdir(exist_ok=True)
                         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        path = IMAGE_DIR / f"capture_{ts}.png"
+                        path = _image_dir / f"capture_{ts}.png"
                         cv2.imwrite(str(path),
                                     cv2.cvtColor(frame_to_save, cv2.COLOR_RGB2BGR))
                         capture_flash = time.time()
@@ -438,13 +576,13 @@ def run():
         screen.blit(FONT_BIG.render("Camera Monitor", True, C_WHITE), (20, 13))
 
         h1 = FONT_SM.render(
-            "M=mode   S=size   R=rotate   H=hist   K=calib   Spc=save   F=freeze   Q=quit",
+            "M=mode   S=size   R=rotate   H=hist   V=source   K=calib   Spc=save   F=freeze   Q=quit",
             True, C_GRAY)
         h2 = FONT_SM.render(
             "T=ArUco   D=dict   ↑↓=exposure   [ ]=gain   A=auto-exp",
             True, C_GRAY)
-        screen.blit(h1, (W // 2 - h1.get_width() // 2, 28))
-        screen.blit(h2, (W // 2 - h2.get_width() // 2, 46))
+        screen.blit(h1, (W // 2 - h1.get_width() // 2, 38))
+        screen.blit(h2, (W // 2 - h2.get_width() // 2, 56))
 
         # ── Bottom stats bar ──────────────────────────────────────────────
         bot_y = H - BAR_H + 6
@@ -455,19 +593,22 @@ def run():
                        else C_RED)
 
         exp_str = ("auto" if auto_exp
-                   else f"{EXP_STEPS[exp_idx] / 1000:.1f} ms")
+                   else f"{EXP_STEPS[exp_idx] / 1000:.1f} ms"
+                   if source_idx < 2 else "n/a")
 
         aruco_str = (f"{len(aruco_state.tags)} tags"
                      + (f"  {len(aruco_state.gates)} gates" if aruco_state.gates else "")
                      if show_aruco else "OFF")
 
         calib_str = ("ON" if use_calib else "OFF") if _calib.available else "none"
+        src_short = VIDEO_SOURCES[source_idx].replace("Picamera2 ", "Pi2 ")
         stats = [
+            ("Source",    src_short),
             ("Mode",      COLOUR_MODES[mode_idx]),
             ("Size",      f"{cap_w}×{cap_h}"),
             ("Rotation",  f"{rotation}°"),
             ("Exposure",  exp_str),
-            ("Gain",      f"{GAINS[gain_idx]:.0f}×"),
+            ("Gain",      f"{GAINS[gain_idx]:.0f}×" if source_idx < 2 else "n/a"),
             ("FPS",       f"{display_fps:.1f}"),
             ("Sharpness", f"{sharpness:.0f}"),
             ("Calib",     calib_str),
@@ -480,6 +621,8 @@ def run():
             color = (sharp_color if label == "Sharpness"
                      else C_GREEN  if label == "Calib" and value == "ON"
                      else C_GRAY   if label == "Calib" and value == "none"
+                     else C_GRAY   if value == "n/a"
+                     else C_CYAN   if label == "Source" and source_idx > 0
                      else C_WHITE)
             val_s = FONT_MD.render(value, True, color)
             screen.blit(lbl_s, (sx, bot_y))

@@ -7,11 +7,11 @@
 Suggested improvements based on codebase analysis, roughly ordered by priority.
 
 ### Testing
-- [ ] Add unit tests for `robot/aruco_navigator.py` state machine — synthetic `ArUcoState` inputs, verify state transitions (SEARCHING→ALIGNING→APPROACHING→RECOVERING etc.), no hardware needed
-- [ ] Add unit tests for `robot/gps_navigator.py` — synthetic NMEA fixes, verify waypoint sequencing, arrival detection, look-ahead blending, no hardware needed
-- [x] Extend `tools/yukon_sim.py` to simulate IMU heading responses (CMD_SENSOR reply ID 7) — already implemented; `_state['imu_heading']` is encoded and returned for `RESP_HEADING`
-- [ ] Add `--dry-run` mode to `tools/test_leds.py` so it runs in CI without a Yukon connected (pattern/preset encoding tests only)
-- [ ] Add `tools/test_robot.py` bearing-hold test — use the existing IMU simulation to verify `CMD_BEARING` sets a target and the sim converges toward it
+- [x] Add unit tests for `robot/aruco_navigator.py` state machine — `tools/test_aruco_navigator.py` has 20 tests covering all state transitions, no hardware needed
+- [x] Add unit tests for `robot/gps_navigator.py` — `tools/test_gps_navigator.py` has 76 tests covering waypoint sequencing, arrival detection, look-ahead blending, IMU/GPS priority, obstacle stop, and config loading; no hardware needed
+- [x] Extend `tools/yukon_sim.py` to simulate IMU heading responses (CMD_SENSOR reply ID 7) — already implemented; `_state['imu_heading']` is encoded and returned for `RESP_HEADING`; CMD_SENSOR now also ticks the bearing-hold drift so heading converges in headless mode
+- [x] Add `--dry-run` mode to `tools/test_leds.py` so it runs in CI without a Yukon connected — already present (`--dry-run` flag skips serial open, tests encoding only)
+- [x] Add `tools/test_robot.py` bearing-hold test — `test_bearing_hold()` verifies `CMD_BEARING` sets a sim target and heading converges within ±10° in ≤2.5 s; 59 tests total, all passing
 
 ### Code & Architecture
 - [ ] `robot_daemon.py` is ~2400 lines — consider splitting subsystem classes (`_Camera`, `_Gps`, `_YukonLink`, `_Lidar`) into separate files under `robot/` to reduce merge conflicts and improve readability
@@ -37,7 +37,7 @@ Suggested improvements based on codebase analysis, roughly ordered by priority.
 
 _Add your own tasks below._
 
-- [ ] Dust cap detection
+- [x] Dust cap detection — `_Camera._process_frame()` checks mean brightness < 2/255; sets `lens_cap` flag; logs warning on detection/removal; exposed in `RobotState` (`cam_*_cap`); dashboard shows amber "LENS CAP ON" badge on the affected camera panel
 - [ ]
 - [ ]
 - [ ]

@@ -7,14 +7,18 @@ hardware.  Camera, LiDAR and GPS are all disabled so only the Yukon serial
 link and its subsystem threads are exercised.
 
 Tests:
-  1. Lifecycle      — start() connects to PTY; stop() shuts down cleanly
-  2. get_state()    — returns RobotState with correct types and defaults
-  3. Drive commands — drive() sends correct wire bytes to the simulator
-  4. Kill           — kill() zeros both motor bytes in the simulator
-  5. LED            — set_led_a / set_led_b update simulator state
-  6. Telemetry      — 1 Hz thread populates voltage, current, temps correctly
-  7. IMU heading    — heading decoded from RESP_HEADING matches sim value
-  8. Estop          — estop() does not raise; mode becomes MANUAL
+  1.  Lifecycle      — start() connects to PTY; stop() shuts down cleanly
+  2.  get_state()    — returns RobotState with correct types and defaults
+  3.  Drive commands — drive() sends correct wire bytes to the simulator
+  4.  Kill           — kill() zeros both motor bytes in the simulator
+  5.  LED            — set_led_a / set_led_b update simulator state
+  6.  Telemetry      — 1 Hz thread populates voltage, current, temps correctly
+  7.  IMU heading    — heading decoded from RESP_HEADING matches sim value
+  8.  Estop          — estop() does not raise; mode becomes ESTOP
+  9.  Reset ESTOP    — reset_estop() returns mode to MANUAL
+ 10.  AUTO mode      — mode transitions, drive() clamping
+ 11.  Data logging   — start/stop creates valid JSONL with expected fields
+ 12.  Bearing hold   — CMD_BEARING sets sim target; sim drifts to target heading
 
 Usage:
     python3 tools/test_robot.py
@@ -373,6 +377,53 @@ def test_data_log(robot):
             pass
 
 
+def test_bearing_hold(robot):
+    print("\nBearing hold (CMD_BEARING):")
+
+    target = 135.0
+
+    # Reset sim heading to 0° so we can observe drift toward target
+    with _lock:
+        _state['imu_heading']    = 0.0
+        _state['bearing_target'] = None
+        _state['last_imu_tick']  = time.monotonic()
+
+    robot._yukon.set_bearing(target)
+    time.sleep(0.15)   # let command reach simulator
+
+    with _lock:
+        sim_target = _state['bearing_target']
+
+    _check("set_bearing() → sim bearing_target set",
+           sim_target is not None, f"got {sim_target!r}")
+    # CMD_BEARING is encoded 0–254 → 0–359° with ~1.4° resolution
+    _check(f"sim bearing_target ≈ {target}° (±3°)",
+           sim_target is not None and _approx(sim_target, target, tol=3.0),
+           f"got {sim_target}")
+
+    # Sim drifts at 90°/s; starting from 0° it should reach ~135° in ≤2 s
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline:
+        hdg = robot.get_heading()
+        if hdg is not None and _approx(hdg, target, tol=10.0):
+            break
+        time.sleep(0.1)
+
+    hdg = robot.get_heading()
+    _check(f"heading converges to {target}° after bearing hold (±10°)",
+           hdg is not None and _approx(hdg, target, tol=10.0),
+           f"got {hdg}")
+
+    # Clear bearing
+    robot._yukon.clear_bearing()
+    time.sleep(0.15)
+
+    with _lock:
+        cleared = _state['bearing_target']
+    _check("clear_bearing() → sim bearing_target = None",
+           cleared is None, f"got {cleared!r}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -399,6 +450,7 @@ def main():
         test_reset_estop(robot)
         test_auto_mode(robot)
         test_data_log(robot)
+        test_bearing_hold(robot)
 
     finally:
         robot.stop()

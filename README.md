@@ -72,6 +72,9 @@ yukon_firmware_and_software/
   main.py                   MicroPython firmware for the Yukon RP2040
   i2c_scan.py               I2C bus scanner (run on Yukon via Thonny)
 tools/
+  ground_station.py         Ground station web dashboard (operator laptop, port 5000)
+  serial_telemetry.py       SiK radio bridge — runs on Pi, streams telemetry + RTCM
+  build_gs_html.py          Generate ground_station.html from robot_dashboard.py
   upload.py                 MicroPython uploader (handles Yukon USB reset)
   calibrate_camera.py       Lens calibration tool (outputs camera_cal.npz)
   derive_calibrations.py    Scale master calibration to all target resolutions
@@ -117,6 +120,7 @@ Set `max_recording_minutes` in `[output]` to roll video to a new file automatica
 - [CALIBRATION.md](docs/CALIBRATION.md) — Camera lens calibration workflow
 - [GPIO.md](docs/GPIO.md) — GPIO pin allocation reference
 - [tools/README.md](tools/README.md) — All tools and tests reference
+- [tools/GROUND_STATION.md](tools/GROUND_STATION.md) — Ground station setup, backends, NTRIP, FPV
 
 ---
 

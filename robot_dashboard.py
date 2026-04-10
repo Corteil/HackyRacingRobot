@@ -1268,7 +1268,7 @@ function updateScatterPanel(i, s) {
   // Scale bar — approx metres
   const mPerDeg = 111320;
   const spanM = span * mPerDeg;
-  ctx.fillStyle='#666'; ctx.font='9px sans-serif'; ctx.textAlign='center';
+  ctx.fillStyle='#666'; ctx.font='12px sans-serif'; ctx.textAlign='center';
   ctx.fillText(spanM<1 ? (spanM*100).toFixed(0)+'cm'
                : spanM<1000 ? spanM.toFixed(1)+'m'
                : (spanM/1000).toFixed(2)+'km', W/2, H-2);
@@ -1387,10 +1387,11 @@ function updateNavPanel(i, s) {
     distEl.style.color = dist != null ? C.cyan : C.gray;
   }
 
-  // Tags visible
+  // Tags visible — use live aruco tag count, fall back to navigator count
   const tagsEl = el(`q${i}-tags-visible`);
   if (tagsEl) {
-    const n = s.nav_tags_visible || 0;
+    const camAruco = s.aruco && s.aruco['front_left'];
+    const n = camAruco ? (camAruco.tag_count || 0) : (s.nav_tags_visible || 0);
     tagsEl.textContent = n;
     tagsEl.style.color = n ? C.cyan : C.gray;
   }
@@ -1442,7 +1443,7 @@ function drawNavCanvas(canvas, s) {
   // Forward indicator (up = robot forward)
   ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(cx, cy - maxR - 2); ctx.lineTo(cx, cy - maxR + 10); ctx.stroke();
-  ctx.fillStyle = '#555'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+  ctx.fillStyle = '#555'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
   ctx.fillText('FWD', cx, cy - maxR - 4);
 
   // Helpers: estimate bearing/distance when pose data unavailable
@@ -1479,8 +1480,9 @@ function drawNavCanvas(canvas, s) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1.0;
-    ctx.fillStyle = col; ctx.font = '9px monospace'; ctx.textAlign = 'left';
-    ctx.fillText('#' + tag.id + (distKnown ? '' : '?'), tx + 6, ty + 4);
+    ctx.fillStyle = col; ctx.font = '12px monospace'; ctx.textAlign = 'left';
+    const distStr = distKnown ? ' ' + tag.distance.toFixed(2) + 'm' : '?';
+    ctx.fillText('#' + tag.id + distStr, tx + 6, ty + 4);
   }
 
   // Draw gates — two posts + centre line
@@ -1530,7 +1532,7 @@ function drawNavCanvas(canvas, s) {
     }
 
     // Gate label
-    ctx.fillStyle = col; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = col; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
     const lbl = 'G' + gate.gate_id + (distKnown ? ' ' + gate.distance.toFixed(1) + 'm' : '?');
     ctx.fillText(lbl, gx, gy - 10);
   }
@@ -1557,7 +1559,7 @@ function drawNavCanvas(canvas, s) {
       ctx.lineTo(ex - 7 * Math.cos(tRad + 0.4), ey - 7 * Math.sin(tRad + 0.4));
       ctx.closePath(); ctx.fill();
       // Bearing label just outside the edge
-      ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = col;
+      ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = col;
       const lx2 = cx + (maxR + 12) * Math.cos(tRad);
       const ly2 = cy + (maxR + 12) * Math.sin(tRad) + 3;
       ctx.fillText((targetBear >= 0 ? '+' : '') + targetBear.toFixed(0) + '°', lx2, ly2);
@@ -1591,7 +1593,7 @@ function drawNavCanvas(canvas, s) {
     ctx.lineTo(ax - arrowSize * Math.cos(hRad + 0.4), ay - arrowSize * Math.sin(hRad + 0.4));
     ctx.closePath(); ctx.fillStyle = C.red; ctx.fill();
     // N label
-    ctx.font = '9px monospace'; ctx.fillStyle = C.red; ctx.textAlign = 'center';
+    ctx.font = '12px monospace'; ctx.fillStyle = C.red; ctx.textAlign = 'center';
     ctx.fillText('N', cx + (hLen + 10) * Math.cos(hRad), cy + (hLen + 10) * Math.sin(hRad) + 3);
   }
 }
@@ -2024,7 +2026,7 @@ function drawLidar(canvas, angles, distances) {
   for (const frac of [0.25,0.5,0.75,1.0]) {
     ctx.beginPath(); ctx.arc(cx,cy,r*frac,0,Math.PI*2);
     ctx.strokeStyle=C.border; ctx.lineWidth=1; ctx.stroke();
-    ctx.fillStyle=C.border; ctx.font='9px monospace'; ctx.textAlign='left';
+    ctx.fillStyle=C.border; ctx.font='12px monospace'; ctx.textAlign='left';
     ctx.fillText((maxDist*frac/1000).toFixed(1)+'m',cx+r*frac+2,cy-3);
   }
   ctx.strokeStyle=C.border; ctx.lineWidth=1;
@@ -2161,7 +2163,7 @@ function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=fal
     ctx.strokeStyle=C.cyan; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(ccx,ccy);
     ctx.lineTo(ccx+cr*Math.cos(nrad),ccy+cr*Math.sin(nrad)); ctx.stroke();
-    ctx.font='9px monospace'; ctx.fillStyle=C.cyan; ctx.textAlign='center';
+    ctx.font='12px monospace'; ctx.fillStyle=C.cyan; ctx.textAlign='center';
     ctx.fillText(heading.toFixed(0)+'°',ccx,ccy-cr-3); ctx.textAlign='left';
   }
 }
@@ -2732,6 +2734,8 @@ def main():
         aruco_dict     = _cfg(cfg, 'aruco',  'dict',        'DICT_4X4_1000'),
         aruco_calib    = _cfg(cfg, 'aruco',  'calib_file',  ''),
         aruco_tag_size = _cfg(cfg, 'aruco',  'tag_size',    0.15,  float),
+        aruco_area_k   = _cfg(cfg, 'aruco',  'area_k',      0.0,   float),
+        aruco_hfov     = _cfg(cfg, 'aruco',  'hfov',        0.0,   float),
         throttle_ch    = _cfg(cfg, 'rc',     'throttle_ch', 3,     int),
         steer_ch       = _cfg(cfg, 'rc',     'steer_ch',    1,     int),
         mode_ch        = _cfg(cfg, 'rc',     'mode_ch',     5,     int),

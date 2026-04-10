@@ -749,6 +749,8 @@ class _Camera:
                  aruco_dict:      str   = 'DICT_4X4_1000',
                  calib_file:      str   = None,
                  tag_size:        float = 0.15,
+                 area_k:          float = 0.0,
+                 hfov:            float = 0.0,
                  max_rec_minutes: float = 0.0,
                  rec_dir:         str   = '',
                  name:            str   = 'camera'):      # label for log messages
@@ -765,6 +767,8 @@ class _Camera:
         self._aruco_dict     = aruco_dict
         self._calib_file     = calib_file
         self._tag_size       = tag_size
+        self._area_k         = area_k
+        self._hfov           = hfov
         self._aruco_enabled  = enable_aruco
         self._name           = name
         self._frame          = None   # display-resolution RGB frame
@@ -855,9 +859,12 @@ class _Camera:
                 dict_name  = self._aruco_dict,
                 calib_file = calib,
                 tag_size   = self._tag_size,
+                area_k = self._area_k,
+                hfov   = self._hfov,
             )
             log.info(f"{self._name}: ArUco detector ready ({self._aruco_dict}"
-                     f"{f', calibrated ({calib})' if calib else ''})")
+                     f"{f', calibrated ({calib})' if calib else ''}"
+                     f", area_k={self._area_k}, hfov={self._hfov})")
             return det
         except Exception as e:
             log.warning(f"{self._name}: ArUco detector init failed: {e}")
@@ -1831,6 +1838,8 @@ class Robot:
         aruco_dict:     str   = "DICT_4X4_1000",
         aruco_calib:    str   = '',        # path to camera_cal.npz
         aruco_tag_size: float = 0.15,      # physical tag side length in metres
+        aruco_area_k:   float = 0.0,       # area-based distance fallback constant
+        aruco_hfov:     float = 0.0,       # camera HFOV for pixel bearing fallback
         throttle_ch:    int   = 3,
         steer_ch:       int   = 1,
         mode_ch:        int   = 5,
@@ -1872,6 +1881,8 @@ class Robot:
         self._aruco_dict     = aruco_dict
         self._aruco_calib    = aruco_calib.strip() or None
         self._aruco_tag_size = aruco_tag_size
+        self._aruco_area_k   = aruco_area_k
+        self._aruco_hfov     = aruco_hfov
         # RC tuning (convert to 0-based channel indices)
         self._ch_throttle   = throttle_ch   - 1
         self._ch_steer      = steer_ch      - 1
@@ -1991,6 +2002,8 @@ class Robot:
                                    and self._enable_aruco),
                 aruco_dict      = self._aruco_dict,
                 tag_size        = self._aruco_tag_size,
+                area_k          = self._aruco_area_k,
+                hfov            = self._aruco_hfov,
                 calib_file      = _ini_cam.get(section, 'calib_file', fallback='') or None,
                 max_rec_minutes = self._max_rec_minutes,
                 rec_dir         = self._rec_dir,
@@ -2037,6 +2050,8 @@ class Robot:
                 aruco_dict      = self._aruco_dict,
                 calib_file      = self._aruco_calib,
                 tag_size        = self._aruco_tag_size,
+                area_k          = self._aruco_area_k,
+                hfov            = self._aruco_hfov,
                 max_rec_minutes = self._max_rec_minutes,
                 rec_dir         = self._rec_dir,
                 name            = 'camera',
@@ -3208,6 +3223,8 @@ def main():
         aruco_dict     = _cfg(cfg, "aruco",  "dict",       "DICT_4X4_1000"),
         aruco_calib    = _cfg(cfg, "aruco",  "calib_file", ""),
         aruco_tag_size = _cfg(cfg, "aruco",  "tag_size",   0.15, float),
+        aruco_area_k   = _cfg(cfg, "aruco",  "area_k",     0.0,  float),
+        aruco_hfov     = _cfg(cfg, "aruco",  "hfov",       0.0,  float),
         throttle_ch    = _cfg(cfg, "rc", "throttle_ch",    3,    int),
         steer_ch       = _cfg(cfg, "rc", "steer_ch",       1,    int),
         mode_ch        = _cfg(cfg, "rc", "mode_ch",        5,    int),

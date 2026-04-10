@@ -141,28 +141,38 @@ def _expand(msg: dict) -> dict:
         lidar_angles    = [float(a) for a in _gs_lidar.get("a", [])]
         lidar_distances = [float(d) for d in _gs_lidar.get("d", [])]
 
+    cam_ok = fl.get("cam_ok", False)
+
+    # NTRIP: prefer ground-station status when it's actively running;
+    # fall back to the robot's own NTRIP status from the packet.
+    gs_ntrip_active = _gs.ntrip_status not in ("", "disabled")
+    ntrip_st    = _gs.ntrip_status if gs_ntrip_active else g.get("ntrip", "")
+    ntrip_bytes = _gs.ntrip_bytes
+
     return {
         # Top-level flags
         "mode":          msg.get("mode", "MANUAL"),
         "auto_type":     "Camera",
         "speed_scale":   fl.get("speed", 0.25),
         "rc_active":     msg.get("rc", False),
-        "camera_ok":     fl.get("cam_ok", False),
+        "camera_ok":     cam_ok,
         "lidar_ok":      fl.get("lidar_ok", False),
         "gps_ok":        fl.get("gps_ok", False),
         "aruco_ok":      False,
         "aruco_enabled": {},
         "cam_rotation":  0,
         "gps_logging":   False,
-        "cam_recording": False,
+        "cam_recording": fl.get("cam_rec", False),
         "data_logging":  fl.get("data_log", False),
-        "no_motors":     False,
+        "no_motors":     fl.get("no_motors", False),
         "bench_enabled": True,
-        # Per-camera status (not available over SiK)
-        "cam_fl_ok":  fl.get("cam_ok", False),
+        # Per-camera status — only FL known over SiK; FR/RE unavailable
+        "cam_fl_ok":  cam_ok,
         "cam_fr_ok":  False,
         "cam_re_ok":  False,
-        "cam_fl_rec": False, "cam_fr_rec": False, "cam_re_rec": False,
+        "cam_fl_rec": fl.get("cam_rec", False),
+        "cam_fr_rec": False,
+        "cam_re_rec": False,
         "gate_confirmed": False, "current_gate_id": 0,
         "cam_cap_w": {}, "cam_cap_h": {}, "aruco": {},
         # Navigation
@@ -177,41 +187,55 @@ def _expand(msg: dict) -> dict:
         "nav_wp_bear":        nav.get("bear"),
         # Drive
         "drive": {"left": round(drv[0], 3), "right": round(drv[1], 3)},
-        # Telemetry
+        # Telemetry — abbreviated keys → full names
         "telemetry": {
-            "voltage":    tl.get("v"),   "current":     tl.get("i"),
-            "board_temp": tl.get("bt"),  "left_temp":   tl.get("lt"),
-            "right_temp": tl.get("rt"),  "left_fault":  tl.get("lf", False),
-            "right_fault":tl.get("rf", False),
-            "heading": tl.get("hdg"), "pitch": tl.get("pit"), "roll": tl.get("rol"),
+            "voltage":     tl.get("v"),
+            "current":     tl.get("i"),
+            "board_temp":  tl.get("bt"),
+            "left_temp":   tl.get("lt"),
+            "right_temp":  tl.get("rt"),
+            "left_fault":  tl.get("lf", False),
+            "right_fault": tl.get("rf", False),
+            "heading":     tl.get("hdg"),
+            "pitch":       tl.get("pit"),
+            "roll":        tl.get("rol"),
         },
-        # GPS
+        # GPS — abbreviated keys → full names
         "gps": {
-            "latitude":         g.get("lat"),   "longitude":   g.get("lon"),
-            "altitude":         g.get("alt"),   "speed":       g.get("spd"),
-            "heading":          g.get("hdg"),   "fix_quality": g.get("fix", 0),
+            "latitude":         g.get("lat"),
+            "longitude":        g.get("lon"),
+            "altitude":         g.get("alt"),
+            "speed":            g.get("spd"),
+            "heading":          g.get("hdg"),
+            "fix_quality":      g.get("fix", 0),
             "fix_quality_name": g.get("fqn", "Invalid"),
-            "h_error_m":        g.get("herr"),  "satellites":  g.get("sats"),
-            "satellites_view":  g.get("sats"),  "satellites_data": [],
+            "h_error_m":        g.get("herr"),
+            "satellites":       g.get("sats"),
+            "satellites_view":  g.get("sats_view", g.get("sats")),
+            "satellites_data":  g.get("sat_data", []),
             "hdop":             g.get("hdop"),
-            "ntrip_status":     _gs.ntrip_status,
-            "ntrip_bytes_recv": _gs.ntrip_bytes,
+            "ntrip_status":     ntrip_st,
+            "ntrip_bytes_recv": ntrip_bytes,
         },
         # LiDAR
         "lidar": {"angles": lidar_angles, "distances": lidar_distances},
         # System
         "system": {
-            "cpu_percent":  s.get("cpu", 0.0), "cpu_temp_c":   s.get("temp", 0.0),
+            "cpu_percent":  s.get("cpu",  0.0),
+            "cpu_temp_c":   s.get("temp", 0.0),
             "cpu_freq_mhz": 0.0,
-            "mem_used_mb":  0.0,               "mem_total_mb": 0.0,
-            "mem_percent":  s.get("mem", 0.0), "disk_used_gb": 0.0,
-            "disk_total_gb":0.0,               "disk_percent": s.get("disk", 0.0),
+            "mem_used_mb":  0.0,
+            "mem_total_mb": 0.0,
+            "mem_percent":  s.get("mem",  0.0),
+            "disk_used_gb": 0.0,
+            "disk_total_gb":0.0,
+            "disk_percent": s.get("disk", 0.0),
         },
         # Ground-station extras (read by patched JS badges)
         "_link_age":     round(_gs.link_age(), 1),
         "_link_packets": _gs.packets,
-        "_ntrip_status": _gs.ntrip_status,
-        "_ntrip_bytes":  _gs.ntrip_bytes,
+        "_ntrip_status": ntrip_st,
+        "_ntrip_bytes":  ntrip_bytes,
     }
 
 
@@ -393,7 +417,8 @@ class NetworkLink(_LinkBase):
             with self._conn_lock:
                 self._sock = None
             log.warning("Network link disconnected — reconnecting")
-            self._connect()
+            threading.Thread(target=self._connect, daemon=True,
+                             name="gs_net_conn").start()
             return b""
 
     def _write(self, data):
@@ -411,7 +436,10 @@ class NetworkLink(_LinkBase):
                 self._sock = None
 
     def start(self):
-        self._connect()
+        # Connect in a background thread so Flask can start immediately.
+        # _read() returns b"" while _sock is None, so the RX loop waits.
+        threading.Thread(target=self._connect, daemon=True,
+                         name="gs_net_conn").start()
         self._start_threads()
 
 
@@ -498,8 +526,24 @@ class FakeLink(_LinkBase):
                     "fix": fix,
                     "fqn": {0:"Invalid",1:"GPS",2:"DGPS",4:"RTK Fixed",5:"RTK Float"}.get(fix,"GPS"),
                     "herr": 0.025 if fix == 4 else (0.3 if fix == 5 else None),
-                    "sats": 10,  "hdop": 0.9,
+                    "sats": 10,  "sats_view": 14,  "hdop": 0.9,
                     "ntrip": "connected",
+                    "sat_data": [
+                        {"svid":  1, "elev": 72, "azim":  45, "snr": int(38+math.sin(t*0.3+ 0)*6), "system":"GPS"},
+                        {"svid":  3, "elev": 35, "azim": 120, "snr": int(32+math.sin(t*0.3+ 1)*6), "system":"GPS"},
+                        {"svid":  8, "elev": 18, "azim": 210, "snr": int(25+math.sin(t*0.3+ 2)*6), "system":"GPS"},
+                        {"svid": 14, "elev": 55, "azim": 300, "snr": int(41+math.sin(t*0.3+ 3)*4), "system":"GPS"},
+                        {"svid": 19, "elev": 42, "azim":  80, "snr": int(35+math.sin(t*0.3+ 4)*5), "system":"GPS"},
+                        {"svid": 22, "elev":  8, "azim": 170, "snr": int(18+math.sin(t*0.3+ 5)*4), "system":"GPS"},
+                        {"svid": 27, "elev": 63, "azim": 250, "snr": int(44+math.sin(t*0.3+ 6)*3), "system":"GPS"},
+                        {"svid": 31, "elev": 29, "azim": 340, "snr": int(30+math.sin(t*0.3+ 7)*5), "system":"GPS"},
+                        {"svid": 66, "elev": 48, "azim":  20, "snr": int(39+math.sin(t*0.3+ 8)*4), "system":"GLONASS"},
+                        {"svid": 73, "elev": 15, "azim": 150, "snr": int(22+math.sin(t*0.3+ 9)*5), "system":"GLONASS"},
+                        {"svid": 84, "elev": 61, "azim": 270, "snr": int(43+math.sin(t*0.3+10)*3), "system":"GLONASS"},
+                        {"svid":201, "elev": 38, "azim": 195, "snr": int(36+math.sin(t*0.3+11)*5), "system":"GALILEO"},
+                        {"svid":210, "elev": 22, "azim":  95, "snr": int(28+math.sin(t*0.3+12)*6), "system":"GALILEO"},
+                        {"svid":401, "elev": 80, "azim": 130, "snr": int(47+math.sin(t*0.3+13)*2), "system":"BDS"},
+                    ],
                 },
                 "sys": {
                     "cpu": round(25 + math.sin(t * 0.1) * 10, 1),
@@ -697,7 +741,7 @@ def api_state():
             if state is not None:
                 yield f"data: {json.dumps(state)}\n\n"
             else:
-                yield f"data: {json.dumps({'_connecting': True})}\n\n"
+                yield ":\n\n"   # SSE keepalive comment — no onmessage fired
             time.sleep(0.1)
     return Response(
         _gen(),

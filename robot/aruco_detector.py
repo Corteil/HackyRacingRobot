@@ -159,6 +159,16 @@ class ArucoDetector:
     tag_size   : Physical side length of the printed ArUco marker in metres
                  (default 0.15 m).  Used for pose estimation; ignored when
                  no calib_file is supplied.
+    area_k     : Constant for area-based distance fallback (default 0.0 = disabled).
+                 Used when calib_file is absent or resolution mismatches.
+                 Calibrate by placing the tag at a known distance D (metres),
+                 reading the detected area A (pixels²), then setting::
+                     area_k = D * sqrt(A)
+                 Set via ``[aruco] area_k`` in robot.ini.
+    hfov       : Horizontal field of view in degrees (default 0.0 = disabled).
+                 Used to convert the tag's pixel x-offset into a bearing angle
+                 when solvePnP pose estimation is not available.
+                 Set via ``[aruco] hfov`` in robot.ini.
     """
 
     def __init__(self,
@@ -166,7 +176,9 @@ class ArucoDetector:
                  draw:       bool  = True,
                  show_fps:   bool  = True,
                  calib_file: str   = None,
-                 tag_size:   float = 0.15):
+                 tag_size:   float = 0.15,
+                 area_k:     float = 0.0,
+                 hfov:       float = 0.0):
         if dict_name not in ARUCO_DICT:
             raise ValueError(
                 f"Unknown ArUco dictionary: {dict_name!r}. "
@@ -174,6 +186,8 @@ class ArucoDetector:
             )
         self._draw     = draw
         self._show_fps = show_fps
+        self._area_k   = area_k   # >0 enables area-based distance fallback
+        self._hfov     = hfov     # >0 enables pixel bearing fallback (degrees)
         _dictionary    = cv2.aruco.getPredefinedDictionary(ARUCO_DICT[dict_name])
         _parameters    = cv2.aruco.DetectorParameters()
         self._detector = cv2.aruco.ArucoDetector(_dictionary, _parameters)
@@ -300,6 +314,20 @@ class ArucoDetector:
                 t        = tvec.flatten()
                 distance = float(np.linalg.norm(t))
                 bearing  = float(math.degrees(math.atan2(t[0], t[2])))
+
+        # ── Fallbacks when solvePnP is unavailable ────────────────────────────
+        # Area-based distance: distance ≈ area_k / sqrt(area_px²).
+        # Calibrate once: place tag at known distance D, read area A, then
+        #   area_k = D * sqrt(A).
+        # Pixel bearing: converts x-offset from frame centre to degrees using
+        #   the camera's horizontal field of view (hfov).
+        # Both are approximate but good enough for navigation without a
+        # calibration file.
+        if distance is None and self._area_k > 0.0 and area > 0:
+            distance = self._area_k / math.sqrt(area)
+        if bearing is None and self._hfov > 0.0:
+            fw = frame.shape[1]
+            bearing = ((cx - fw / 2.0) / fw) * self._hfov
 
         if self._draw:
             cv2.line(frame, tl, tr, _GREEN, _MARKER_BOX_THICKNESS)

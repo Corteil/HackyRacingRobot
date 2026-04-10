@@ -62,8 +62,8 @@ def rotate(frame: np.ndarray, degrees: int) -> np.ndarray:
 
 # ── Camera factory ─────────────────────────────────────────────────────────────
 
-def make_cam(width: int, height: int) -> Picamera2:
-    cam = Picamera2()
+def make_cam(width: int, height: int, camera_num: int = 0) -> Picamera2:
+    cam = Picamera2(camera_num)
     cam.configure(cam.create_video_configuration(
         main={"size": (width, height), "format": "RGB888"},
         controls={"FrameRate": 30},

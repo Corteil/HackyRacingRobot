@@ -127,8 +127,10 @@ def _state_to_dict(state) -> dict:
             "fqn":   g.fix_quality_name,
             "herr":  round(g.h_error_m, 3) if g.h_error_m is not None else None,
             "sats":  g.satellites,
+            "sats_view": g.satellites_view,
             "hdop":  round(g.hdop, 2)      if g.hdop      is not None else None,
             "ntrip": g.ntrip_status,
+            "sat_data": g.satellites_data,
         },
         "sys": {
             "cpu":  round(s.cpu_percent, 1),
@@ -146,11 +148,13 @@ def _state_to_dict(state) -> dict:
             "tags": state.nav_tags_visible,
         },
         "flags": {
-            "lidar_ok": state.lidar_ok,
-            "gps_ok":   state.gps_ok,
-            "cam_ok":   state.camera_ok,
-            "data_log": state.data_logging,
-            "speed":    round(state.speed_scale, 2),
+            "lidar_ok":  state.lidar_ok,
+            "gps_ok":    state.gps_ok,
+            "cam_ok":    state.camera_ok,
+            "cam_rec":   state.cam_recording,
+            "data_log":  state.data_logging,
+            "no_motors": state.no_motors,
+            "speed":     round(state.speed_scale, 2),
         },
     }
 
@@ -261,8 +265,10 @@ class SerialTelemetry:
     def _tx_loop(self):
         period       = 1.0 / self._hz
         lidar_period = 1.0
+        stats_period = 10.0
         next_tick    = time.monotonic()
         next_lidar   = time.monotonic()
+        next_stats   = time.monotonic() + stats_period
 
         while not self._stop.is_set():
             now = time.monotonic()
@@ -271,7 +277,7 @@ class SerialTelemetry:
             try:
                 self._send_json(_state_to_dict(self._robot.get_state()))
             except Exception as e:
-                log.debug("State serialise error: %s", e)
+                log.warning("State serialise error: %s", e)
 
             # LiDAR packet (1 Hz, when enabled)
             if self.lidar_enabled and now >= next_lidar:
@@ -279,8 +285,14 @@ class SerialTelemetry:
                     scan = self._robot.get_state().lidar
                     self._send_json(_lidar_to_dict(scan, self._lidar_step))
                 except Exception as e:
-                    log.debug("LiDAR serialise error: %s", e)
+                    log.warning("LiDAR serialise error: %s", e)
                 next_lidar = now + lidar_period
+
+            # Periodic TX stats (10 s)
+            if now >= next_stats:
+                log.info("SiK TX: %d packets sent  rtcm_fwd=%d B",
+                         self.packets_sent, self.rtcm_bytes_forwarded)
+                next_stats = now + stats_period
 
             next_tick += period
             sleep_for  = next_tick - time.monotonic()

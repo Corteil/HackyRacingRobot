@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Track Editor — HackyRacingRobot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── Reset & base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:     #0d0d18;
+  --panel:  #161624;
+  --card:   #1e1e30;
+  --border: #2a2a42;
+  --white:  #e8eaf6;
+  --gray:   #6b7080;
+  --lgray:  #9ea3b8;
+  --cyan:   #28c8e0;
+  --green:  #32e05a;
+  --yellow: #f5c842;
+  --orange: #f08030;
+  --red:    #e04040;
+  --purple: #a040e0;
+}
+html, body { height: 100%; background: var(--bg); color: var(--white);
+  font-family: 'JetBrains Mono', monospace; overflow: hidden; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Layout ── */
+#root { display: flex; flex-direction: column; height: 100vh; }
+
+/* ── Header ── */
+#header { display: flex; align-items: center; gap: 14px; padding: 10px 18px;
+  background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#header-title { font-size: 1rem; font-weight: 700; color: var(--cyan); letter-spacing: 3px; }
+#header-sub   { font-size: 0.7rem; color: var(--gray); }
+#header-actions { margin-left: auto; display: flex; gap: 8px; }
+
+/* ── Main ── */
+#main { display: flex; flex: 1; min-height: 0; }
+
+/* ── Sidebar ── */
+#sidebar { width: 320px; flex-shrink: 0; background: var(--panel);
+  border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.sb-section { padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.sb-label { font-size: 0.65rem; color: var(--cyan); letter-spacing: 2px; font-weight: 700;
+  text-transform: uppercase; margin-bottom: 8px; display: block; }
+
+/* ── Gate list ── */
+#gate-list { flex: 1; overflow-y: auto; padding: 8px; }
+.gate-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  margin-bottom: 6px; cursor: pointer; transition: border-color .15s, background .15s; }
+.gate-item:hover { border-color: var(--cyan); }
+.gate-item.active { border-color: var(--cyan); background: #1e2035; }
+.gate-badge { width: 28px; height: 28px; border-radius: 50%; background: var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.7rem; font-weight: 700; color: var(--cyan); flex-shrink: 0; }
+.gate-info { flex: 1; min-width: 0; }
+.gate-name { font-size: 0.75rem; color: var(--white); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.gate-tags { font-size: 0.62rem; color: var(--gray); }
+.gate-warn { font-size: 0.6rem; color: var(--orange); margin-top: 2px; }
+
+/* ── Sequence strip ── */
+#seq-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 8px 14px; border-bottom: 1px solid var(--border); min-height: 38px; }
+.seq-badge { padding: 3px 10px; border-radius: 12px; font-size: 0.65rem; font-weight: 700;
+  background: var(--border); color: var(--lgray); cursor: pointer;
+  border: 1px solid transparent; transition: all .15s; }
+.seq-badge:hover { border-color: var(--cyan); color: var(--cyan); }
+.seq-arrow { color: var(--gray); font-size: 0.7rem; }
+#seq-buttons { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 14px 10px; }
+
+/* ── Content / editor ── */
+#content { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+#gate-editor { flex: 1; padding: 16px 20px; overflow-y: auto; }
+.editor-title { font-size: 0.8rem; font-weight: 700; color: var(--cyan);
+  letter-spacing: 2px; margin-bottom: 14px; }
+
+/* ── Inputs / fields ── */
+.field { margin-bottom: 10px; }
+.field label { display: block; font-size: 0.65rem; color: var(--lgray); margin-bottom: 3px; }
+.field input, .field textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  color: var(--white); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+  padding: 5px 8px; border-radius: 4px; outline: none; transition: border-color .15s; }
+.field input:focus, .field textarea:focus { border-color: var(--cyan); }
+.field textarea { resize: vertical; min-height: 48px; }
+.field input[type=checkbox] { width: auto; margin-right: 6px; accent-color: var(--cyan); }
+.field-row { display: flex; gap: 8px; }
+.field-row .field { flex: 1; }
+
+/* ── Tag grid ── */
+.tag-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px; margin-bottom: 12px; }
+.tag-col-label { font-size: 0.65rem; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; margin-bottom: 8px; }
+.tag-col-outside .tag-col-label { color: var(--cyan); }
+.tag-col-inside  .tag-col-label { color: var(--yellow); }
+.tag-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.tag-face-label { font-size: 0.62rem; color: var(--gray); width: 38px; flex-shrink: 0; }
+.tag-input { flex: 1; background: var(--bg); border: 1px solid var(--border);
+  color: var(--white); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+  padding: 5px 8px; border-radius: 4px; outline: none; text-align: center;
+  transition: border-color .15s; }
+.tag-input:focus { border-color: var(--cyan); }
+.tag-front { border-color: #2a3a4a; }
+.tag-rear  { border-color: #3a2a4a; }
+
+/* ── Diagram ── */
+#diagram-wrap { margin-bottom: 14px; }
+
+/* ── Buttons ── */
+.btn { font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; font-weight: 600;
+  padding: 6px 12px; border-radius: 4px; border: 1px solid; cursor: pointer;
+  letter-spacing: 1px; transition: all .15s; white-space: nowrap; background: transparent; }
+.btn-cyan   { border-color: var(--cyan);   color: var(--cyan);   }
+.btn-cyan:hover   { background: var(--cyan);   color: var(--bg); }
+.btn-green  { border-color: var(--green);  color: var(--green);  }
+.btn-green:hover  { background: var(--green);  color: var(--bg); }
+.btn-red    { border-color: var(--red);    color: var(--red);    }
+.btn-red:hover    { background: var(--red);    color: var(--white); }
+.btn-gray   { border-color: var(--border); color: var(--lgray);  }
+.btn-gray:hover   { border-color: var(--lgray); color: var(--white); }
+.btn-orange { border-color: var(--orange); color: var(--orange); }
+.btn-orange:hover { background: var(--orange); color: var(--bg); }
+.btn-sm { padding: 3px 8px; font-size: 0.65rem; }
+.row-btns { display: flex; gap: 6px; margin-top: 4px; }
+
+/* ── Warn / error boxes ── */
+.warn-box  { background: #2a1e0a; border: 1px solid var(--orange); border-radius: 4px;
+  padding: 8px 10px; margin-bottom: 12px; font-size: 0.65rem; color: var(--orange); }
+.error-box { background: #2a0a0a; border: 1px solid var(--red); border-radius: 4px;
+  padding: 8px 12px; margin-bottom: 12px; font-size: 0.68rem; color: var(--red); }
+
+/* ── TOML preview ── */
+#preview-pane { width: 340px; flex-shrink: 0; border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; background: var(--bg); }
+#preview-header { padding: 10px 14px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#preview-title { font-size: 0.65rem; font-weight: 700; color: var(--cyan); letter-spacing: 2px; }
+#preview-scroll { flex: 1; overflow-y: auto; padding: 12px; }
+#preview-code { font-size: 0.65rem; color: var(--lgray); white-space: pre; line-height: 1.6; }
+.toml-comment { color: var(--gray); }
+.toml-section { color: var(--orange); font-weight: 700; }
+.toml-key     { color: var(--cyan); }
+.toml-str     { color: var(--green); }
+.toml-num     { color: var(--yellow); }
+.toml-bool    { color: var(--purple); }
+
+/* ── Empty state ── */
+#empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  flex: 1; gap: 10px; color: var(--gray); }
+.empty-icon { font-size: 2.5rem; opacity: .3; }
+.empty-text { font-size: 0.75rem; }
+
+/* ── Drop overlay ── */
+#drop-overlay { display: none; position: fixed; inset: 0; background: rgba(13,13,24,.92);
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; z-index: 100; pointer-events: none; }
+#drop-overlay.visible { display: flex; }
+.drop-ring { width: 120px; height: 120px; border-radius: 50%;
+  border: 3px dashed var(--cyan); display: flex; align-items: center;
+  justify-content: center; font-size: 2.5rem; animation: pulse 1s ease infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.drop-label { font-size: 0.85rem; color: var(--cyan); letter-spacing: 2px; font-weight: 700; }
+
+/* ── Toast ── */
+#toast { display: none; position: fixed; bottom: 20px; right: 20px;
+  padding: 8px 16px; border-radius: 4px; font-size: 0.75rem; font-weight: 700;
+  letter-spacing: 1px; pointer-events: none; z-index: 200;
+  animation: toast-in .2s ease; }
+#toast.visible { display: block; }
+#toast.ok  { background: var(--green);  color: var(--bg); }
+#toast.err { background: var(--red);    color: var(--white); }
+@keyframes toast-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+
+#file-input { display: none; }
+</style>
+</head>
+<body>
+
+<input type="file" id="file-input" accept=".toml,.txt">
+
+<div id="drop-overlay">
+  <div class="drop-ring">📂</div>
+  <div class="drop-label">DROP track.toml TO LOAD</div>
+</div>
+
+<div id="toast"></div>
+
+<div id="root">
+
+  <!-- Header -->
+  <div id="header">
+    <span id="header-title">TRACK EDITOR</span>
+    <span id="header-sub">HackyRacingRobot · track.toml generator</span>
+    <div id="header-actions">
+      <button class="btn btn-gray" onclick="document.getElementById('file-input').click()">↑ LOAD TOML</button>
+      <button class="btn btn-gray" onclick="copyToml()">COPY TOML</button>
+      <button class="btn btn-green" onclick="downloadToml()">↓ DOWNLOAD</button>
+    </div>
+  </div>
+
+  <div id="main">
+
+    <!-- Sidebar -->
+    <div id="sidebar">
+
+      <!-- Course metadata -->
+      <div class="sb-section">
+        <span class="sb-label">Course</span>
+        <div class="field">
+          <label>Name</label>
+          <input id="c-name" value="New Track" oninput="onCourseChange()">
+        </div>
+        <div class="field">
+          <label>Description</label>
+          <input id="c-desc" value="" oninput="onCourseChange()">
+        </div>
+        <div class="field">
+          <label>Author</label>
+          <input id="c-author" value="" oninput="onCourseChange()">
+        </div>
+        <div class="field">
+          <label>
+            <input type="checkbox" id="c-loop" onchange="onCourseChange()">
+            Loop (circuit racing)
+          </label>
+        </div>
+      </div>
+
+      <!-- Sequence -->
+      <div class="sb-section" style="padding-bottom:6px">
+        <span class="sb-label">Sequence</span>
+        <div id="seq-strip"></div>
+        <div id="seq-buttons"></div>
+      </div>
+
+      <!-- Gate list header -->
+      <div class="sb-section" style="padding-bottom:8px">
+        <div style="display:flex;align-items:center">
+          <span class="sb-label" style="margin:0">Gates</span>
+          <button class="btn btn-cyan btn-sm" style="margin-left:auto" onclick="addGate()">+ ADD GATE</button>
+        </div>
+      </div>
+
+      <!-- Gate list -->
+      <div id="gate-list"></div>
+    </div>
+
+    <!-- Content -->
+    <div id="content">
+
+      <!-- Gate editor -->
+      <div id="gate-editor">
+        <div id="empty">
+          <div class="empty-icon">⬡</div>
+          <div class="empty-text">Select a gate to edit, or add one</div>
+        </div>
+      </div>
+
+      <!-- TOML preview -->
+      <div id="preview-pane">
+        <div id="preview-header">
+          <span id="preview-title">TOML PREVIEW</span>
+          <button class="btn btn-gray btn-sm" style="margin-left:auto" onclick="copyToml()">COPY</button>
+        </div>
+        <div id="preview-scroll">
+          <div id="preview-code"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════════════════════════════════
+let course   = { name:"New Track", description:"", author:"", version:1, loop:false };
+let gates    = [];   // array of gate objects
+let sequence = [];   // ordered list of gate ids
+let selectedId = null;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Convention helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+function defaultGate(id) {
+  return {
+    id,
+    label:         id === 0 ? "Start / Finish" : `Gate ${id}`,
+    outside_front: id * 2,
+    outside_rear:  100 + id * 2,
+    inside_front:  id * 2 + 1,
+    inside_rear:   100 + id * 2 + 1,
+    width_m:       1.0,
+    heading_hint:  -1.0,
+    notes:         "",
+  };
+}
+
+function validateGate(g) {
+  const warns = [];
+  if (g.outside_front !== g.id * 2)           warns.push(`outside_front should be ${g.id*2}`);
+  if (g.outside_rear  !== 100 + g.id * 2)     warns.push(`outside_rear should be ${100+g.id*2}`);
+  if (g.inside_front  !== g.id * 2 + 1)       warns.push(`inside_front should be ${g.id*2+1}`);
+  if (g.inside_rear   !== 100 + g.id * 2 + 1) warns.push(`inside_rear should be ${100+g.id*2+1}`);
+  return warns;
+}
+
+function getGate(id) { return gates.find(g => g.id === id); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOML generation
+// ═══════════════════════════════════════════════════════════════════════════════
+function toToml() {
+  const L = [];
+  const q = s => JSON.stringify(String(s));
+  L.push(`# =============================================================================`);
+  L.push(`# track.toml — HackyRacingRobot gate / course definition`);
+  L.push(`# =============================================================================`);
+  L.push(`#`);
+  L.push(`# TAG NUMBERING CONVENTION`);
+  L.push(`# ------------------------`);
+  L.push(`# Tags   0–99  : front-facing (robot approaching the gate)`);
+  L.push(`# Tags 100–199 : rear-facing  (robot has passed through)`);
+  L.push(`#`);
+  L.push(`# For a clockwise circuit:`);
+  L.push(`#   Outside post (left  when approaching): EVEN tags`);
+  L.push(`#   Inside  post (right when approaching): ODD  tags`);
+  L.push(`#`);
+  L.push(`# Gate N:`);
+  L.push(`#   outside_front = N * 2           inside_front = N * 2 + 1`);
+  L.push(`#   outside_rear  = 100 + N * 2     inside_rear  = 100 + N * 2 + 1`);
+  L.push(`# =============================================================================`);
+  L.push(``);
+  L.push(`[course]`);
+  L.push(`name        = ${q(course.name)}`);
+  L.push(`description = ${q(course.description)}`);
+  L.push(`author      = ${q(course.author)}`);
+  L.push(`version     = ${course.version}`);
+  L.push(`loop        = ${course.loop}`);
+  L.push(``);
+  L.push(`[course.sequence]`);
+  L.push(`gates = [${sequence.join(", ")}]`);
+  L.push(``);
+  for (const g of gates) {
+    L.push(`[[gate]]`);
+    L.push(`id            = ${g.id}`);
+    L.push(`label         = ${q(g.label)}`);
+    L.push(`outside_front = ${g.outside_front}`);
+    L.push(`outside_rear  = ${g.outside_rear}`);
+    L.push(`inside_front  = ${g.inside_front}`);
+    L.push(`inside_rear   = ${g.inside_rear}`);
+    L.push(`width_m       = ${g.width_m.toFixed(2)}`);
+    L.push(`heading_hint  = ${g.heading_hint.toFixed(1)}`);
+    L.push(`notes         = ${q(g.notes)}`);
+    L.push(``);
+  }
+  return L.join("\n");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOML parser
+// ═══════════════════════════════════════════════════════════════════════════════
+function parseToml(text) {
+  const root = {};
+  let section = root, arrayKey = null;
+
+  function parseVal(raw) {
+    raw = raw.trim();
+    if (raw.startsWith('"')) {
+      const m = raw.match(/^"((?:[^"\\]|\\.)*)"/);
+      return m ? m[1].replace(/\\n/g,"\n").replace(/\\"/g,'"') : raw;
+    }
+    if (raw.startsWith("'")) { const m = raw.match(/^'([^']*)'/); return m ? m[1] : raw; }
+    if (raw === "true")  return true;
+    if (raw === "false") return false;
+    if (raw.startsWith("[")) {
+      const inner = raw.replace(/^\[/,"").replace(/\].*$/,"").trim();
+      if (!inner) return [];
+      return inner.split(",").map(s => parseVal(s.trim()));
+    }
+    const n = Number(raw);
+    return isNaN(n) ? raw : n;
+  }
+
+  for (const raw of text.split("\n")) {
+    const line = raw.split("#")[0].trim();
+    if (!line) continue;
+    if (line.startsWith("[[")) {
+      const key = line.replace(/^\[\[/,"").replace(/\]\].*/,"").trim();
+      if (!root[key]) root[key] = [];
+      const item = {};
+      root[key].push(item);
+      section = item; arrayKey = key;
+      continue;
+    }
+    if (line.startsWith("[")) {
+      const key = line.replace(/^\[/,"").replace(/\].*/,"").trim();
+      const parts = key.split(".");
+      let obj = root;
+      for (const p of parts) { if (!obj[p]) obj[p] = {}; obj = obj[p]; }
+      section = obj; arrayKey = null;
+      continue;
+    }
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    section[line.slice(0,eq).trim()] = parseVal(line.slice(eq+1));
+  }
+  return root;
+}
+
+function loadFromToml(text) {
+  const data = parseToml(text);
+  const c = data.course || {};
+  const nc = {
+    name:        c.name        || "Unnamed Track",
+    description: c.description || "",
+    author:      c.author      || "",
+    version:     Number(c.version || 1),
+    loop:        Boolean(c.loop || false),
+  };
+  const seq = ((c.sequence || {}).gates || []).map(Number);
+  const rawGates = data.gate || [];
+  if (rawGates.length === 0) throw new Error("No [[gate]] blocks found");
+  const ng = rawGates.map(r => ({
+    id:            Number(r.id || 0),
+    label:         r.label || `Gate ${r.id}`,
+    outside_front: Number(r.outside_front !== undefined ? r.outside_front : r.id*2),
+    outside_rear:  Number(r.outside_rear  !== undefined ? r.outside_rear  : 100+r.id*2),
+    inside_front:  Number(r.inside_front  !== undefined ? r.inside_front  : r.id*2+1),
+    inside_rear:   Number(r.inside_rear   !== undefined ? r.inside_rear   : 100+r.id*2+1),
+    width_m:       Number(r.width_m       !== undefined ? r.width_m       : 1.0),
+    heading_hint:  Number(r.heading_hint  !== undefined ? r.heading_hint  : -1.0),
+    notes:         r.notes || "",
+  }));
+  return { course: nc, sequence: seq.length ? seq : ng.map(g=>g.id), gates: ng };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Gate diagram SVG
+// ═══════════════════════════════════════════════════════════════════════════════
+function gateSvg(g) {
+  const W=270, H=90, pw=18, ph=60;
+  const lx=32, rx=W-32-pw, py=(H-ph)/2, my=H/2;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:90px">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3z" fill="#28c8e0" opacity=".5"/>
+    </marker>
+  </defs>
+  <line x1="${W/2}" y1="${H-8}" x2="${W/2}" y2="${py+ph+6}"
+    stroke="#28c8e0" stroke-width="1.5" stroke-dasharray="4,3" opacity=".4" marker-end="url(#arr)"/>
+  <text x="${W/2}" y="${H-11}" text-anchor="middle" fill="#28c8e0" font-size="8" opacity=".5" font-family="JetBrains Mono,monospace">travel</text>
+
+  <!-- outside post -->
+  <rect x="${lx}" y="${py}" width="${pw}" height="${ph}" rx="3" fill="#1e1e30" stroke="#28c8e0" stroke-width="1.5"/>
+  <text x="${lx+pw/2}" y="${py-6}" text-anchor="middle" fill="#28c8e0" font-size="8" font-weight="700" font-family="JetBrains Mono,monospace">OUTSIDE</text>
+  <text x="${lx-4}" y="${py+16}" text-anchor="end" fill="#9ea3b8" font-size="8" font-family="JetBrains Mono,monospace">front</text>
+  <text x="${lx-4}" y="${py+27}" text-anchor="end" fill="#28c8e0" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${g.outside_front}</text>
+  <text x="${lx-4}" y="${py+ph-14}" text-anchor="end" fill="#9ea3b8" font-size="8" font-family="JetBrains Mono,monospace">rear</text>
+  <text x="${lx-4}" y="${py+ph-3}" text-anchor="end" fill="#a040e0" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${g.outside_rear}</text>
+
+  <!-- inside post -->
+  <rect x="${rx}" y="${py}" width="${pw}" height="${ph}" rx="3" fill="#1e1e30" stroke="#f5c842" stroke-width="1.5"/>
+  <text x="${rx+pw/2}" y="${py-6}" text-anchor="middle" fill="#f5c842" font-size="8" font-weight="700" font-family="JetBrains Mono,monospace">INSIDE</text>
+  <text x="${rx+pw+4}" y="${py+16}" text-anchor="start" fill="#9ea3b8" font-size="8" font-family="JetBrains Mono,monospace">front</text>
+  <text x="${rx+pw+4}" y="${py+27}" text-anchor="start" fill="#28c8e0" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${g.inside_front}</text>
+  <text x="${rx+pw+4}" y="${py+ph-14}" text-anchor="start" fill="#9ea3b8" font-size="8" font-family="JetBrains Mono,monospace">rear</text>
+  <text x="${rx+pw+4}" y="${py+ph-3}" text-anchor="start" fill="#a040e0" font-size="11" font-weight="700" font-family="JetBrains Mono,monospace">${g.inside_rear}</text>
+
+  <!-- gap line -->
+  <line x1="${lx+pw}" y1="${my}" x2="${rx}" y2="${my}" stroke="#32e05a" stroke-width="1" stroke-dasharray="5,4" opacity=".6"/>
+  <text x="${W/2}" y="${my-4}" text-anchor="middle" fill="#32e05a" font-size="8" font-family="JetBrains Mono,monospace">${g.width_m.toFixed(2)} m</text>
+</svg>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOML syntax highlighting
+// ═══════════════════════════════════════════════════════════════════════════════
+function highlightToml(text) {
+  return text.split("\n").map(line => {
+    const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    if (line.startsWith("#")) return `<span class="toml-comment">${esc(line)}</span>`;
+    if (line.startsWith("[")) return `<span class="toml-section">${esc(line)}</span>`;
+    const eq = line.indexOf("=");
+    if (eq === -1) return esc(line);
+    const key = esc(line.slice(0, eq));
+    const val = line.slice(eq + 1).trim();
+    let valHtml;
+    if (val.startsWith('"'))                       valHtml = `<span class="toml-str">${esc(line.slice(eq+1))}</span>`;
+    else if (val==="true"||val==="false")          valHtml = `<span class="toml-bool">${esc(line.slice(eq+1))}</span>`;
+    else if (/^[\s\-\d\[\],. ]+$/.test(val))      valHtml = `<span class="toml-num">${esc(line.slice(eq+1))}</span>`;
+    else                                           valHtml = esc(line.slice(eq+1));
+    return `<span class="toml-key">${key}</span>=${valHtml}`;
+  }).join("\n");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Toast
+// ═══════════════════════════════════════════════════════════════════════════════
+let toastTimer;
+function showToast(msg, type="ok") {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = `visible ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = "", 1800);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Render
+// ═══════════════════════════════════════════════════════════════════════════════
+function render() {
+  renderGateList();
+  renderSequence();
+  renderEditor();
+  renderPreview();
+}
+
+function renderGateList() {
+  const el = document.getElementById("gate-list");
+  if (gates.length === 0) {
+    el.innerHTML = `<div style="color:var(--gray);font-size:.7rem;padding:10px 12px">No gates yet. Click + ADD GATE.</div>`;
+    return;
+  }
+  el.innerHTML = gates.map(g => {
+    const w = validateGate(g);
+    const active = g.id === selectedId ? " active" : "";
+    return `<div class="gate-item${active}" onclick="selectGate(${g.id})">
+      <div class="gate-badge">${g.id}</div>
+      <div class="gate-info">
+        <div class="gate-name">${esc(g.label)}</div>
+        <div class="gate-tags">${g.outside_front}/${g.outside_rear} · ${g.inside_front}/${g.inside_rear} · ${g.width_m.toFixed(2)}m</div>
+        ${w.length ? `<div class="gate-warn">⚠ non-standard tags</div>` : ""}
+      </div>
+      <div>
+        <button class="btn btn-red btn-sm" onclick="event.stopPropagation();removeGate(${g.id})">✕</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderSequence() {
+  // Strip
+  const strip = document.getElementById("seq-strip");
+  if (sequence.length === 0) {
+    strip.innerHTML = `<span style="color:var(--gray);font-size:.65rem">Empty — add gates below</span>`;
+  } else {
+    strip.innerHTML = sequence.map((gid, i) => {
+      const g = getGate(gid);
+      const lbl = g ? esc(g.label) : gid;
+      return (i > 0 ? `<span class="seq-arrow">→</span>` : "") +
+        `<span class="seq-badge" onclick="selectGate(${gid})">${lbl}</span>`;
+    }).join("") +
+    (course.loop && sequence.length ? `<span class="seq-arrow">→</span><span class="seq-badge" style="opacity:.45">↺ loop</span>` : "");
+  }
+  // Add-to-sequence buttons
+  const btns = document.getElementById("seq-buttons");
+  btns.innerHTML = gates.map(g =>
+    `<button class="btn btn-gray btn-sm" onclick="seqAdd(${g.id})">+${esc(g.label)}</button>`
+  ).join("") +
+  (sequence.length ? `<button class="btn btn-red btn-sm" onclick="seqRemoveLast()">−last</button>` : "");
+}
+
+function renderEditor() {
+  const el = document.getElementById("gate-editor");
+  const g = selectedId !== null ? getGate(selectedId) : null;
+  if (!g) {
+    el.innerHTML = `<div id="empty"><div class="empty-icon">⬡</div><div class="empty-text">Select a gate to edit, or add one</div></div>`;
+    return;
+  }
+  const w = validateGate(g);
+  el.innerHTML = `
+    <div class="editor-title">GATE ${g.id} — ${esc(g.label)}</div>
+    <div id="diagram-wrap">${gateSvg(g)}</div>
+    ${w.length ? `<div class="warn-box">⚠ Non-standard tag ids: ${esc(w.join(" · "))}
+      <button class="btn btn-gray btn-sm" style="margin-left:8px" onclick="regenTags(${g.id})">Reset to convention</button></div>` : ""}
+    <div class="field">
+      <label>Label</label>
+      <input value="${esc(g.label)}" oninput="updateGate(${g.id},'label',this.value)">
+    </div>
+    <div class="tag-grid">
+      <div class="tag-col-outside">
+        <div class="tag-col-label">Outside post (even)</div>
+        <div class="tag-row">
+          <span class="tag-face-label">Front</span>
+          <input type="number" class="tag-input tag-front" min="0" max="99" value="${g.outside_front}"
+            oninput="updateGate(${g.id},'outside_front',+this.value)">
+        </div>
+        <div class="tag-row">
+          <span class="tag-face-label">Rear</span>
+          <input type="number" class="tag-input tag-rear" min="100" max="199" value="${g.outside_rear}"
+            oninput="updateGate(${g.id},'outside_rear',+this.value)">
+        </div>
+      </div>
+      <div class="tag-col-inside">
+        <div class="tag-col-label">Inside post (odd)</div>
+        <div class="tag-row">
+          <span class="tag-face-label">Front</span>
+          <input type="number" class="tag-input tag-front" min="0" max="99" value="${g.inside_front}"
+            oninput="updateGate(${g.id},'inside_front',+this.value)">
+        </div>
+        <div class="tag-row">
+          <span class="tag-face-label">Rear</span>
+          <input type="number" class="tag-input tag-rear" min="100" max="199" value="${g.inside_rear}"
+            oninput="updateGate(${g.id},'inside_rear',+this.value)">
+        </div>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Width (m)</label>
+        <input type="number" step="0.1" min="0.3" max="5" value="${g.width_m}"
+          oninput="updateGate(${g.id},'width_m',+this.value)">
+      </div>
+      <div class="field">
+        <label>Heading hint (° / −1 = none)</label>
+        <input type="number" step="1" min="-1" max="360" value="${g.heading_hint}"
+          oninput="updateGate(${g.id},'heading_hint',+this.value)">
+      </div>
+    </div>
+    <div class="field">
+      <label>Notes</label>
+      <textarea oninput="updateGate(${g.id},'notes',this.value)">${esc(g.notes)}</textarea>
+    </div>
+    <div class="row-btns">
+      <button class="btn btn-gray btn-sm" onclick="regenTags(${g.id})">↺ Reset tags to convention</button>
+      <button class="btn btn-red btn-sm" style="margin-left:auto" onclick="removeGate(${g.id})">✕ Remove gate</button>
+    </div>`;
+}
+
+function renderPreview() {
+  document.getElementById("preview-code").innerHTML = highlightToml(toToml());
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Actions
+// ═══════════════════════════════════════════════════════════════════════════════
+function addGate() {
+  const id = gates.length > 0 ? Math.max(...gates.map(g=>g.id)) + 1 : 0;
+  gates.push(defaultGate(id));
+  sequence.push(id);
+  selectedId = id;
+  render();
+}
+
+function removeGate(id) {
+  gates    = gates.filter(g => g.id !== id);
+  sequence = sequence.filter(s => s !== id);
+  if (selectedId === id) selectedId = gates.length ? gates[0].id : null;
+  render();
+}
+
+function selectGate(id) {
+  selectedId = id;
+  render();
+}
+
+function updateGate(id, field, value) {
+  const g = getGate(id);
+  if (!g) return;
+  g[field] = value;
+  render();
+}
+
+function regenTags(id) {
+  const g = getGate(id);
+  if (!g) return;
+  g.outside_front = g.id * 2;
+  g.outside_rear  = 100 + g.id * 2;
+  g.inside_front  = g.id * 2 + 1;
+  g.inside_rear   = 100 + g.id * 2 + 1;
+  render();
+  showToast("Tags reset to convention");
+}
+
+function seqAdd(id)    { sequence.push(id); render(); }
+function seqRemoveLast(){ if (sequence.length) { sequence.pop(); render(); } }
+
+function onCourseChange() {
+  course.name        = document.getElementById("c-name").value;
+  course.description = document.getElementById("c-desc").value;
+  course.author      = document.getElementById("c-author").value;
+  course.loop        = document.getElementById("c-loop").checked;
+  renderSequence();
+  renderPreview();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Download / Copy
+// ═══════════════════════════════════════════════════════════════════════════════
+function downloadToml() {
+  const blob = new Blob([toToml()], { type:"text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "track.toml";
+  a.click();
+  showToast("track.toml downloaded");
+}
+
+function copyToml() {
+  navigator.clipboard.writeText(toToml()).then(() => showToast("Copied to clipboard"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Load TOML
+// ═══════════════════════════════════════════════════════════════════════════════
+function applyLoaded(text, filename) {
+  try {
+    const { course: c, sequence: s, gates: g } = loadFromToml(text);
+    course   = c;
+    gates    = g;
+    sequence = s;
+    selectedId = g[0].id;
+    // Sync course form fields
+    document.getElementById("c-name").value   = c.name;
+    document.getElementById("c-desc").value   = c.description;
+    document.getElementById("c-author").value = c.author;
+    document.getElementById("c-loop").checked = c.loop;
+    render();
+    showToast(`Loaded ${filename || "track.toml"}`);
+  } catch(e) {
+    showToast(`Error: ${e.message}`, "err");
+  }
+}
+
+document.getElementById("file-input").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => applyLoaded(ev.target.result, file.name);
+  reader.readAsText(file);
+  e.target.value = "";   // allow re-loading same file
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Drag and drop
+// ═══════════════════════════════════════════════════════════════════════════════
+let dragCounter = 0;
+document.addEventListener("dragenter", e => {
+  if (e.dataTransfer.types.includes("Files")) {
+    dragCounter++;
+    document.getElementById("drop-overlay").classList.add("visible");
+  }
+});
+document.addEventListener("dragleave", () => {
+  dragCounter--;
+  if (dragCounter <= 0) {
+    dragCounter = 0;
+    document.getElementById("drop-overlay").classList.remove("visible");
+  }
+});
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  dragCounter = 0;
+  document.getElementById("drop-overlay").classList.remove("visible");
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = ev => applyLoaded(ev.target.result, file.name);
+    reader.readAsText(file);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Init — start with one gate
+// ═══════════════════════════════════════════════════════════════════════════════
+addGate();
+</script>
+</body>
+</html>
