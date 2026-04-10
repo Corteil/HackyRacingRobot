@@ -207,7 +207,8 @@ class _GsState:
             g["h_error_m"]       = d["herr"]
             g["hdop"]            = d["hdop"]
             g["satellites"]      = d["sats"]
-            g["satellites_view"] = d["sats"]   # v2 proto doesn't send sats_view separately
+            g["satellites_view"] = d["sats"]
+            g["satellites_data"] = d.get("sat_data", [])
             g["ntrip_status"]    = self.ntrip_status
             g["ntrip_bytes_recv"]= self.ntrip_bytes
             self._touch()
@@ -618,16 +619,23 @@ class FakeLinkV2(_LinkBase):
             if tick % 2 == 0:
                 lat = lat0 + math.sin(t * 0.05) * 0.0002
                 lon = lon0 + math.cos(t * 0.05) * 0.0002
+                _fake_sats = [
+                    {"svid": 1+i, "elev": 10+i*4, "azim": (i*37)%360,
+                     "snr": 30+int(math.sin(t+i)*10),
+                     "system": ("GPS","GLO","GAL","BDS")[i%4]}
+                    for i in range(10)
+                ]
                 frames.append(encode_gps(
-                    lat     = round(lat, 7),
-                    lon     = round(lon, 7),
-                    alt     = 12.5,
-                    speed   = round(abs(drv_left + drv_right) * 2, 2),
-                    gps_hdg = round(heading, 1),
-                    fix     = fix,
-                    herr    = 0.025 if fix == 4 else (0.3 if fix == 5 else None),
-                    hdop    = 0.9,
-                    sats    = 10,
+                    lat      = round(lat, 7),
+                    lon      = round(lon, 7),
+                    alt      = 12.5,
+                    speed    = round(abs(drv_left + drv_right) * 2, 2),
+                    gps_hdg  = round(heading, 1),
+                    fix      = fix,
+                    herr     = 0.025 if fix == 4 else (0.3 if fix == 5 else None),
+                    hdop     = 0.9,
+                    sats     = 10,
+                    sat_data = _fake_sats,
                 ))
                 nav_st = NAV_DRIVING if mode == 1 else NAV_IDLE
                 frames.append(encode_nav(

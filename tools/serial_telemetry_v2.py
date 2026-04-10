@@ -334,15 +334,16 @@ class TelemetryBridgeV2:
                 # ── 2 Hz: GPS + NAV ───────────────────────────────────────
                 if tick % gps_ticks == 0:
                     self._send(encode_gps(
-                        lat     = g.latitude,
-                        lon     = g.longitude,
-                        alt     = g.altitude,
-                        speed   = g.speed,
-                        gps_hdg = g.heading,
-                        fix     = g.fix_quality,
-                        herr    = g.h_error_m,
-                        hdop    = g.hdop,
-                        sats    = g.satellites or 0,
+                        lat      = g.latitude,
+                        lon      = g.longitude,
+                        alt      = g.altitude,
+                        speed    = g.speed,
+                        gps_hdg  = g.heading,
+                        fix      = g.fix_quality,
+                        herr     = g.h_error_m,
+                        hdop     = g.hdop,
+                        sats     = g.satellites or 0,
+                        sat_data = g.satellites_data or [],
                     ))
                     nav_st = nav_state_map.get(state.nav_state, NAV_IDLE)
                     self._send(encode_nav(

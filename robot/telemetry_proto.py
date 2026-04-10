@@ -375,16 +375,23 @@ def decode_telem(payload: bytes) -> dict:
     }
 
 
-# GPS — 18 bytes
-# lat:i32(1e-7°) lon:i32(1e-7°) alt:i16(dm) speed:u16(mm/s)
-# gps_hdg:u16(0.1°) fix:u8 herr:u16(mm) hdop:u8(0.1) sats:u8
+# GPS — fixed header (19 bytes) + variable satellite records (5 bytes each, max 24)
+# Fixed: lat:i32(1e-7°) lon:i32(1e-7°) alt:u16(dm) speed:u16(mm/s)
+#        gps_hdg:u16(0.1°) fix:u8 herr:u16(mm) hdop:u8(0.1) sats:u8
+# Satellite record: svid:u8 elev:u8(°) azim:u8(°/2→×2 on decode) snr:u8 sys:u8
+#   sys: 0=GPS 1=GLO 2=GAL 3=BDS 4=QZSS
 _FMT_GPS = struct.Struct('<iiHHHBHBB')
+_FMT_SAT = struct.Struct('<BBBBB')   # svid, elev, azim_half, snr, sys
+_SAT_MAX  = 24
+_SYS_NAMES = ("GPS", "GLO", "GAL", "BDS", "QZSS")
+_SYS_IDS   = {v: i for i, v in enumerate(_SYS_NAMES)}
 
 def encode_gps(lat: Optional[float], lon: Optional[float],
                alt: Optional[float], speed: Optional[float],
                gps_hdg: Optional[float], fix: int,
                herr: Optional[float], hdop: Optional[float],
-               sats: int) -> bytes:
+               sats: int,
+               sat_data: Optional[list] = None) -> bytes:
     _lat   = 0         if lat     is None else max(-900000000, min(900000000, int(round(lat  * 1e7))))
     _lon   = 0         if lon     is None else max(-1800000000, min(1800000000, int(round(lon * 1e7))))
     _alt   = NULL_U16  if alt     is None else max(0, min(65534, int(round(alt * 10))))
@@ -393,21 +400,45 @@ def encode_gps(lat: Optional[float], lon: Optional[float],
     _herr  = NULL_U16  if herr    is None else max(0, min(65534, int(round(herr  * 1000))))
     _hdop  = NULL_U8   if hdop    is None else max(0, min(254,   int(round(hdop  * 10))))
     _sats  = max(0, min(255, sats))
-    return encode_frame(TYPE_GPS, _FMT_GPS.pack(_lat, _lon, _alt, _spd, _hdg, fix, _herr, _hdop, _sats))
+    payload = bytearray(_FMT_GPS.pack(_lat, _lon, _alt, _spd, _hdg, fix, _herr, _hdop, _sats))
+    if sat_data:
+        for sv in sat_data[:_SAT_MAX]:
+            payload += _FMT_SAT.pack(
+                max(0, min(255, int(sv.get("svid", 0)))),
+                max(0, min(90,  int(sv.get("elev", 0)))),
+                max(0, min(179, int(sv.get("azim", 0)) // 2)),
+                max(0, min(255, int(sv.get("snr",  0)))),
+                _SYS_IDS.get(sv.get("system", "GPS"), 0),
+            )
+    return encode_frame(TYPE_GPS, bytes(payload))
 
 
 def decode_gps(payload: bytes) -> dict:
     lat, lon, alt, spd, hdg, fix, herr, hdop, sats = _FMT_GPS.unpack(payload[:_FMT_GPS.size])
+    # Parse variable-length satellite records appended after fixed header
+    sat_data = []
+    offset = _FMT_GPS.size
+    while offset + _FMT_SAT.size <= len(payload):
+        svid, elev, azim_half, snr, sys_id = _FMT_SAT.unpack(payload[offset:offset + _FMT_SAT.size])
+        sat_data.append({
+            "svid":   svid,
+            "elev":   elev,
+            "azim":   azim_half * 2,
+            "snr":    snr,
+            "system": _SYS_NAMES[sys_id] if sys_id < len(_SYS_NAMES) else "GPS",
+        })
+        offset += _FMT_SAT.size
     return {
-        "lat":   lat  / 1e7,
-        "lon":   lon  / 1e7,
-        "alt":   None if alt  == NULL_U16 else alt  / 10.0,
-        "speed": None if spd  == NULL_U16 else spd  / 1000.0,
-        "hdg":   None if hdg  == NULL_U16 else hdg  / 10.0,
-        "fix":   fix,
-        "herr":  None if herr == NULL_U16 else herr / 1000.0,
-        "hdop":  None if hdop == NULL_U8  else hdop / 10.0,
-        "sats":  sats,
+        "lat":      lat  / 1e7,
+        "lon":      lon  / 1e7,
+        "alt":      None if alt  == NULL_U16 else alt  / 10.0,
+        "speed":    None if spd  == NULL_U16 else spd  / 1000.0,
+        "hdg":      None if hdg  == NULL_U16 else hdg  / 10.0,
+        "fix":      fix,
+        "herr":     None if herr == NULL_U16 else herr / 1000.0,
+        "hdop":     None if hdop == NULL_U8  else hdop / 10.0,
+        "sats":     sats,
+        "sat_data": sat_data,
     }
 
 
