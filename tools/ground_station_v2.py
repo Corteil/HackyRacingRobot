@@ -65,10 +65,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from robot.telemetry_proto import (
         FrameDecoder,
-        TYPE_STATE, TYPE_TELEM, TYPE_GPS, TYPE_SYS, TYPE_NAV, TYPE_LIDAR, TYPE_ALARM,
+        TYPE_STATE, TYPE_TELEM, TYPE_GPS, TYPE_SYS, TYPE_NAV, TYPE_LIDAR, TYPE_ALARM, TYPE_TAGS,
         TYPE_CMD, TYPE_RTCM, TYPE_PING,
         decode_state, decode_telem, decode_gps, decode_sys, decode_nav,
-        decode_lidar, decode_alarm,
+        decode_lidar, decode_alarm, decode_tags,
         encode_cmd, encode_rtcm, encode_ping,
         CMD_ESTOP, CMD_RESET_ESTOP, CMD_SET_MODE,
         CMD_DATA_LOG_TOGGLE, CMD_GPS_BOOKMARK,
@@ -77,7 +77,8 @@ try:
         MODE_MANUAL, MODE_AUTO,
         # fake generator encoders
         encode_state, encode_telem, encode_gps, encode_sys, encode_nav,
-        encode_lidar, encode_alarm,
+        encode_lidar, encode_alarm, encode_tags,
+        CAM_FRONT_LEFT, CAM_FRONT_RIGHT, CAM_REAR,
         state_flags,
         SF_RC_ACTIVE, SF_LIDAR_OK, SF_GPS_OK, SF_CAM_OK,
         SF_CAM_RECORDING, SF_DATA_LOGGING, SF_NO_MOTORS,
@@ -176,6 +177,12 @@ class _GsState:
             "nav_bearing_err": None, "nav_tags_visible": 0,
         }
         self._lidar = {"angles": [], "distances": []}
+        # ArUco tags: per-camera dict → list of tag dicts  (matches s.aruco[camKey].tags)
+        self._aruco = {
+            "front_left":  {"tags": [], "tag_count": 0, "fps": 0.0, "cap_w": 0, "cap_h": 0, "gates": []},
+            "front_right": {"tags": [], "tag_count": 0, "fps": 0.0, "cap_w": 0, "cap_h": 0, "gates": []},
+            "rear":        {"tags": [], "tag_count": 0, "fps": 0.0, "cap_w": 0, "cap_h": 0, "gates": []},
+        }
 
     # ── Packet handlers ───────────────────────────────────────────────────────
 
@@ -239,6 +246,29 @@ class _GsState:
             self._lidar["distances"] = [float(x) for x in d["distances"]]
             self._touch()
 
+    def handle_tags(self, tags: list):
+        """Rebuild per-camera aruco dicts from decoded TAGS packet."""
+        by_cam = {"front_left": [], "front_right": [], "rear": []}
+        for t in tags:
+            cam = t.get("cam_name", "front_left")
+            if cam in by_cam:
+                by_cam[cam].append({
+                    "id":       t["tag_id"],
+                    "cx":       t["cx"],
+                    "cy":       t["cy"],
+                    "distance": t["distance"],
+                    "bearing":  t["bearing"],
+                    "area":     0,
+                })
+        with self._lock:
+            total = 0
+            for cam, tag_list in by_cam.items():
+                self._aruco[cam]["tags"]      = tag_list
+                self._aruco[cam]["tag_count"] = len(tag_list)
+                total += len(tag_list)
+            self._nav["nav_tags_visible"] = total
+            self._touch()
+
     def handle_alarm(self, d: dict):
         sev_names = {0: "info", 1: "warning", 2: "critical"}
         entry = {
@@ -290,7 +320,7 @@ class _GsState:
                 "cam_fr_rec": False,
                 "cam_re_rec": False,
                 "gate_confirmed": False, "current_gate_id": 0,
-                "cam_cap_w": {}, "cam_cap_h": {}, "aruco": {},
+                "cam_cap_w": {}, "cam_cap_h": {}, "aruco": dict(self._aruco),
                 # Navigation (unpack flat from _nav)
                 **self._nav,
                 "nav_target_bearing": self._nav["nav_wp_bear"],
@@ -340,6 +370,7 @@ def _dispatch(ptype: int, payload: bytes):
         elif ptype == TYPE_NAV:    _gs.handle_nav(decode_nav(payload))
         elif ptype == TYPE_LIDAR:  _gs.handle_lidar(decode_lidar(payload))
         elif ptype == TYPE_ALARM:  _gs.handle_alarm(decode_alarm(payload))
+        elif ptype == TYPE_TAGS:   _gs.handle_tags(decode_tags(payload))
         else:
             log.debug("Unknown downlink frame type 0x%02X (%d B)", ptype, len(payload))
     except Exception as e:

@@ -59,9 +59,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from robot.telemetry_proto import (
     FrameDecoder,
     encode_state, encode_telem, encode_gps, encode_sys, encode_nav,
-    encode_lidar, encode_alarm, encode_cmd, encode_rtcm,
+    encode_lidar, encode_alarm, encode_tags, encode_cmd, encode_rtcm,
     decode_cmd,
     state_flags, lidar_to_step_array,
+    CAM_FRONT_LEFT, CAM_FRONT_RIGHT, CAM_REAR,
     TYPE_CMD, TYPE_RTCM, TYPE_PING,
     NAV_IDLE, NAV_SEARCHING, NAV_ALIGNING, NAV_DRIVING, NAV_ARRIVED, NAV_COMPLETE,
     ALARM_ESTOP, ALARM_RC_LOST, ALARM_MOTOR_FAULT, ALARM_GPS_LOST,
@@ -330,6 +331,24 @@ class TelemetryBridgeV2:
                 # ── Alarm check (fires only on transition) ────────────────
                 for alarm_frame in self._alarm_tracker.check(state):
                     self._send(alarm_frame)
+
+                # ── Always: TAGS (all cameras) ────────────────────────────
+                all_tags = []
+                for cam_name, cam_id in (('front_left',  CAM_FRONT_LEFT),
+                                         ('front_right', CAM_FRONT_RIGHT),
+                                         ('rear',        CAM_REAR)):
+                    aruco = self._robot.get_aruco_state(cam_name)
+                    if aruco is not None:
+                        for tg in aruco.tags.values():
+                            all_tags.append({
+                                "tag_id":   tg.id,
+                                "cam_id":   cam_id,
+                                "cx":       tg.center_x,
+                                "cy":       tg.center_y,
+                                "distance": tg.distance,
+                                "bearing":  tg.bearing,
+                            })
+                self._send(encode_tags(all_tags))
 
                 # ── 2 Hz: GPS + NAV ───────────────────────────────────────
                 if tick % gps_ticks == 0:

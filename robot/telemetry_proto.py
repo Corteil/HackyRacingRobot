@@ -26,6 +26,7 @@ Downlink packet types (robot → ground)
   0x05  NAV    10 B   2 Hz   nav state, gate, wp, dist, bearing, bearing_error, tags
   0x06  LIDAR   var   1 Hz   distance array, zlib compressed
   0x07  ALARM   var   event  alarm_id, severity, message string
+  0x08  TAGS    var   5 Hz   visible ArUco tags: id, cam, cx, cy, distance, bearing
 
 Uplink packet types (ground → robot)
 --------------------------------------
@@ -59,6 +60,14 @@ TYPE_SYS    = 0x04
 TYPE_NAV    = 0x05
 TYPE_LIDAR  = 0x06
 TYPE_ALARM  = 0x07
+TYPE_TAGS   = 0x08
+
+# Camera ID constants for TAGS packet
+CAM_FRONT_LEFT  = 0
+CAM_FRONT_RIGHT = 1
+CAM_REAR        = 2
+_CAM_NAMES = {CAM_FRONT_LEFT: 'front_left', CAM_FRONT_RIGHT: 'front_right', CAM_REAR: 'rear'}
+_CAM_IDS   = {v: k for k, v in _CAM_NAMES.items()}
 
 # Uplink types
 TYPE_CMD    = 0x81
@@ -566,6 +575,58 @@ def decode_rtcm(payload: bytes) -> bytes:
 
 def encode_ping() -> bytes:
     return encode_frame(TYPE_PING, b'')
+
+
+# TAGS — variable length (10 bytes per tag, max 16 tags across all cameras)
+# tag_id:u8  cam_id:u8  cx:u16  cy:u16  dist:u16(mm,null=0xFFFF)  bearing:i16(0.1°,null=0x7FFF)
+_FMT_TAG  = struct.Struct('<BBHHHh')
+_TAGS_MAX = 16
+
+def encode_tags(tags: list) -> bytes:
+    """
+    Encode visible ArUco tags from all cameras.
+
+    Each tag dict must have:
+      tag_id  : int
+      cam_id  : int  (CAM_FRONT_LEFT=0, CAM_FRONT_RIGHT=1, CAM_REAR=2)
+      cx      : int  (pixel centre x)
+      cy      : int  (pixel centre y)
+      distance: float | None  (metres)
+      bearing : float | None  (degrees)
+    """
+    payload = bytearray()
+    for t in tags[:_TAGS_MAX]:
+        _dist = NULL_U16 if t.get("distance") is None else max(0, min(65534, int(round(t["distance"] * 1000))))
+        _bear = NULL_I16 if t.get("bearing")  is None else max(-1800, min(1800, int(round(t["bearing"] * 10))))
+        payload += _FMT_TAG.pack(
+            t["tag_id"] & 0xFF,
+            t["cam_id"] & 0xFF,
+            max(0, min(65535, int(t.get("cx", 0)))),
+            max(0, min(65535, int(t.get("cy", 0)))),
+            _dist,
+            _bear,
+        )
+    return encode_frame(TYPE_TAGS, bytes(payload))
+
+
+def decode_tags(payload: bytes) -> list:
+    """Return list of tag dicts, each with tag_id, cam_id, cam_name, cx, cy, distance, bearing."""
+    tags = []
+    offset = 0
+    while offset + _FMT_TAG.size <= len(payload):
+        tid, cam, cx, cy, dist, bear = _FMT_TAG.unpack(payload[offset:offset + _FMT_TAG.size])
+        tags.append({
+            "tag_id":   tid,
+            "id":       tid,   # alias for HTML compatibility
+            "cam_id":   cam,
+            "cam_name": _CAM_NAMES.get(cam, "unknown"),
+            "cx":       cx,
+            "cy":       cy,
+            "distance": None if dist == NULL_U16 else dist / 1000.0,
+            "bearing":  None if bear == NULL_I16 else bear / 10.0,
+        })
+        offset += _FMT_TAG.size
+    return tags
 
 
 # ══════════════════════════════════════════════════════════════════════════════
