@@ -1436,7 +1436,9 @@ function updateMobile(s) {
 // ── applyState ────────────────────────────────────────────────────────────────
 function applyState(s) {
   lastState = s;
-  // Ground station: update link-quality, live badge, and NTRIP badges
+  // Ground station: update link-quality, live badge, and NTRIP badges.
+  // applyState is only ever called from onmessage, so if we're here the SSE
+  // is live — always update the badge based on radio link age.
   (function() {
     const sik = document.getElementById('sb-sik');
     const cb  = document.getElementById('sb-conn');
@@ -1445,13 +1447,10 @@ function applyState(s) {
       sik.textContent = (age !== undefined) ? '📡 ' + age.toFixed(1) + 's' : '📡 --';
       sik.style.color = (age !== undefined && age < 2) ? C.green
                       : (age < 5)                      ? C.yellow : C.red;
-      // Also update the Live badge to reflect end-to-end robot reachability.
-      // The SSE connection (browser→Flask) can stay open while the radio link
-      // is dead — so "Live" should mean data is actually flowing from the robot.
-      if (cb && !cb._sse_error) {
-        if (age === undefined || age > 10) {
+      if (cb) {
+        if (age === undefined || age > 5) {
           cb.textContent = '🔴 Robot offline'; cb.style.color = C.red;
-        } else if (age > 3) {
+        } else if (age > 2) {
           cb.textContent = '🟡 Radio stale';   cb.style.color = C.yellow;
         } else {
           cb.textContent = '🟢 Live';           cb.style.color = C.green;
@@ -1486,8 +1485,9 @@ function updateStatusBar(s) {
   const vc=volt!=null ? (volt<10.5?C.red:volt<11.5?C.yellow:C.green) : C.gray;
   const ve=el('sb-volt'); ve.textContent=fmt(volt,1,' V'); ve.style.color=vc;
 
-  const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';
-  re.style.color=s.rc_active?C.green:C.gray;
+  const re=el('sb-rc');
+  if(s._link_age===undefined||s._link_age>5){re.textContent='RC ??';re.style.color=C.gray;}
+  else{re.textContent=s.rc_active?'RC OK':'RC --';re.style.color=s.rc_active?C.green:C.gray;}
 
   el('sb-rec').style.display  = s.cam_recording  ? 'inline' : 'none';
   el('sb-dlog').style.display = s.data_logging   ? 'inline' : 'none';
@@ -2154,14 +2154,13 @@ function connect() {
   let _live=false;
   evtSrc=new EventSource('/api/state');
   evtSrc.onopen=()=>{
-    if(!_live){ _live=true; cb._sse_error=false; reloadCameraStreams(); }
+    if(!_live){ _live=true; reloadCameraStreams(); }
   };
   evtSrc.onmessage=e=>{
-    if(!_live){ _live=true; cb._sse_error=false; reloadCameraStreams(); }
+    if(!_live){ _live=true; reloadCameraStreams(); }
     try { applyState(JSON.parse(e.data)); } catch(err){ console.error('SSE:',err); }
   };
   evtSrc.onerror=()=>{
-    cb._sse_error=true;
     cb.textContent='🔴 Reconnecting…'; cb.style.color=C.red;
     evtSrc.close(); setTimeout(connect,3000);
   };
