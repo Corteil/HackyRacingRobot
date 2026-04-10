@@ -2122,6 +2122,20 @@ function startLogPolling() {
 
 // ── SSE connection ────────────────────────────────────────────────────────────
 let evtSrc=null;
+let _lastMsgTime=0;
+
+// Watchdog: if we haven't received an SSE message for 3 s the connection is
+// silently dead (Flask didn't send a FIN).  Force a reconnect.
+setInterval(()=>{
+  if(!_lastMsgTime) return;
+  if((Date.now()-_lastMsgTime)>3000){
+    const cb=el('sb-conn');
+    if(cb){ cb.textContent='🔴 Reconnecting…'; cb.style.color=C.red; }
+    _lastMsgTime=0;
+    if(evtSrc){ evtSrc.close(); evtSrc=null; }
+    connect();
+  }
+},1000);
 
 function reloadCameraStreams() {
   // Force all active MJPEG streams to reconnect by cycling their src.
@@ -2149,6 +2163,7 @@ function reloadCameraStreams() {
 
 function connect() {
   if(evtSrc) evtSrc.close();
+  _lastMsgTime=0;   // reset watchdog — don't fire while reconnecting
   const cb=el('sb-conn');
   cb.textContent='⚫ Connecting…'; cb.style.color=C.yellow;
   let _live=false;
@@ -2157,6 +2172,7 @@ function connect() {
     if(!_live){ _live=true; reloadCameraStreams(); }
   };
   evtSrc.onmessage=e=>{
+    _lastMsgTime=Date.now();
     if(!_live){ _live=true; reloadCameraStreams(); }
     try { applyState(JSON.parse(e.data)); } catch(err){ console.error('SSE:',err); }
   };

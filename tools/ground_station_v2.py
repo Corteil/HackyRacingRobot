@@ -835,6 +835,7 @@ def index():
 def api_state():
     """SSE stream — pushes state JSON at ~10 Hz to the browser."""
     def _gen():
+        yield "retry: 1000\n\n"   # browser reconnects within 1 s on drop
         while True:
             yield f"data: {json.dumps(_gs.get())}\n\n"
             time.sleep(0.1)
