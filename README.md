@@ -72,8 +72,8 @@ yukon_firmware_and_software/
   main.py                   MicroPython firmware for the Yukon RP2040
   i2c_scan.py               I2C bus scanner (run on Yukon via Thonny)
 tools/
-  ground_station.py         Ground station web dashboard (operator laptop, port 5000)
-  serial_telemetry.py       SiK radio bridge — runs on Pi, streams telemetry + RTCM
+  ground_station_v2.py      Ground station web dashboard (operator laptop, port 5000)
+  serial_telemetry_v2.py    SiK binary radio bridge — runs on Pi, streams telemetry + RTCM
   build_gs_html.py          Generate ground_station.html from robot_dashboard.py
   upload.py                 MicroPython uploader (handles Yukon USB reset)
   calibrate_camera.py       Lens calibration tool (outputs camera_cal.npz)

@@ -582,61 +582,63 @@ Point any client (`robot_daemon.py`, `tools/test_main.py`) at the PTY path print
 
 ## Ground Station
 
-### ground_station.py
+### ground_station_v2.py
 
 Web-based operator dashboard for remote use. Runs on the **operator's laptop** and
 connects to the robot over a Holybro SiK V3 433 MHz radio link (or TCP over LAN for testing).
-Serves the same panel layout as `robot_dashboard.py` with an added FPV Camera panel and
-📡 / RTK link-quality badges.
+Uses a compact binary telemetry protocol (~6× more bandwidth-efficient than JSON), giving
+~620 B/s downlink — under 11% of the 57600-baud SiK budget with plenty of headroom for
+RTCM uplink.
 
 Three backends — select with `--backend`:
 
 | Backend | Description |
 |---------|-------------|
 | `real` (default) | Physical SiK radio on a USB serial port |
-| `network` | TCP socket — use with `serial_telemetry.py --tcp-port` for LAN/WiFi testing |
-| `fake` | Synthetic telemetry, no hardware needed — great for UI testing |
+| `network` | TCP socket — use with `serial_telemetry_v2.py --tcp-port` for LAN/WiFi testing |
+| `fake` | Synthetic binary telemetry, no hardware needed — GPS, IMU, LiDAR, and ArUco tags all simulated |
 
 ```bash
 # Physical SiK radio
-python3 tools/ground_station.py --serial-port /dev/ttyUSB0
+python3 tools/ground_station_v2.py --serial-port /dev/ttyUSB0
 
-# LAN/WiFi (robot running serial_telemetry.py --tcp-port 5010)
-python3 tools/ground_station.py --backend network --network-host 192.168.1.10
+# LAN/WiFi (robot running serial_telemetry_v2.py --tcp-port 5010)
+python3 tools/ground_station_v2.py --backend network --network-host 192.168.1.10
 
 # Fake data, no hardware at all
-python3 tools/ground_station.py --backend fake
+python3 tools/ground_station_v2.py --backend fake
 
 # Fake data with local webcam as FPV
-python3 tools/ground_station.py --backend fake --fpv-device 0
+python3 tools/ground_station_v2.py --backend fake --fpv-device 0
 ```
 
 Open **http://localhost:5000** (or the IP shown) in any browser.
 
-Full setup and NTRIP configuration: see [GROUND_STATION.md](GROUND_STATION.md).
+Full setup, NTRIP configuration, protocol reference, and bandwidth budget: see [GROUND_STATION.md](GROUND_STATION.md).
 
 ---
 
-### serial_telemetry.py
+### serial_telemetry_v2.py
 
-SiK radio telemetry bridge — runs on the **robot Pi**.
-Owns the SiK radio serial port, streams `RobotState` JSON at 5 Hz and subsampled
-LiDAR at 1 Hz. Receives RTCM corrections and JSON commands over the uplink.
+Binary SiK radio telemetry bridge — runs on the **robot Pi**.
+Owns the SiK radio serial port, encodes `RobotState` as binary frames at 5 Hz (STATE,
+TELEM, GPS, NAV, TAGS), LiDAR at 1 Hz, SYS at 1 Hz, and sends ALARM frames on fault
+transitions. Receives RTCM corrections and CMD frames over the uplink.
 
 Also exposes a TCP port (`--tcp-port`) for LAN/WiFi testing without a physical radio.
 
 ```bash
 # With SiK radio on /dev/ttyUSB1
-python3 tools/serial_telemetry.py
+python3 tools/serial_telemetry_v2.py
 
 # Override port and baud
-python3 tools/serial_telemetry.py --port /dev/ttyUSB1 --baud 115200
+python3 tools/serial_telemetry_v2.py --port /dev/ttyUSB1 --baud 115200
 
 # TCP-only — no radio needed (for LAN testing)
-python3 tools/serial_telemetry.py --tcp-port 5010 --no-serial
+python3 tools/serial_telemetry_v2.py --tcp-port 5010 --no-serial
 
 # Skip camera and GPS for faster startup during bench testing
-python3 tools/serial_telemetry.py --tcp-port 5010 --no-camera --no-gps --no-serial
+python3 tools/serial_telemetry_v2.py --tcp-port 5010 --no-camera --no-gps --no-serial --no-yukon
 ```
 
 | Flag | Description |
@@ -659,10 +661,10 @@ Set `[rtcm] disabled = true` when the SiK radio is active to avoid port conflict
 
 ```bash
 # Terminal 1 — telemetry bridge with TCP, no hardware conflicts
-python3 tools/serial_telemetry.py --no-serial --no-yukon --no-camera --no-gps --tcp-port 5010
+python3 tools/serial_telemetry_v2.py --no-serial --no-yukon --no-camera --no-gps --tcp-port 5010
 
 # Terminal 2 — ground station connects via loopback
-python3 tools/ground_station.py --backend network --network-host localhost --network-port 5010 --web-port 8080
+python3 tools/ground_station_v2.py --backend network --network-host localhost --network-port 5010 --web-port 8080
 ```
 
 Open **http://localhost:8080/** for the ground station UI. The `--no-yukon` flag is required when `robot_dashboard.py` is already running to avoid both processes fighting over `/dev/ttyACM0`.
@@ -679,7 +681,7 @@ python3 tools/build_gs_html.py
 ```
 
 Applies seven patches to the dashboard HTML: adds the FPV Camera panel, updates the
-Race preset, injects 📡/RTK badges into the status bar, and hides robot-only controls.
+Race preset, injects radio/RTK badges into the status bar, and hides robot-only controls.
 
 ---
 

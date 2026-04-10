@@ -2,9 +2,9 @@
 
 Web-based operator dashboard for HackyRacingRobot. Runs on the operator's
 laptop and communicates with the robot over a Holybro SiK V3 433 MHz radio
-link. Open `http://localhost:5000` in any browser to see live telemetry, an
-FPV camera feed, and GPS/LiDAR data, and to forward RTK corrections back to
-the robot.
+link using a compact binary telemetry protocol. Open `http://localhost:5000`
+in any browser to see live telemetry, an FPV camera feed, GPS/LiDAR/ArUco
+data, and to forward RTK corrections back to the robot.
 
 ---
 
@@ -12,40 +12,56 @@ the robot.
 
 | File | Purpose |
 |---|---|
-| `tools/ground_station.py` | Flask web server — the ground station app |
-| `tools/ground_station.html` | Frontend (generated — see Setup below) |
-| `tools/build_gs_html.py` | Generates `ground_station.html` from `robot_dashboard.py` |
-| `tools/serial_telemetry.py` | Runs on the **robot Pi** — SiK radio bridge |
-
-The frontend is identical to `robot_dashboard.py` — same panel layout, presets,
-and mobile view — with a FPV Camera panel added and 📡/RTK badges in the status
-bar.
+| `tools/serial_telemetry_v2.py` | Runs on the **robot Pi** — binary SiK radio bridge |
+| `tools/ground_station_v2.py` | Runs on the **operator laptop** — Flask web server |
+| `tools/ground_station.html` | Browser frontend (shared; served by both robot dashboard and ground station) |
+| `robot/telemetry_proto.py` | Shared binary framing library (encoder + decoder) |
 
 ---
 
-## How it works
+## Protocol overview
+
+All data travels as binary frames rather than JSON, giving ~6× better
+bandwidth efficiency over the SiK radio link.
 
 ```
-Robot Pi                              Operator Laptop
-────────────────────────────────      ──────────────────────────────────
-serial_telemetry.py                   ground_station.py
-  │                                     │
-  ├─ robot.get_state() → JSON ──────────┤──→ /api/state SSE → browser
-  │    5 Hz downlink                    │
-  ├─ LiDAR (subsampled, 1 Hz) ─────────┤
-  │                                     │
-  │◄── RTCM corrections ────────────────┤◄── NTRIP caster (internet)
-  │    uplink                           │
-  │◄── Commands (estop, mode…) ─────────┤◄── browser → /api/cmd
-  │                                     │
-                                        ├─ /stream/fpv → browser
-                                        │    FPV capture card (local)
+Frame: [SYNC:2][TYPE:1][FLAGS:1][LEN:2 LE][PAYLOAD:N][CRC16:2 LE]
 ```
 
-The SiK radio is a transparent serial link — `serial_telemetry.py` owns the
-port on the robot and `ground_station.py` owns the matching port on the laptop.
-RTCM correction bytes and JSON command packets share the uplink; the robot side
-distinguishes them by looking for a `{` at the start of each line.
+| Type | Direction | Rate | Content |
+|------|-----------|------|---------|
+| STATE  (0x01) | ↓ robot | 5 Hz | Mode, drive, flags, speed scale |
+| TELEM  (0x02) | ↓ robot | 5 Hz | Voltage, current, temps, IMU heading |
+| GPS    (0x03) | ↓ robot | 2 Hz | Position, fix, satellites + per-satellite sky data |
+| SYS    (0x04) | ↓ robot | 1 Hz | CPU, memory, disk, Pi temperature |
+| NAV    (0x05) | ↓ robot | 2 Hz | Navigator state, gate/WP, bearing, distance |
+| LIDAR  (0x06) | ↓ robot | 1 Hz | Subsampled distance array (zlib compressed) |
+| ALARM  (0x07) | ↓ robot | event | Fault transition alarms |
+| TAGS   (0x08) | ↓ robot | 5 Hz | Visible ArUco tags: ID, camera, position, distance, bearing |
+| CMD    (0x81) | ↑ ground | on demand | ESTOP, mode change, logging toggle, etc. |
+| RTCM   (0x82) | ↑ ground | continuous | RTK correction bytes from NTRIP caster |
+
+Bandwidth at default rates: ~500 bytes/sec downlink (~9% of 57600-baud budget),
+leaving ample headroom for RTCM uplink.
+
+---
+
+## Architecture
+
+```
+Robot Pi                                  Operator Laptop
+──────────────────────────────────        ──────────────────────────────────────
+serial_telemetry_v2.py                    ground_station_v2.py
+  │                                         │
+  ├─ robot.get_state()                      ├─ FrameDecoder → _GsState
+  ├─ encode binary frames ──────────────────┤──→ /api/state SSE → browser
+  │    5 Hz downlink                        │
+  │                                         ├─ /stream/fpv → browser (local)
+  │◄── encode_rtcm() frames ────────────────┤◄── NTRIP caster (internet)
+  │    RTCM uplink                          │
+  │◄── encode_cmd() frames ─────────────────┤◄── browser → /api/cmd
+  │    commands                             │
+```
 
 ---
 
@@ -64,46 +80,26 @@ pip install flask pyserial
 pip install opencv-python   # optional — needed for FPV feed
 ```
 
-### 2. Generate the frontend HTML
+### 2. Configure robot.ini
 
-Run this once after cloning, and again whenever `robot_dashboard.py` changes:
-
-```bash
-python3 tools/build_gs_html.py
-```
-
-This extracts the HTML/CSS/JS from `robot_dashboard.py` and applies
-ground-station patches (FPV panel, link-quality badges, etc.), writing
-`tools/ground_station.html`.
-
-### 3. Add the robot.ini section
-
-Add to `robot.ini` on the Pi and set `[rtcm] disabled = true` (the SiK
-radio replaces the RTCM serial port):
+In the `[telemetry_radio]` section on the Pi:
 
 ```ini
 [telemetry_radio]
 disabled     = false
-port         = /dev/ttyUSB1   ; check with: ls /dev/ttyUSB*
-baud         = 57600          ; must match SiK ATS1 param on both radios
-telemetry_hz = 5              ; state packet downlink rate
-lidar        = true           ; 1 Hz subsampled LiDAR downlink
-lidar_step   = 5              ; degrees between samples (72 points at 5°)
-
-[rtcm]
-disabled     = true           ; serial_telemetry.py owns the SiK port
+port         = /dev/ttyUSB1
+baud         = 57600
+telemetry_hz = 5
+lidar        = true
+lidar_step   = 5    # degrees between LiDAR samples (72 points at 5°)
 ```
 
-### 4. Add inject_rtcm() to Robot class
+Set `[rtcm] disabled = true` when the SiK radio is active (the bridge owns
+that port and handles RTCM forwarding itself).
 
-Paste the method from `inject_rtcm_patch.py` into `robot_daemon.py` after
-`get_auto_type()` (around line 2531). This is the one change to Robot that
-`serial_telemetry.py` needs for RTCM forwarding.
+### 3. Configure SiK baud rate (if needed)
 
-### 5. Configure SiK baud rate (if changing from default)
-
-The SiK radios default to 57600 baud. To change to 115200 on both radios,
-connect each with a serial terminal and run:
+The SiK radios default to 57600 baud. To change both radios to 115200:
 
 ```
 +++          (wait 1 second — enters command mode)
@@ -112,8 +108,7 @@ AT&W
 ATZ
 ```
 
-Repeat for the second radio. The air data rate (64 kbps) is independent and
-unchanged.
+Repeat for both radios. The air data rate is independent and unchanged.
 
 ---
 
@@ -122,182 +117,178 @@ unchanged.
 ### Robot side (Pi)
 
 ```bash
-python3 tools/serial_telemetry.py
+python3 tools/serial_telemetry_v2.py
 
-# Options:
-python3 tools/serial_telemetry.py --port /dev/ttyUSB1 --baud 115200
-python3 tools/serial_telemetry.py --no-lidar        # save bandwidth
-python3 tools/serial_telemetry.py --no-camera       # faster startup
-python3 tools/serial_telemetry.py --tcp-port 5010   # also expose over TCP
+# Override port/baud
+python3 tools/serial_telemetry_v2.py --port /dev/ttyUSB1 --baud 115200
+
+# TCP only — no physical radio (LAN/loopback testing)
+python3 tools/serial_telemetry_v2.py --no-serial --tcp-port 5010
+
+# Minimal — no hardware conflicts, TCP only
+python3 tools/serial_telemetry_v2.py --no-serial --no-yukon --no-gps --tcp-port 5010
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--port DEV` | SiK serial port (default: from robot.ini) |
+| `--baud N` | Baud rate (default: 57600) |
+| `--hz N` | Downlink rate in Hz (default: 5) |
+| `--no-lidar` | Disable LiDAR downlink |
+| `--no-serial` | Skip serial port — TCP-only mode |
+| `--tcp-port N` | Also expose on TCP port N |
+| `--no-camera` | Disable cameras |
+| `--no-gps` | Disable GPS |
+| `--no-motors` | Suppress drive commands |
+| `--no-yukon` | Skip Yukon (use when robot_dashboard.py already owns /dev/ttyACM0) |
 
 ### Ground station (laptop)
 
 ```bash
 # Real SiK radio
-python3 tools/ground_station.py --serial-port /dev/ttyUSB0      # Linux
-python3 tools/ground_station.py --serial-port COM5               # Windows
+python3 tools/ground_station_v2.py --serial-port /dev/ttyUSB0      # Linux
+python3 tools/ground_station_v2.py --serial-port COM5               # Windows
 
-# LAN/WiFi (Pi running serial_telemetry.py --tcp-port 5010)
-python3 tools/ground_station.py --backend network --network-host 192.168.1.10
+# LAN/WiFi (Pi running --tcp-port 5010)
+python3 tools/ground_station_v2.py --backend network --network-host 192.168.1.10
 
-# Fully fake — synthetic data, no hardware needed
-python3 tools/ground_station.py --backend fake
-
-# Change web port
-python3 tools/ground_station.py --web-port 8080
+# Fully synthetic — no hardware needed
+python3 tools/ground_station_v2.py --backend fake
+python3 tools/ground_station_v2.py --backend fake --fpv-device 0
 ```
 
-Then open **http://localhost:5000** (or the IP shown in the terminal) in any
-browser. The same URL works from a phone or tablet on the same network.
+Then open **http://localhost:5000** in any browser.
 
 ---
 
 ## Backends
 
-Three backends are available, selected with `--backend`:
-
 ### `real` (default)
-Physical SiK radio connected via USB. The radio appears as a standard serial
-port — no special drivers needed on Linux or Windows.
+Physical SiK radio on a USB serial port.
 
 ```bash
-python3 tools/ground_station.py --serial-port /dev/ttyUSB0 --baud 57600
+python3 tools/ground_station_v2.py --serial-port /dev/ttyUSB0 --baud 57600
 ```
 
 ### `network`
-TCP socket instead of serial. Useful for testing over LAN/WiFi before the SiK
-radios arrive, or running both ends on the same machine (loopback).
+TCP socket. The robot must run `serial_telemetry_v2.py --tcp-port N`.
 
-On the robot, start `serial_telemetry.py` with `--tcp-port`:
 ```bash
 # Robot Pi
-python3 tools/serial_telemetry.py --tcp-port 5010
+python3 tools/serial_telemetry_v2.py --tcp-port 5010
 
 # Laptop
-python3 tools/ground_station.py --backend network \
+python3 tools/ground_station_v2.py --backend network \
     --network-host 192.168.1.10 --network-port 5010
 ```
 
-Alternatively, expose the serial port over TCP with `socat`:
-```bash
-socat TCP-LISTEN:5010,fork,reuseaddr FILE:/dev/ttyUSB1,b57600,raw
-```
-
 ### `fake`
-Generates synthetic telemetry locally at 5 Hz — no hardware, no serial port,
-no network. Great for UI development and testing the dashboard layout.
-NTRIP is automatically disabled in fake mode.
+Generates synthetic binary telemetry locally — no hardware, no radio needed.
+GPS, IMU, motors, battery sag, LiDAR, and ArUco tags are all simulated.
 
 ```bash
-python3 tools/ground_station.py --backend fake
-python3 tools/ground_station.py --backend fake --fpv-device 0   # with webcam
+python3 tools/ground_station_v2.py --backend fake
+python3 tools/ground_station_v2.py --backend fake --fpv-device 0   # with webcam
 ```
-
-The fake generator simulates oscillating motor speeds, a GPS fix cycling
-through GPS → RTK Float → RTK Fixed, IMU rotation, battery sag, and a LiDAR
-scan with a simulated wall.
 
 ---
 
-## FPV Camera
+## FPV camera
 
 The FPV feed comes from a local USB capture card or webcam on the operator
-laptop — not from the robot. The FPV video radio delivers the feed
-independently of the SiK data link.
-
-`opencv-python` must be installed:
-```bash
-pip install opencv-python
-```
+laptop — not over the radio. `opencv-python` must be installed.
 
 ```bash
-python3 tools/ground_station.py --fpv-device 0    # first device (default)
-python3 tools/ground_station.py --fpv-device 1    # second device
-python3 tools/ground_station.py --fpv-device /dev/video2   # explicit path
-python3 tools/ground_station.py --no-fpv           # disable entirely
+python3 tools/ground_station_v2.py --fpv-device 0    # first capture device
+python3 tools/ground_station_v2.py --fpv-device 1    # second device
+python3 tools/ground_station_v2.py --no-fpv           # disable
 ```
-
-The FPV feed appears as a **FPV Camera** panel in the panel chooser and is
-set as the top-left panel in the default Race preset. Robot-side cameras
-(front left, front right, rear) are not available at the ground station and
-show a placeholder frame.
 
 ---
 
 ## NTRIP (RTK corrections)
 
-The ground station connects to an NTRIP caster and forwards RTK correction
-bytes back to the robot over the SiK uplink. The robot's `serial_telemetry.py`
-injects them directly into the TAU1308 GNSS receiver.
+The ground station connects to an NTRIP caster and forwards RTK bytes back
+to the robot over the SiK uplink as RTCM frames. The robot bridge injects
+them into the TAU1308 GNSS receiver.
 
 ```bash
-python3 tools/ground_station.py \
+python3 tools/ground_station_v2.py \
     --ntrip-host www.rtk2go.com \
     --ntrip-mount CAMBRIDGE \
     --ntrip-user your@email.com \
     --ntrip-password none
 ```
 
-Credentials via environment variables (keeps them out of shell history):
+Via environment variables:
 ```bash
 export NTRIP_USER=your@email.com
 export NTRIP_PASSWORD=none
-python3 tools/ground_station.py --ntrip-mount CAMBRIDGE
+python3 tools/ground_station_v2.py --ntrip-mount CAMBRIDGE
 ```
-
-Disable NTRIP entirely:
-```bash
-python3 tools/ground_station.py --no-ntrip
-```
-
-NTRIP status appears in the `RTK` badge in the status bar and in the GPS
-panel. RTK Fixed typically takes ~5 minutes from a good caster connection.
 
 ---
 
 ## Commands
 
-The browser can send commands back to the robot. They are forwarded as JSON
-over the SiK uplink and executed by `serial_telemetry.py`.
+Buttons in the browser send CMD frames over the SiK uplink.
 
-| Button | Effect |
-|---|---|
-| ESTOP | Kill motors immediately |
-| Reset ESTOP | Clear ESTOP, return to MANUAL |
-| AUTO / MANUAL | Switch robot mode |
-| ⏺ REC / ⏹ STOP | Start / stop camera recording |
-| ⬤ DLOG | Toggle ML data logging |
-| No Motors | Toggle no-motors bench mode |
-| ArUco | Toggle ArUco detection |
+| Button | CMD | Effect |
+|--------|-----|--------|
+| ESTOP | 0x01 | Kill motors immediately |
+| Reset ESTOP | 0x02 | Clear ESTOP, return to MANUAL |
+| AUTO / MANUAL | 0x03 | Switch robot mode |
+| ⏺ REC | 0x05 | Toggle camera recording |
+| ⬤ DLOG | 0x06 | Toggle ML data logging |
+| No Motors | 0x09 | Toggle no-motors bench mode |
+| ArUco | 0x0A | Toggle ArUco detection |
 
-Commands that only make sense locally (camera rotation, stream pause, etc.)
-are silently ignored by the ground station.
+---
+
+## ArUco distance calibration (area_k fallback)
+
+When no camera calibration file is available, distance to tags is estimated
+from bounding-box area using:
+
+```
+distance = area_k / sqrt(area_pixels²)
+```
+
+To calibrate:
+1. Enable ArUco, hold a tag at a known distance D (e.g. 2.0 m)
+2. Read the `area` value from the ground station tag panel
+3. Calculate: `area_k = D × sqrt(area)`
+4. Set in `robot.ini`:
+
+```ini
+[aruco]
+area_k = 276.5   ; D * sqrt(area) at known distance
+hfov   = 62.0    ; IMX296 horizontal FOV in degrees
+```
 
 ---
 
 ## Bandwidth budget
 
-The SiK V3 air data rate is fixed at 64 kbps. Usable throughput is
-approximately 4–5 KB/s each direction after FHSS/TDM overhead.
+SiK V3 air rate: 64 kbps; usable ~5760 bytes/sec after overhead.
 
-| Data | Rate | Size | Bandwidth |
-|---|---|---|---|
-| State JSON | 5 Hz | ~500 B | ~2.5 KB/s ↓ |
-| LiDAR JSON (72 pts) | 1 Hz | ~600 B | ~0.6 KB/s ↓ |
+| Data | Rate | Typical size | Bandwidth |
+|------|------|-------------|-----------|
+| STATE + TELEM | 5 Hz | 22+30 B | ~260 B/s ↓ |
+| GPS + satellites | 2 Hz | ~70 B | ~140 B/s ↓ |
+| NAV + TAGS | 2+5 Hz | 18+~30 B | ~190 B/s ↓ |
+| SYS + LIDAR | 1 Hz | 12+~21 B | ~33 B/s ↓ |
+| **Total downlink** | | | **~620 B/s (11%)** |
 | RTCM corrections | continuous | 500–2000 B/s | 0.5–2 KB/s ↑ |
-| Commands | on demand | ~50 B | negligible ↑ |
 
-To save downlink bandwidth: `--no-lidar` on `serial_telemetry.py`, or
-`lidar = false` in `robot.ini`. To save uplink bandwidth for RTCM, limit
-the caster to MSM4 messages only.
+Use `--no-lidar` to reduce downlink if needed.
 
 ---
 
 ## Port reference
 
 | Service | Default | Machine |
-|---|---|---|
+|---------|---------|---------|
 | Ground station web UI | `5000` | Laptop |
 | TCP bridge (network backend) | `5010` | Pi |
 | Robot dashboard | `5000` | Pi |
@@ -305,37 +296,32 @@ the caster to MSM4 messages only.
 | SiK radio — laptop side | `/dev/ttyUSB0` | Laptop |
 | TAU1308 GNSS | `/dev/ttyUSB0` | Pi |
 
-> **Note:** On the Pi, the TAU1308 GNSS takes `/dev/ttyUSB0` so the SiK
-> radio lands on `/dev/ttyUSB1`. Confirm with `ls /dev/ttyUSB*` with both
-> plugged in.
+> On the Pi, TAU1308 takes `/dev/ttyUSB0` so the SiK lands on `/dev/ttyUSB1`.
+> Confirm with `ls /dev/ttyUSB*` with both plugged in.
 
 ---
 
 ## Troubleshooting
 
 **"Cannot open serial port"**
-Run `ls /dev/ttyUSB*` (Linux) or check Device Manager (Windows). On Linux,
-if you get a permission error: `sudo usermod -aG dialout $USER` then log out
-and back in.
+Run `ls /dev/ttyUSB*` (Linux) or check Device Manager (Windows). On Linux:
+`sudo usermod -aG dialout $USER` then log out and back in.
 
-**"HTML not found: ground_station.html"**
-Run `python3 tools/build_gs_html.py` first.
+**Badge shows "Robot offline"**
+Check `serial_telemetry_v2.py` is running on the Pi and both SiK radios
+have matching `NET_ID` and `AIR_SPEED` (use `ATI5` to inspect). The ground
+station reconnects automatically — badge turns green within 3 seconds of
+the link recovering.
 
-**No telemetry — 📡 badge shows red**
-Check that `serial_telemetry.py` is running on the Pi and that both SiK
-radios have matching `NET_ID` and `AIR_SPEED` parameters. Use `ATI5` in a
-serial terminal to inspect each radio's config, or use Mission Planner.
+**GPS shows no satellite sky view**
+Satellite detail requires ArUco-enabled `serial_telemetry_v2.py` — the per-
+satellite data (elevation, azimuth, SNR) is included in the GPS packet. Check
+that `[telemetry_radio] disabled = false` in `robot.ini`.
 
 **FPV feed not showing**
-Install `opencv-python`. Try `--fpv-device 1` if device 0 is the laptop's
-built-in webcam rather than the capture card. On Linux, `ls /dev/video*`
-lists available devices.
+Install `opencv-python`. Try `--fpv-device 1` if device 0 is the built-in
+webcam. On Linux, `ls /dev/video*` lists devices.
 
 **NTRIP not connecting**
-Browse to `http://www.rtk2go.com:2101/` to list available mountpoints and
-check the mount name is correct. The RTK2go password is literally `none`.
-
-**RTK not fixing**
-Allow ~5 minutes with a clear sky view. RTK Fixed shows `< 0.05 m` in the
-`H Error` field of the GPS panel. Check that RTCM bytes are flowing — the
-`RTCM recv` counter in the GPS panel should be increasing.
+Check `http://www.rtk2go.com:2101/` for available mountpoints. RTK2go
+password is literally `none`.
