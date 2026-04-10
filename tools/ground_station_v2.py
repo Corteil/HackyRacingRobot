@@ -496,7 +496,11 @@ class NetworkLinkV2(_LinkBase):
             time.sleep(0.1)
             return b""
         try:
-            return s.recv(n)
+            data = s.recv(n)
+            if data == b"":
+                # recv() returns empty on graceful close (FIN) — treat as disconnect
+                raise ConnectionResetError("remote closed connection")
+            return data
         except socket.timeout:
             return b""
         except Exception:
