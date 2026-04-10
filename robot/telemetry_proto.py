@@ -577,9 +577,9 @@ def encode_ping() -> bytes:
     return encode_frame(TYPE_PING, b'')
 
 
-# TAGS — variable length (10 bytes per tag, max 16 tags across all cameras)
-# tag_id:u8  cam_id:u8  cx:u16  cy:u16  dist:u16(mm,null=0xFFFF)  bearing:i16(0.1°,null=0x7FFF)
-_FMT_TAG  = struct.Struct('<BBHHHh')
+# TAGS — variable length (14 bytes per tag, max 16 tags across all cameras)
+# tag_id:u8  cam_id:u8  cx:u16  cy:u16  dist:u16(mm,null=0xFFFF)  bearing:i16(0.1°,null=0x7FFF)  area:u32(px²)
+_FMT_TAG  = struct.Struct('<BBHHHhI')
 _TAGS_MAX = 16
 
 def encode_tags(tags: list) -> bytes:
@@ -593,6 +593,7 @@ def encode_tags(tags: list) -> bytes:
       cy      : int  (pixel centre y)
       distance: float | None  (metres)
       bearing : float | None  (degrees)
+      area    : int           (bounding-box area in pixels²)
     """
     payload = bytearray()
     for t in tags[:_TAGS_MAX]:
@@ -605,6 +606,7 @@ def encode_tags(tags: list) -> bytes:
             max(0, min(65535, int(t.get("cy", 0)))),
             _dist,
             _bear,
+            max(0, min(0xFFFFFFFF, int(t.get("area", 0)))),
         )
     return encode_frame(TYPE_TAGS, bytes(payload))
 
@@ -614,7 +616,7 @@ def decode_tags(payload: bytes) -> list:
     tags = []
     offset = 0
     while offset + _FMT_TAG.size <= len(payload):
-        tid, cam, cx, cy, dist, bear = _FMT_TAG.unpack(payload[offset:offset + _FMT_TAG.size])
+        tid, cam, cx, cy, dist, bear, area = _FMT_TAG.unpack(payload[offset:offset + _FMT_TAG.size])
         tags.append({
             "tag_id":   tid,
             "id":       tid,   # alias for HTML compatibility
@@ -624,6 +626,7 @@ def decode_tags(payload: bytes) -> list:
             "cy":       cy,
             "distance": None if dist == NULL_U16 else dist / 1000.0,
             "bearing":  None if bear == NULL_I16 else bear / 10.0,
+            "area":     area,
         })
         offset += _FMT_TAG.size
     return tags

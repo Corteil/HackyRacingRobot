@@ -258,7 +258,7 @@ class _GsState:
                     "cy":       t["cy"],
                     "distance": t["distance"],
                     "bearing":  t["bearing"],
-                    "area":     0,
+                    "area":     t.get("area", 0),
                 })
         with self._lock:
             total = 0

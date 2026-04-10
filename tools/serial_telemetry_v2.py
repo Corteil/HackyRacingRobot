@@ -347,6 +347,7 @@ class TelemetryBridgeV2:
                                 "cy":       tg.center_y,
                                 "distance": tg.distance,
                                 "bearing":  tg.bearing,
+                                "area":     tg.area,
                             })
                 self._send(encode_tags(all_tags))
 
