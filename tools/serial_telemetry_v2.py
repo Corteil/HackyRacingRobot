@@ -591,7 +591,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(inline_comment_prefixes=(';', '#'))
     cfg.read(args.config)
 
     sik_port   = args.port       or _cfg(cfg, "telemetry_radio", "port",         "/dev/ttyUSB1")
