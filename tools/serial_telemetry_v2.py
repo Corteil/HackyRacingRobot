@@ -663,6 +663,8 @@ def main():
         aruco_dict     = _cfg(cfg, "aruco",  "dict",               "DICT_4X4_1000"),
         aruco_calib    = _cfg(cfg, "aruco",  "calib_file",         ""),
         aruco_tag_size = _cfg(cfg, "aruco",  "tag_size",           0.15,  float),
+        aruco_area_k   = _cfg(cfg, "aruco",  "area_k",             0.0,   float),
+        aruco_hfov     = _cfg(cfg, "aruco",  "hfov",               0.0,   float),
         throttle_ch    = _cfg(cfg, "rc", "throttle_ch",            3,     int),
         steer_ch       = _cfg(cfg, "rc", "steer_ch",               1,     int),
         mode_ch        = _cfg(cfg, "rc", "mode_ch",                5,     int),
