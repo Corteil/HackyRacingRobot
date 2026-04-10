@@ -111,6 +111,7 @@ class _AlarmTracker:
 
     def __init__(self):
         self._prev: dict[int, bool] = {}  # alarm_id → was_active last tick
+        self._baseline_set = False        # first call silently establishes baseline
 
     def check(self, state) -> list[bytes]:
         """Return a (possibly empty) list of encoded ALARM frames."""
@@ -143,6 +144,15 @@ class _AlarmTracker:
                                      ALARM_SEV_WARNING,
                                      f"CPU overtemp {state.system.cpu_temp_c:.0f}°C"),
         }
+
+        # First call: silently record current state as baseline so we only fire
+        # alarms on *transitions*, not for conditions already present at startup
+        # (e.g. rc_active=False before the first CMD_RC_QUERY reply comes back).
+        if not self._baseline_set:
+            for alarm_id, (active, _, _) in alarms_now.items():
+                self._prev[alarm_id] = active
+            self._baseline_set = True
+            return []
 
         frames = []
         for alarm_id, (active, severity, message) in alarms_now.items():
