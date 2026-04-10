@@ -53,6 +53,27 @@ import sys
 import threading
 import time
 
+# Add repo root to path so robot/ package is importable when running from tools/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from robot.telemetry_proto import (
+    FrameDecoder,
+    encode_state, encode_telem, encode_gps, encode_sys, encode_nav,
+    encode_lidar, encode_alarm, encode_cmd, encode_rtcm,
+    decode_cmd,
+    state_flags, lidar_to_step_array,
+    TYPE_CMD, TYPE_RTCM, TYPE_PING,
+    NAV_IDLE, NAV_SEARCHING, NAV_ALIGNING, NAV_DRIVING, NAV_ARRIVED, NAV_COMPLETE,
+    ALARM_ESTOP, ALARM_RC_LOST, ALARM_MOTOR_FAULT, ALARM_GPS_LOST,
+    ALARM_LIDAR_LOST, ALARM_CAMERA_LOST, ALARM_LOW_VOLTAGE, ALARM_OVERTEMP,
+    ALARM_SEV_WARNING, ALARM_SEV_CRITICAL,
+    CMD_ESTOP, CMD_RESET_ESTOP, CMD_SET_MODE,
+    CMD_DATA_LOG_TOGGLE, CMD_GPS_BOOKMARK,
+    CMD_RECORD_TOGGLE, CMD_BENCH_TOGGLE,
+    CMD_NO_MOTORS_TOGGLE, CMD_ARUCO_TOGGLE,
+    MODE_MANUAL, MODE_AUTO,
+)
+
 log = logging.getLogger("serial_telemetry_v2")
 
 
@@ -85,13 +106,6 @@ class _AlarmTracker:
     (OK → fault) and is suppressed until it clears and re-fires.
     """
 
-    from robot.telemetry_proto import (
-        ALARM_ESTOP, ALARM_RC_LOST, ALARM_MOTOR_FAULT, ALARM_GPS_LOST,
-        ALARM_LIDAR_LOST, ALARM_CAMERA_LOST, ALARM_LOW_VOLTAGE, ALARM_OVERTEMP,
-        ALARM_NTRIP_DISC,
-        ALARM_SEV_WARNING, ALARM_SEV_CRITICAL,
-    )
-
     _LOW_VOLTAGE_V = 11.5   # below this threshold triggers LOW_VOLTAGE alarm
     _OVERTEMP_C    = 70.0   # CPU temp above this triggers OVERTEMP alarm
 
@@ -101,33 +115,32 @@ class _AlarmTracker:
     def check(self, state) -> list[bytes]:
         """Return a (possibly empty) list of encoded ALARM frames."""
         from robot_daemon import RobotMode
-        from robot.telemetry_proto import encode_alarm
 
         alarms_now: dict[int, tuple[bool, int, str]] = {
             # alarm_id: (active, severity, message)
-            self.ALARM_ESTOP:       (state.mode == RobotMode.ESTOP,
-                                     self.ALARM_SEV_CRITICAL, "ESTOP active"),
-            self.ALARM_RC_LOST:     (not state.rc_active,
-                                     self.ALARM_SEV_WARNING, "RC signal lost"),
-            self.ALARM_MOTOR_FAULT: (state.telemetry.left_fault or state.telemetry.right_fault,
-                                     self.ALARM_SEV_CRITICAL,
+            ALARM_ESTOP:       (state.mode == RobotMode.ESTOP,
+                                     ALARM_SEV_CRITICAL, "ESTOP active"),
+            ALARM_RC_LOST:     (not state.rc_active,
+                                     ALARM_SEV_WARNING, "RC signal lost"),
+            ALARM_MOTOR_FAULT: (state.telemetry.left_fault or state.telemetry.right_fault,
+                                     ALARM_SEV_CRITICAL,
                                      "Motor fault: " + (
                                          "left+right" if (state.telemetry.left_fault and
                                                           state.telemetry.right_fault)
                                          else "left" if state.telemetry.left_fault
                                          else "right")),
-            self.ALARM_GPS_LOST:    (not state.gps_ok,
-                                     self.ALARM_SEV_WARNING, "GPS signal lost"),
-            self.ALARM_LIDAR_LOST:  (not state.lidar_ok,
-                                     self.ALARM_SEV_WARNING, "LiDAR offline"),
-            self.ALARM_CAMERA_LOST: (not state.camera_ok,
-                                     self.ALARM_SEV_WARNING, "Camera offline"),
-            self.ALARM_LOW_VOLTAGE: (state.telemetry.voltage > 0 and
+            ALARM_GPS_LOST:    (not state.gps_ok,
+                                     ALARM_SEV_WARNING, "GPS signal lost"),
+            ALARM_LIDAR_LOST:  (not state.lidar_ok,
+                                     ALARM_SEV_WARNING, "LiDAR offline"),
+            ALARM_CAMERA_LOST: (not state.camera_ok,
+                                     ALARM_SEV_WARNING, "Camera offline"),
+            ALARM_LOW_VOLTAGE: (state.telemetry.voltage > 0 and
                                      state.telemetry.voltage < self._LOW_VOLTAGE_V,
-                                     self.ALARM_SEV_CRITICAL,
+                                     ALARM_SEV_CRITICAL,
                                      f"Low voltage {state.telemetry.voltage:.2f}V"),
-            self.ALARM_OVERTEMP:    (state.system.cpu_temp_c > self._OVERTEMP_C,
-                                     self.ALARM_SEV_WARNING,
+            ALARM_OVERTEMP:    (state.system.cpu_temp_c > self._OVERTEMP_C,
+                                     ALARM_SEV_WARNING,
                                      f"CPU overtemp {state.system.cpu_temp_c:.0f}°C"),
         }
 
@@ -249,11 +262,6 @@ class TelemetryBridgeV2:
             log.warning("TX error: %s", e)
 
     def _tx_loop(self):
-        from robot.telemetry_proto import (
-            encode_state, encode_telem, encode_gps, encode_sys,
-            encode_nav, encode_lidar, state_flags, lidar_to_step_array,
-            NAV_IDLE, NAV_SEARCHING, NAV_ALIGNING, NAV_DRIVING, NAV_ARRIVED, NAV_COMPLETE,
-        )
         from robot_daemon import RobotMode
 
         mode_map = {
@@ -375,9 +383,6 @@ class TelemetryBridgeV2:
     # ── RX ────────────────────────────────────────────────────────────────────
 
     def _rx_loop(self):
-        from robot.telemetry_proto import (
-            FrameDecoder, TYPE_CMD, TYPE_RTCM, TYPE_PING, decode_cmd,
-        )
         decoder = FrameDecoder()
 
         while not self._stop.is_set():
@@ -408,9 +413,6 @@ class TelemetryBridgeV2:
         Used by the TCP bridge so LAN clients share the same command/RTCM path
         as the radio RX loop.
         """
-        from robot.telemetry_proto import (
-            FrameDecoder, TYPE_CMD, TYPE_RTCM, TYPE_PING, decode_cmd,
-        )
         decoder = FrameDecoder()
         for ptype, payload in decoder.feed(frame_bytes):
             self._last_rx_ts = time.monotonic()
@@ -422,14 +424,6 @@ class TelemetryBridgeV2:
                 pass
 
     def _handle_cmd(self, payload: bytes):
-        from robot.telemetry_proto import (
-            decode_cmd,
-            CMD_ESTOP, CMD_RESET_ESTOP, CMD_SET_MODE,
-            CMD_DATA_LOG_TOGGLE, CMD_GPS_BOOKMARK,
-            CMD_RECORD_TOGGLE, CMD_BENCH_TOGGLE,
-            CMD_NO_MOTORS_TOGGLE, CMD_ARUCO_TOGGLE,
-            MODE_MANUAL, MODE_AUTO,
-        )
         from robot_daemon import RobotMode
 
         d = decode_cmd(payload)
