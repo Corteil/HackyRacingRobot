@@ -378,6 +378,8 @@ class TelemetryBridgeV2:
                         inside_tag       = state.nav_inside_tag       or 0,
                         next_outside_tag = state.nav_next_outside_tag or 0,
                         next_inside_tag  = state.nav_next_inside_tag  or 0,
+                        gate_label       = state.nav_gate_label       or "",
+                        next_gate_label  = state.nav_next_gate_label  or "",
                     ))
 
                 # ── 1 Hz: SYS ────────────────────────────────────────────

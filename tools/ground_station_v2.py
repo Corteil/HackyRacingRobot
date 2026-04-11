@@ -252,15 +252,15 @@ class _GsState:
             self._nav["nav_wp_bear"]    = d["bearing"]
             self._nav["nav_bearing_err"]= d["bearing_err"]
             self._nav["nav_tags_visible"] = d["tags"]
-            # Tag IDs now carried in extended NAV packet (decode_nav resolves formula fallback)
-            self._nav["nav_outside_tag"] = d["outside_tag"]
-            self._nav["nav_inside_tag"]  = d["inside_tag"]
-            self._nav["nav_gate_label"]  = f"Gate {gate}"
+            # Tag IDs and labels now carried in extended NAV packet
+            self._nav["nav_outside_tag"]    = d["outside_tag"]
+            self._nav["nav_inside_tag"]     = d["inside_tag"]
+            self._nav["nav_gate_label"]     = d["gate_label"] or f"Gate {gate}"
             next_gate = gate + 1
             self._nav["nav_next_gate"]          = next_gate
             self._nav["nav_next_outside_tag"]   = d["next_outside_tag"]
             self._nav["nav_next_inside_tag"]    = d["next_inside_tag"]
-            self._nav["nav_next_gate_label"]    = f"Gate {next_gate}"
+            self._nav["nav_next_gate_label"]    = d["next_gate_label"] or f"Gate {next_gate}"
             self._touch()
 
     def handle_lidar(self, d: dict):
