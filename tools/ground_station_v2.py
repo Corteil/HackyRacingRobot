@@ -304,6 +304,31 @@ class _GsState:
             self._alarms.appendleft(entry)
             self._touch()
 
+    def apply_cmd(self, body: dict):
+        """Optimistically update local state when a command is queued.
+
+        Mirrors what the robot will do when it receives the command so the UI
+        responds immediately instead of waiting for the radio round-trip.
+        Real state from the robot will overwrite these on the next packet.
+        """
+        cmd = body.get('cmd', '')
+        with self._lock:
+            if cmd == 'estop':
+                self._mode = 'ESTOP'
+            elif cmd == 'reset':
+                if self._mode == 'ESTOP':
+                    self._mode = 'MANUAL'
+            elif cmd == 'set_mode':
+                mode_str = body.get('mode', 'MANUAL')
+                if self._mode != 'ESTOP':
+                    self._mode = mode_str
+            elif cmd == 'no_motors_toggle':
+                self._flags ^= SF_NO_MOTORS
+            elif cmd == 'data_log_toggle':
+                self._flags ^= SF_DATA_LOGGING
+            elif cmd in ('record_toggle', 'record_start', 'record_stop'):
+                self._flags ^= SF_CAM_RECORDING
+
     def _touch(self):
         """Must be called under self._lock."""
         self.packets  += 1
@@ -998,7 +1023,10 @@ def api_cmd():
     try:
         _cmd_q.put_nowait(frame)
         log.info("CMD queued: %s", body.get('cmd'))
-        return jsonify({'ok': True})
+        # Apply optimistic local state so the UI updates immediately without
+        # waiting for the radio round-trip confirmation.
+        _gs.apply_cmd(body)
+        return jsonify({'ok': True, 'state': _gs.get()})
     except queue.Full:
         return jsonify({'ok': False, 'error': 'TX queue full'}), 503
 
