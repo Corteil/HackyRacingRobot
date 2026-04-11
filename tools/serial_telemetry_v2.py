@@ -672,6 +672,7 @@ def main():
         auto_type_ch   = _cfg(cfg, "rc", "auto_type_ch",           7,     int),
         gps_log_ch     = _cfg(cfg, "rc", "gps_log_ch",             8,     int),
         gps_bookmark_ch= _cfg(cfg, "rc", "gps_bookmark_ch",        10,    int),
+        pause_ch       = _cfg(cfg, "rc", "pause_ch",               0,     int),
         gps_log_dir    = _cfg(cfg, "gps", "log_dir",               ""),
         gps_log_hz     = _cfg(cfg, "gps", "log_hz",                5.0,   float),
         deadzone       = _cfg(cfg, "rc", "deadzone",               30,    int),
