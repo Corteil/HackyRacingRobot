@@ -1,4 +1,12 @@
-# Serial Protocol: Host ↔ Yukon
+# Serial Protocols
+
+Two binary protocols are used by the robot:
+1. **Host ↔ Yukon** (5-byte frames, USB serial) — documented in this file.
+2. **Robot ↔ Ground Station** (variable-length frames, SiK 433 MHz radio) — see [`tools/GROUND_STATION.md`](../tools/GROUND_STATION.md) and `robot/telemetry_proto.py`.
+
+---
+
+# Protocol 1 — Host ↔ Yukon
 
 Communication between the Raspberry Pi (host) and the Pimoroni Yukon (RP2040) uses a compact 5-byte packet format. All bytes are printable ASCII so they do not interfere with the MicroPython REPL.
 
@@ -187,3 +195,62 @@ Example — start cyan converge:
 ```
 CMD_PATTERN  value = (6 << 4) | 5 = 0x65  (colour=cyan, pattern=converge)
 ```
+
+---
+
+# Protocol 2 — Robot ↔ Ground Station (SiK radio binary telemetry)
+
+All frames share a common 8-byte envelope:
+
+```
+[SYNC:2][TYPE:1][FLAGS:1][LEN:2 LE][PAYLOAD:N][CRC16:2 LE]
+```
+
+SYNC = `0x48 0x52` (`HR`). CRC16 covers TYPE through end of PAYLOAD.
+
+## Packet types (downlink — robot → ground station)
+
+| Type | Hex  | Rate   | Payload format |
+|------|------|--------|----------------|
+| STATE  | 0x01 | 5 Hz | `<HBBBhhhBBB>` — flags(u16), mode, drive_left, drive_right, imu_heading, pitch, roll, speed_scale_pct, … |
+| TELEM  | 0x02 | 5 Hz | `<HhHHBBHHHHBB>` — voltage(÷100 V), current(÷100 A), temps, fault flags, IMU … |
+| GPS    | 0x03 | 2 Hz | `<iiBBHHHHHBBBB>` — lat/lon (1e-7°), alt(mm), fix, sats, hdop, … + variable per-satellite records |
+| SYS    | 0x04 | 1 Hz | `<BBBBh>` — cpu%, mem%, disk%, temp(°C) |
+| NAV    | 0x05 | 2 Hz | Variable length — see below |
+| LIDAR  | 0x06 | 1 Hz | `u8` step + zlib-compressed `u16[]` distances (360/step values) |
+| ALARM  | 0x07 | event | Alarm name, severity, message |
+| TAGS   | 0x08 | 5 Hz | Array of 12-byte tag records: `<BBHHHhI>` — tag_id, cam_id, cx, cy, dist(mm), bearing(0.1°), area |
+
+## NAV packet (TYPE 0x05) — variable length
+
+```
+Fixed header (14 bytes): <BBBHHhBBBBB>
+  nav_state:u8        NAV_IDLE=0, NAV_DRIVING=1 …
+  gate:u8             Current target gate index
+  wp:u8               Current GPS waypoint index
+  dist:u16            Distance (0.1 m; 0xFFFF = null)
+  bearing:u16         Bearing to target (0.1°; 0xFFFF = null)
+  bearing_err:i16     Bearing error (0.1°; 0x8000 = null)
+  tags:u8             ArUco tags visible in current frame
+  outside_tag:u8      Front-face tag ID for outside post (0xFF = use gate*2 formula)
+  inside_tag:u8       Front-face tag ID for inside post  (0xFF = use gate*2+1 formula)
+  next_outside_tag:u8 Outside tag ID for next gate
+  next_inside_tag:u8  Inside  tag ID for next gate
+
+Variable tail (labels, both optional if payload ends early):
+  gate_label_len:u8   Length of gate label string (0–31)
+  gate_label:N bytes  UTF-8 gate label (e.g. "Start / Finish")
+  next_label_len:u8   Length of next gate label string
+  next_label:M bytes  UTF-8 next gate label
+```
+
+Tag IDs use the gate-numbering formula (`gate*2`, `gate*2+1`) when `0xFF` or when the payload is shorter than 14 bytes (backward compatibility with older firmware).
+
+## Uplink (ground station → robot)
+
+| Type | Hex  | Direction | Content |
+|------|------|-----------|---------|
+| CMD  | 0x81 | ↑ | Command: `cmd_id:u8` + optional body bytes |
+| RTCM | 0x82 | ↑ | Raw RTCM3 correction bytes injected into TAU1308 |
+
+CMD IDs: 0x01=ESTOP, 0x02=reset, 0x03=set_mode, 0x04=data_log_toggle, 0x05=gps_bookmark, 0x06=record_toggle, 0x07=bench_toggle, 0x08=no_motors_toggle, 0x09=aruco_toggle.

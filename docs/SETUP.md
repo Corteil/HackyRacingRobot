@@ -33,9 +33,7 @@ groups
 # should include: dialout gpio
 ```
 
-`dialout` covers `/dev/ttyACM0` (Yukon), `/dev/ttyUSB0` (GPS), and
-`/dev/ttyAMA0` (LiDAR). `gpio` covers the PWM sysfs node (see LiDAR PWM
-section below).
+`dialout` covers all serial devices. `gpio` covers the PWM sysfs node (see LiDAR PWM section below).
 
 ---
 
@@ -121,6 +119,45 @@ SUBSYSTEM=="pwm", KERNEL=="pwm[0-9]*", ACTION=="add", \
 ```
 
 Reload rules: `sudo udevadm control --reload-rules`
+
+---
+
+## Serial port udev symlinks
+
+Three USB serial devices are used by the robot. Their `/dev/ttyUSB*` and `/dev/ttyACM*` node numbers can change between reboots depending on plug order. Stable symlinks are installed via a udev rule so `robot.ini` always resolves correctly.
+
+Create `/etc/udev/rules.d/99-hacky-robot.rules`:
+
+```
+# Yukon RP2040 — match by USB vendor:product + serial number
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="105b", \
+    ATTRS{serial}=="e4612d169b585036", SYMLINK+="yukon", MODE="0666"
+
+# SiK V3 radio dongle (FTDI FT230X)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", \
+    ATTRS{serial}=="DU0E5ZBY", SYMLINK+="sik", MODE="0666"
+
+# Allystar TAU1308 GNSS (CH340 USB-serial)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+    SYMLINK+="gnss", MODE="0666"
+```
+
+Replace the serial numbers with your actual device serials. To find them:
+
+```bash
+udevadm info -a -n /dev/ttyACM0 | grep serial
+udevadm info -a -n /dev/ttyUSB0 | grep serial
+```
+
+Reload and trigger:
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+ls -la /dev/yukon /dev/sik /dev/gnss   # verify symlinks
+```
+
+The `robot.ini` defaults reference these symlinks (`/dev/yukon`, `/dev/gnss`, `/dev/sik`).
 
 ---
 

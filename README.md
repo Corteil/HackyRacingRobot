@@ -32,14 +32,14 @@ Open `http://<pi-ip>:5000/` in any browser. On desktop/touchscreen the UI shows 
 | Pimoroni Yukon | RP2040-based motor controller |
 | Left motors | `DualMotorModule` in SLOT2 |
 | LED strip | `LEDStripModule` (NeoPixel, 8 LEDs) in SLOT3 |
-| Bench power | `BenchPowerModule` (5 V regulated output) in SLOT4 |
+| Bench power | `DualOutputModule` in SLOT4 — output 0 = FPV camera power |
 | Right motors | `DualMotorModule` in SLOT5 |
 | RC receiver | FlySky iBUS → Yukon GP26 (PIO UART, decoded by firmware) |
-| Host ↔ Yukon | USB serial `/dev/ttyACM0` at 115200 baud |
+| Host ↔ Yukon | USB serial `/dev/yukon` (`/dev/ttyACM0`) at 115200 baud |
 | Front cameras | IMX296 global shutter (×2) via picamera2 CSI (180° rotation — mounted inverted) |
 | Rear camera | IMX477 HQ camera via USB/UVC (OpenCV, mirror=true) |
 | LiDAR | LD06 on `/dev/ttyAMA0`; PWM motor drive on GPIO 12 |
-| GNSS | Allystar TAU1308 RTK receiver on `/dev/ttyUSB0` |
+| GNSS | Allystar TAU1308 RTK receiver on `/dev/gnss` (`/dev/ttyUSB0`) |
 | IMU | BNO085 on Yukon I2C (Qw/ST port) |
 | GPIO buttons | ESTOP (GPIO 17) / START (GPIO 27) |
 | GPIO LEDs | Status LEDs on GPIO 22, 23, 25 |
@@ -115,7 +115,7 @@ Set `max_recording_minutes` in `[output]` to roll video to a new file automatica
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Component diagram, key files, data flow, threading model
 - [ROBOT_FILES.md](docs/ROBOT_FILES.md) — All Pi-side Python files: usage, keys, flags, API
-- [PROTOCOL.md](docs/PROTOCOL.md) — 5-byte serial protocol specification
+- [PROTOCOL.md](docs/PROTOCOL.md) — Yukon 5-byte serial protocol + SiK radio binary telemetry protocol
 - [SETUP.md](docs/SETUP.md) — Wiring, device tree overlays, dependencies, firmware upload
 - [CALIBRATION.md](docs/CALIBRATION.md) — Camera lens calibration workflow
 - [GPIO.md](docs/GPIO.md) — GPIO pin allocation reference

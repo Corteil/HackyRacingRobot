@@ -444,11 +444,13 @@ Shared constants, helpers, and utilities used by both `camera_monitor.py` and `c
 OpenCV ArUco marker detector.  Detects markers in RGB camera frames, identifies
 gate pairs, and optionally estimates metric distance and bearing via `cv2.solvePnP`.
 
-**Gate and tag numbering convention:**
+**Gate and tag numbering convention (default formula):**
 - Gate N has two posts: **outside** post (tag ID `2N`, even) and **inside** post (tag ID `2N+1`, odd)
 - **Front face** tags: IDs 0–99 (robot approaching)
 - **Rear face** tags: IDs 100–199 (rear = front + 100; seeing a rear tag means the gate has already been passed)
 - Single-tag navigation: aim **right** of an outside (even) tag, **left** of an inside (odd) tag
+
+> **`track.toml` overrides the formula.** When a `track_file` is set in `[navigator]`, tag IDs and gate labels come from the TOML file instead. The `aruco_navigator` exposes `outside_tag_id`, `inside_tag_id`, `gate_label` etc. as properties that return the track values (falling back to the formula when no track is loaded). The NAV telemetry packet carries these IDs and labels so the ground station always shows correct information.
 
 Pose estimation requires a calibration file (`camera_cal.npz`) produced by
 `tools/calibrate_camera.py` at the same resolution the camera runs at.

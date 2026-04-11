@@ -19,7 +19,7 @@ FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
           │            │  │                 │
     _YukonLink      _Camera ×3          _Lidar           _Gps
    (USB serial)   (picamera2/OpenCV)  (LD06 UART)    (GNSS UART)
-   /dev/ttyACM0   aruco_detector       /dev/ttyAMA0   /dev/ttyUSB0
+   /dev/yukon     aruco_detector       /dev/ttyAMA0   /dev/gnss
           │            │                  │                │
     Yukon RP2040   front_left/right    LD06 LiDAR    TAU1308 RTK
     main.py        rear (OpenCV)       GPIO12 PWM    NTRIP client
@@ -144,6 +144,13 @@ class RobotState:
     nav_target_bearing: Optional[float] # camera-relative bearing to aim point (degrees)
     nav_target_dist:    Optional[float] # metric distance to target tag
     nav_tags_visible:   int             # number of ArUco tags visible in current frame
+    nav_outside_tag:    int             # front-face tag ID for outside post (from track.toml or gate*2)
+    nav_inside_tag:     int             # front-face tag ID for inside post  (from track.toml or gate*2+1)
+    nav_gate_label:     str             # human label from track.toml ("Gate 0" / "Start / Finish")
+    nav_next_gate:          int         # next gate index in sequence
+    nav_next_outside_tag:   int         # front-face tag ID for outside post of next gate
+    nav_next_inside_tag:    int         # front-face tag ID for inside  post of next gate
+    nav_next_gate_label:    str         # human label for next gate
 ```
 
 `SystemState` (Pi health, polled by `_System` thread):

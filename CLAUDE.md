@@ -130,6 +130,8 @@ RobotState          # Full snapshot returned by get_state()
 | 0x28 | CMD_PIXEL_SET | Stage one pixel colour (no hardware update) |
 | 0x29 | CMD_PIXEL_SHOW | Push staged pixel data to strip |
 | 0x2A | CMD_PATTERN | Start autonomous LED animation |
+| 0x2B | CMD_MODE | 0=MANUAL, 1=AUTO, 2=ESTOP — Pi heartbeat; ESTOP if absent >500 ms |
+| 0x2C | CMD_RC_QUERY | Yukon replies with 15 RC channel packets then ACK |
 | 0x2D | CMD_BENCH | 0 = disable bench power output, 1 = enable |
 
 Responses: `ACK (0x06)` / `NAK (0x15)`. Sensor data comes as a sequence of 5-byte `(RESP_TYPE, V_HIGH, V_LOW, CHK)` packets followed by ACK. See `docs/PROTOCOL.md` for full encoding.
@@ -155,12 +157,11 @@ Key sections:
 | `[gps]` | TAU1308 port, log dir, log rate |
 | `[ntrip]` | NTRIP caster host/port/mount/credentials |
 | `[rtcm]` | Serial RTCM correction input (alternative to NTRIP) |
-| `[navigator]` | ArUco gate navigator PID tuning |
+| `[telemetry_radio]` | SiK radio port (`/dev/sik`), baud, downlink rate, LiDAR enable |
+| `[navigator]` | ArUco gate navigator tuning + `track_file` path |
 | `[gps_navigator]` | GPS waypoint navigator tuning |
 | `[output]` | Snapshot/video/data-log directories, recording limits |
-| `[gui]` | Pygame GUI fps |
-| `[web]` | Web dashboard host/port |
-| `[mobile]` | Mobile dashboard host/port |
+| `[dashboard]` | Unified web dashboard host/port |
 
 Every value can be overridden via CLI flag — run `python3 robot_daemon.py --help`.
 
@@ -176,10 +177,11 @@ value = _cfg(cfg, 'section', 'key', fallback, cast=int)
 
 | Device | Interface | Path | Notes |
 |--------|-----------|------|-------|
-| Yukon RP2040 | USB serial | `/dev/ttyACM0` | 115200 baud; 5-byte protocol |
+| Yukon RP2040 | USB serial | `/dev/yukon` | 115200 baud; 5-byte protocol; udev symlink for `/dev/ttyACM0` |
 | FlySky iBUS RX | Yukon GP26 (PIO UART) | — | 115200 baud; decoded by Yukon firmware; queried by Pi via CMD_RC_QUERY |
 | LD06 LiDAR | UART0 RX (GPIO 15) | `/dev/ttyAMA0` | 230400 baud; GPIO 12 PWM @ 30 kHz |
-| TAU1308 GNSS | USB serial | `/dev/ttyUSB0` | 115200 baud; NMEA output |
+| SiK radio | USB serial | `/dev/sik` | 57600 baud; udev symlink; binary telemetry + RTCM uplink |
+| TAU1308 GNSS | USB serial | `/dev/gnss` | 115200 baud; NMEA output; udev symlink for `/dev/ttyUSB0` |
 | IMX296 camera | CSI / picamera2 | — | Fallback to `/dev/video0` via OpenCV |
 | BNO085 IMU | I2C on Yukon | — | Optional; heading via CMD_SENSOR response |
 
@@ -188,14 +190,8 @@ value = _cfg(cfg, 'section', 'key', fallback, cast=int)
 ## Running the Robot
 
 ```bash
-# Full daemon with Pygame GUI
-python3 robot_gui.py
-
-# Full daemon with desktop web dashboard
-python3 robot_web.py
-
-# Full daemon with mobile-optimised web dashboard
-python3 robot_mobile.py
+# Unified web dashboard (desktop/mobile, port 5000)
+python3 robot_dashboard.py
 
 # Headless daemon only
 python3 robot_daemon.py

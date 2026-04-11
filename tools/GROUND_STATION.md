@@ -34,7 +34,7 @@ Frame: [SYNC:2][TYPE:1][FLAGS:1][LEN:2 LE][PAYLOAD:N][CRC16:2 LE]
 | TELEM  (0x02) | ↓ robot | 5 Hz | Voltage, current, temps, IMU heading |
 | GPS    (0x03) | ↓ robot | 2 Hz | Position, fix, satellites + per-satellite sky data |
 | SYS    (0x04) | ↓ robot | 1 Hz | CPU, memory, disk, Pi temperature |
-| NAV    (0x05) | ↓ robot | 2 Hz | Navigator state, gate/WP, bearing, distance |
+| NAV    (0x05) | ↓ robot | 2 Hz | Navigator state, gate/WP, bearing, distance, tag IDs, gate labels |
 | LIDAR  (0x06) | ↓ robot | 1 Hz | Subsampled distance array (zlib compressed) |
 | ALARM  (0x07) | ↓ robot | event | Fault transition alarms |
 | TAGS   (0x08) | ↓ robot | 5 Hz | Visible ArUco tags: ID, camera, position, distance, bearing |
@@ -87,7 +87,7 @@ In the `[telemetry_radio]` section on the Pi:
 ```ini
 [telemetry_radio]
 disabled     = false
-port         = /dev/ttyUSB1
+port         = /dev/sik   ; udev symlink — see docs/SETUP.md
 baud         = 57600
 telemetry_hz = 5
 lidar        = true
@@ -278,7 +278,7 @@ SiK V3 air rate: 64 kbps; usable ~5760 bytes/sec after overhead.
 |------|------|-------------|-----------|
 | STATE + TELEM | 5 Hz | 22+30 B | ~260 B/s ↓ |
 | GPS + satellites | 2 Hz | ~70 B | ~140 B/s ↓ |
-| NAV + TAGS | 2+5 Hz | 18+~30 B | ~190 B/s ↓ |
+| NAV + TAGS | 2+5 Hz | ~20–50+~30 B | ~190 B/s ↓ |
 | SYS + LIDAR | 1 Hz | 12+~21 B | ~33 B/s ↓ |
 | **Total downlink** | | | **~620 B/s (11%)** |
 | RTCM corrections | continuous | 500–2000 B/s | 0.5–2 KB/s ↑ |
@@ -294,12 +294,12 @@ Use `--no-lidar` to reduce downlink if needed.
 | Ground station web UI | `5000` | Laptop |
 | TCP bridge (network backend) | `5010` | Pi |
 | Robot dashboard | `5000` | Pi |
-| SiK radio — robot side | `/dev/ttyUSB1` | Pi |
+| SiK radio — robot side | `/dev/sik` | Pi |
 | SiK radio — laptop side | `/dev/ttyUSB0` | Laptop |
-| TAU1308 GNSS | `/dev/ttyUSB0` | Pi |
+| TAU1308 GNSS | `/dev/gnss` | Pi |
 
-> On the Pi, TAU1308 takes `/dev/ttyUSB0` so the SiK lands on `/dev/ttyUSB1`.
-> Confirm with `ls /dev/ttyUSB*` with both plugged in.
+> The Pi uses udev symlinks (`/dev/sik`, `/dev/gnss`, `/dev/yukon`) so device
+> ordering on reboot doesn't matter. See `docs/SETUP.md` for the rule file.
 
 ---
 
