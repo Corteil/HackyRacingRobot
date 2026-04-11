@@ -550,25 +550,74 @@ class _LinkBase:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SerialLinkV2(_LinkBase):
+    """SiK radio serial backend.  Opens the port in a background thread so the
+    dashboard starts immediately even when the dongle is not yet plugged in.
+    Reconnects automatically if the dongle is unplugged and re-inserted."""
+
     def __init__(self, port: str, baud: int,
                  rtcm_q: queue.Queue, cmd_q: queue.Queue):
         super().__init__(rtcm_q, cmd_q)
         if not _SERIAL:
             raise ImportError("pyserial not installed — pip install pyserial")
-        self._ser = _pyserial.Serial(port, baud, timeout=0.1, write_timeout=1.0)
-        time.sleep(0.3)
-        self._ser.reset_input_buffer()
+        self._port = port
+        self._baud = baud
+        self._ser: Optional[_pyserial.Serial] = None
+        self._ser_lock = threading.Lock()
         log.info("SiK serial v2: %s @ %d baud", port, baud)
 
-    def _read(self, n): return self._ser.read(n)
-    def _write(self, data): self._ser.write(data)
+    def _connect(self):
+        while not self._stop.is_set():
+            try:
+                ser = _pyserial.Serial(self._port, self._baud,
+                                       timeout=0.1, write_timeout=1.0)
+                time.sleep(0.3)
+                ser.reset_input_buffer()
+                with self._ser_lock:
+                    self._ser = ser
+                log.info("SiK serial opened: %s", self._port)
+                return
+            except Exception as e:
+                log.warning("SiK serial open failed (%s) — retry in 3 s", e)
+                time.sleep(3)
+
+    def _read(self, n):
+        with self._ser_lock:
+            ser = self._ser
+        if ser is None:
+            time.sleep(0.1)
+            return b""
+        try:
+            return ser.read(n)
+        except Exception as e:
+            log.warning("SiK serial read error: %s — reconnecting", e)
+            with self._ser_lock:
+                try: self._ser.close()
+                except Exception: pass
+                self._ser = None
+            threading.Thread(target=self._connect, daemon=True,
+                             name="gs_serial_conn").start()
+            return b""
+
+    def _write(self, data):
+        with self._ser_lock:
+            ser = self._ser
+        if ser:
+            try:
+                ser.write(data)
+            except Exception as e:
+                log.warning("SiK serial write error: %s", e)
 
     def stop(self):
         super().stop()
-        try: self._ser.close()
-        except Exception: pass
+        with self._ser_lock:
+            if self._ser:
+                try: self._ser.close()
+                except Exception: pass
+                self._ser = None
 
     def start(self):
+        threading.Thread(target=self._connect, daemon=True,
+                         name="gs_serial_conn").start()
         self._start_threads()
 
 
@@ -1132,12 +1181,10 @@ def main():
     if args.backend == "real":
         if not _SERIAL:
             sys.exit("pyserial not installed — pip install pyserial")
-        try:
-            link = SerialLinkV2(args.serial_port, args.baud, rtcm_q, _cmd_q)
-        except Exception as e:
-            sys.exit(f"Cannot open {args.serial_port}: {e}")
+        link = SerialLinkV2(args.serial_port, args.baud, rtcm_q, _cmd_q)
         link.start()
-        log.info("Backend: serial  %s @ %d baud", args.serial_port, args.baud)
+        log.info("Backend: serial  %s @ %d baud (will retry until port opens)",
+                 args.serial_port, args.baud)
 
     elif args.backend == "network":
         link = NetworkLinkV2(args.network_host, args.network_port, rtcm_q, _cmd_q)
