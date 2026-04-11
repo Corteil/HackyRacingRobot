@@ -252,14 +252,14 @@ class _GsState:
             self._nav["nav_wp_bear"]    = d["bearing"]
             self._nav["nav_bearing_err"]= d["bearing_err"]
             self._nav["nav_tags_visible"] = d["tags"]
-            # Derive tag IDs from gate index (formula fallback; protocol doesn't carry them)
-            self._nav["nav_outside_tag"] = gate * 2
-            self._nav["nav_inside_tag"]  = gate * 2 + 1
+            # Tag IDs now carried in extended NAV packet (decode_nav resolves formula fallback)
+            self._nav["nav_outside_tag"] = d["outside_tag"]
+            self._nav["nav_inside_tag"]  = d["inside_tag"]
             self._nav["nav_gate_label"]  = f"Gate {gate}"
             next_gate = gate + 1
             self._nav["nav_next_gate"]          = next_gate
-            self._nav["nav_next_outside_tag"]   = next_gate * 2
-            self._nav["nav_next_inside_tag"]    = next_gate * 2 + 1
+            self._nav["nav_next_outside_tag"]   = d["next_outside_tag"]
+            self._nav["nav_next_inside_tag"]    = d["next_inside_tag"]
             self._nav["nav_next_gate_label"]    = f"Gate {next_gate}"
             self._touch()
 

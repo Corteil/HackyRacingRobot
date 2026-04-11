@@ -367,13 +367,17 @@ class TelemetryBridgeV2:
                     ))
                     nav_st = nav_state_map.get(state.nav_state, NAV_IDLE)
                     self._send(encode_nav(
-                        nav_state   = nav_st,
-                        gate        = state.nav_gate or 0,
-                        wp          = state.nav_wp   or 0,
-                        dist        = state.nav_wp_dist,
-                        bearing     = state.nav_wp_bear,
-                        bearing_err = state.nav_bearing_err,
-                        tags        = state.nav_tags_visible or 0,
+                        nav_state        = nav_st,
+                        gate             = state.nav_gate or 0,
+                        wp               = state.nav_wp   or 0,
+                        dist             = state.nav_wp_dist,
+                        bearing          = state.nav_wp_bear,
+                        bearing_err      = state.nav_bearing_err,
+                        tags             = state.nav_tags_visible or 0,
+                        outside_tag      = state.nav_outside_tag      or 0,
+                        inside_tag       = state.nav_inside_tag       or 0,
+                        next_outside_tag = state.nav_next_outside_tag or 0,
+                        next_inside_tag  = state.nav_next_inside_tag  or 0,
                     ))
 
                 # ── 1 Hz: SYS ────────────────────────────────────────────
