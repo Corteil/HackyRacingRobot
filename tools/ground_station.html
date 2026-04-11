@@ -213,6 +213,8 @@ button:active{background:#2a2a42}
   <div id="sb-info">
     <span class="sb-badge" id="sb-volt">--V</span>
     <span class="sb-badge" id="sb-rc">RC --</span>
+    <span class="sb-badge" id="sb-imu" style="color:var(--gray)">IMU --</span>
+    <span class="sb-badge" id="sb-lidar" style="color:var(--gray)">LDR --</span>
     <span class="sb-badge" id="sb-rec" style="display:none;color:var(--red);animation:blink 1s step-end infinite">⏺ REC</span>
     <span class="sb-badge" id="sb-dlog" style="display:none;color:var(--purple)">⬤ DLOG</span>
     <span class="sb-badge" id="sb-sik" style="color:var(--gray)">📡 --</span>
@@ -1654,6 +1656,19 @@ function updateStatusBar(s) {
 
   const re=el('sb-rc'); re.textContent=s.rc_active?'RC OK':'RC --';
   re.style.color=s.rc_active?C.green:C.gray;
+
+  const imuEl=el('sb-imu');
+  if(imuEl){
+    const hdg=s.telemetry&&s.telemetry.heading;
+    imuEl.textContent=hdg!=null?hdg.toFixed(1)+'°':'IMU --';
+    imuEl.style.color=hdg!=null?C.cyan:C.gray;
+  }
+
+  const ldrEl=el('sb-lidar');
+  if(ldrEl){
+    ldrEl.textContent=s.lidar_ok?'LDR OK':'LDR --';
+    ldrEl.style.color=s.lidar_ok?C.green:C.gray;
+  }
 
   el('sb-rec').style.display  = s.cam_recording  ? 'inline' : 'none';
   el('sb-dlog').style.display = s.data_logging   ? 'inline' : 'none';
