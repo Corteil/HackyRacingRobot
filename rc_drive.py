@@ -28,6 +28,7 @@ import threading
 import argparse
 
 from drivers.ibus import IBusReader, IBusError
+from robot.rc_channels import CH_SPEED
 
 # ---------------------------------------------------------------------------
 # Yukon serial protocol constants (mirrors test_main.py)
@@ -48,7 +49,7 @@ CMD_KILL  = 4
 DEADZONE         = 30    # µs either side of CH_MID treated as zero
 FAILSAFE_TIMEOUT = 0.5   # seconds without a valid packet → kill motors
 RAMP_RATE        = 1.0   # max speed change per second (full range in 0.5 s); 0 = instant
-SPEED_CH         = 5     # CH6 — SwB speed limit: 1000=slow, 1500=mid, 2000=max
+SPEED_CH         = CH_SPEED  # CH6 — SB speed limit: 1000=slow, 1500=mid, 2000=max
 SPEED_MIN        = 0.25  # scale factor at CH6=1000
 
 # ---------------------------------------------------------------------------
@@ -256,9 +257,9 @@ def main():
     parser.add_argument("--ibus-port",     default="/dev/ttyAMA3",
                         help="iBUS UART device (default: /dev/ttyAMA3)")
     parser.add_argument("--throttle-ch",   type=int, default=3, metavar="N",
-                        help="Throttle channel, 1-based (default: 3)")
+                        help="Left Y channel, 1-based (default: 3)")
     parser.add_argument("--steer-ch",      type=int, default=1, metavar="N",
-                        help="Steering/aileron channel, 1-based (default: 1)")
+                        help="Steering/Right X channel, 1-based (default: 1)")
     parser.add_argument("--reverse-left",  action="store_true",
                         help="Reverse left motor direction")
     parser.add_argument("--reverse-right", action="store_true",

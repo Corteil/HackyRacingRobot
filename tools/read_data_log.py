@@ -458,10 +458,10 @@ function buildCharts(recs) {
     { label:'Right', data: ds.map(r => r.drive?.right ?? 0), borderColor:'#ff6b6b', fill:false },
   ], lbl, { y: { min: -1, max: 1 } });
 
-  // RC channels (CH1 steer idx 0, CH3 throttle idx 2)
+  // RC channels (CH1 Right X idx 0, CH3 Left Y idx 2)
   _mkChart('chart-rc', [
-    { label:'Steer (CH1)',    data: ds.map(r => (r.rc_channels?.[0] ?? 1500)), borderColor:'#4a9eff', fill:false },
-    { label:'Throttle (CH3)', data: ds.map(r => (r.rc_channels?.[2] ?? 1500)), borderColor:'#ff6b6b', fill:false },
+    { label:'Steer/Right X (CH1)', data: ds.map(r => (r.rc_channels?.[0] ?? 1500)), borderColor:'#4a9eff', fill:false },
+    { label:'Left Y (CH3)',        data: ds.map(r => (r.rc_channels?.[2] ?? 1500)), borderColor:'#ff6b6b', fill:false },
   ], lbl, { y: { min: 900, max: 2100 } });
 
   // Voltage

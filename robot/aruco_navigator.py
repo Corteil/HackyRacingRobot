@@ -71,15 +71,94 @@ approaching from behind.
 
 import logging
 import math
+import os
 import time
 from configparser import ConfigParser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+try:
+    import tomllib          # stdlib Python 3.11+
+except ImportError:
+    try:
+        import tomli as tomllib   # pip install tomli
+    except ImportError:
+        tomllib = None            # load_track() will raise if called
 
 from robot.aruco_detector import ArUcoState
 
 log = logging.getLogger(__name__)
+
+
+# ── Track definition (loaded from track.toml) ─────────────────────────────────
+
+@dataclass
+class TrackGate:
+    """One gate definition loaded from track.toml."""
+    id:            int
+    label:         str
+    outside_front: int    # ArUco tag ID on outside post, front face (0–99)
+    outside_rear:  int    # ArUco tag ID on outside post, rear face  (100–199)
+    inside_front:  int    # ArUco tag ID on inside post,  front face (0–99)
+    inside_rear:   int    # ArUco tag ID on inside post,  rear face  (100–199)
+    width_m:       float  # physical gate width in metres
+    heading_hint:  float  # compass heading to face this gate; −1 = no hint
+
+
+@dataclass
+class Track:
+    """Parsed track.toml course definition."""
+    name:     str
+    loop:     bool
+    sequence: List[int]           # ordered gate IDs to navigate
+    gates:    Dict[int, TrackGate] = field(default_factory=dict)
+
+
+def load_track(path: str) -> Track:
+    """
+    Parse a track.toml file and return a :class:`Track`.
+
+    Raises ``RuntimeError`` if tomllib/tomli is not available.
+    Raises ``ValueError`` if the file contains no [[gate]] blocks.
+    Raises ``OSError`` / ``tomllib.TOMLDecodeError`` on file/parse errors.
+    """
+    if tomllib is None:
+        raise RuntimeError(
+            "tomllib not available — install tomli (pip install tomli) "
+            "or upgrade to Python 3.11+"
+        )
+    with open(path, "rb") as fh:
+        data = tomllib.load(fh)
+
+    course = data.get("course", {})
+    seq_raw = (course.get("sequence") or {}).get("gates") or []
+
+    gates: Dict[int, TrackGate] = {}
+    for g in data.get("gate", []):
+        gid = int(g["id"])
+        gates[gid] = TrackGate(
+            id            = gid,
+            label         = str(g.get("label", f"Gate {gid}")),
+            outside_front = int(g.get("outside_front", gid * 2)),
+            outside_rear  = int(g.get("outside_rear",  100 + gid * 2)),
+            inside_front  = int(g.get("inside_front",  gid * 2 + 1)),
+            inside_rear   = int(g.get("inside_rear",   100 + gid * 2 + 1)),
+            width_m       = float(g.get("width_m",     1.0)),
+            heading_hint  = float(g.get("heading_hint", -1.0)),
+        )
+
+    if not gates:
+        raise ValueError(f"No [[gate]] blocks found in {path!r}")
+
+    sequence = [int(x) for x in seq_raw] if seq_raw else sorted(gates.keys())
+
+    return Track(
+        name     = str(course.get("name", "Unnamed")),
+        loop     = bool(course.get("loop", False)),
+        sequence = sequence,
+        gates    = gates,
+    )
 
 
 # ── State machine ─────────────────────────────────────────────────────────────
@@ -99,6 +178,7 @@ class NavState(Enum):
 
 @dataclass
 class NavConfig:
+    track_file:            str   = ""   # path to track.toml; empty = use max_gates formula
     max_gates:             int   = 10
     tag_size:              float = 0.15
     pass_distance:         float = 0.6
@@ -181,8 +261,10 @@ class ArucoNavigator:
         robot.drive(left, right)
     """
 
-    def __init__(self, cfg: NavConfig = None):
+    def __init__(self, cfg: NavConfig = None, track: Optional[Track] = None):
         self.cfg          = cfg or NavConfig()
+        self._track:      Optional[Track] = track
+        self._seq_idx:    int             = 0   # index into track.sequence
         self._state       = NavState.IDLE
         self._gate_id     = 0
         self._pass_start  = 0.0
@@ -225,6 +307,7 @@ class ArucoNavigator:
         def _i(k, d): return int(sec.get(k, d))
 
         cfg = NavConfig(
+            track_file            = sec.get("track_file",        "").strip(),
             max_gates             = _i("max_gates",             NavConfig.max_gates),
             tag_size              = _f("tag_size",              NavConfig.tag_size),
             pass_distance         = _f("pass_distance",         NavConfig.pass_distance),
@@ -245,21 +328,43 @@ class ArucoNavigator:
             recover_reverse_time  = _f("recover_reverse_time", NavConfig.recover_reverse_time),
             recover_reverse_speed = _f("recover_reverse_speed",NavConfig.recover_reverse_speed),
         )
-        return cls(cfg)
+        track: Optional[Track] = None
+        if cfg.track_file:
+            # Resolve relative paths relative to the ini file's directory
+            track_path = cfg.track_file
+            if not os.path.isabs(track_path):
+                track_path = os.path.join(os.path.dirname(os.path.abspath(path)), track_path)
+            try:
+                track = load_track(track_path)
+                log.info("Loaded track %r from %r: %d gates, sequence=%s, loop=%s",
+                         track.name, track_path, len(track.gates),
+                         track.sequence, track.loop)
+            except Exception as exc:
+                log.warning("Could not load track file %r: %s", track_path, exc)
+        return cls(cfg, track=track)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
+    def set_track(self, track: Track) -> None:
+        """Replace the active track definition (call before start())."""
+        self._track = track
+        log.info("Track set: %r — %d gates, loop=%s",
+                 track.name, len(track.sequence), track.loop)
+
     def start(self):
-        """Begin navigation from gate 0."""
-        self._gate_id        = 0
+        """Begin navigation from the first gate in the sequence."""
+        self._seq_idx        = 0
+        self._gate_id        = self._seq_gate_id()
         self._cur_left       = 0.0
         self._cur_right      = 0.0
         self._imu_target     = None
         self._pass_heading   = None
         self._last_update    = time.monotonic()
         self._reset_search()
+        self._apply_heading_hint()
         self._set_state(NavState.SEARCHING)
-        log.info("Navigator started — target gate 0")
+        log.info("Navigator started — target gate %d (%s)",
+                 self._gate_id, self._gate_label())
 
     def stop(self):
         """Halt and return to IDLE (does NOT clear bearing — caller must if needed)."""
@@ -277,6 +382,129 @@ class ArucoNavigator:
     @property
     def gate_id(self) -> int:
         return self._gate_id
+
+    @property
+    def gate_label(self) -> str:
+        """Human-readable label for the current target gate."""
+        return self._gate_label()
+
+    @property
+    def outside_tag_id(self) -> int:
+        """Front-face ArUco tag ID for the outside post of the current target gate."""
+        tg = self._current_track_gate()
+        return tg.outside_front if tg else self._gate_id * 2
+
+    @property
+    def inside_tag_id(self) -> int:
+        """Front-face ArUco tag ID for the inside post of the current target gate."""
+        tg = self._current_track_gate()
+        return tg.inside_front if tg else self._gate_id * 2 + 1
+
+    @property
+    def next_gate_id(self) -> int:
+        """Gate ID of the next gate in sequence after the current one."""
+        if self._track and self._track.sequence:
+            next_idx = self._seq_idx + 1
+            if next_idx < len(self._track.sequence):
+                return self._track.sequence[next_idx]
+        return self._gate_id + 1
+
+    @property
+    def next_outside_tag_id(self) -> int:
+        """Front-face tag ID for the outside post of the next gate."""
+        nid = self.next_gate_id
+        if self._track:
+            tg = self._track.gates.get(nid)
+            if tg:
+                return tg.outside_front
+        return nid * 2
+
+    @property
+    def next_inside_tag_id(self) -> int:
+        """Front-face tag ID for the inside post of the next gate."""
+        nid = self.next_gate_id
+        if self._track:
+            tg = self._track.gates.get(nid)
+            if tg:
+                return tg.inside_front
+        return nid * 2 + 1
+
+    @property
+    def next_gate_label(self) -> str:
+        """Human-readable label for the next gate."""
+        nid = self.next_gate_id
+        if self._track:
+            tg = self._track.gates.get(nid)
+            if tg:
+                return tg.label
+        return f"Gate {nid}"
+
+    # ── track helpers ─────────────────────────────────────────────────────────
+
+    def _seq_gate_id(self) -> int:
+        """Gate ID at the current sequence position (fallback: _gate_id)."""
+        if self._track and self._track.sequence:
+            return self._track.sequence[self._seq_idx % len(self._track.sequence)]
+        return self._gate_id
+
+    def _current_track_gate(self) -> Optional[TrackGate]:
+        """TrackGate for the current target, or None if no track loaded."""
+        if self._track:
+            return self._track.gates.get(self._gate_id)
+        return None
+
+    def _gate_label(self) -> str:
+        tg = self._current_track_gate()
+        return tg.label if tg else f"Gate {self._gate_id}"
+
+    def _apply_heading_hint(self) -> None:
+        """Seed _imu_target from the current gate's heading_hint, if set."""
+        tg = self._current_track_gate()
+        if tg and tg.heading_hint >= 0.0:
+            self._imu_target = tg.heading_hint
+            log.info("Gate %d heading hint: %.1f°", self._gate_id, tg.heading_hint)
+
+    def _find_gate_in_state(self, state: ArUcoState,
+                            tg: TrackGate) -> Optional[object]:
+        """Build an ArUcoGate from the track gate's tag IDs using state.tags directly.
+
+        This bypasses the detector's even/odd pairing convention entirely, so
+        any combination of tag IDs works — both even, both odd, arbitrary values.
+        Accepts front or rear face tags for each post so the gate can be found
+        whether the robot approaches from the front or the rear.
+
+        Returns an ArUcoGate if BOTH posts are visible, otherwise None.
+        """
+        from robot.aruco_detector import ArUcoGate
+
+        outside = (state.tags.get(tg.outside_front) or
+                   state.tags.get(tg.outside_rear))
+        inside  = (state.tags.get(tg.inside_front)  or
+                   state.tags.get(tg.inside_rear))
+
+        if outside is None or inside is None:
+            return None
+
+        gcx = (outside.center_x + inside.center_x) // 2
+        gcy = (outside.center_y + inside.center_y) // 2
+
+        both_front = outside.id < 100 and inside.id < 100
+        both_rear  = outside.id >= 100 and inside.id >= 100
+        correct_dir = both_front if (both_front or both_rear) else outside.id < 100
+
+        dists = [t.distance for t in (outside, inside) if t.distance is not None]
+        bears = [t.bearing  for t in (outside, inside) if t.bearing  is not None]
+
+        return ArUcoGate(
+            gate_id     = tg.id,
+            outside_tag = outside.id,
+            inside_tag  = inside.id,
+            centre_x    = gcx,
+            centre_y    = gcy,
+            correct_dir = correct_dir,
+            distance    = sum(dists) / len(dists) if dists else None,
+            bearing     = sum(bears) / len(bears) if bears else None,
+        )
 
     # ── main update ──────────────────────────────────────────────────────────
 
@@ -481,15 +709,39 @@ class ArucoNavigator:
     # ── Gate advancement ──────────────────────────────────────────────────────
 
     def _advance_gate(self):
-        next_gate = self._gate_id + 1
-        if next_gate >= self.cfg.max_gates:
-            log.info("All %d gates complete!", self.cfg.max_gates)
-            self._set_state(NavState.COMPLETE)
+        if self._track and self._track.sequence:
+            next_idx = self._seq_idx + 1
+            if next_idx >= len(self._track.sequence):
+                if self._track.loop:
+                    log.info("Gate %d passed — looping back to gate %d",
+                             self._gate_id, self._track.sequence[0])
+                    self._seq_idx = 0
+                    self._gate_id = self._seq_gate_id()
+                    self._reset_search()
+                    self._apply_heading_hint()
+                    self._set_state(NavState.SEARCHING)
+                else:
+                    log.info("All %d gates complete!", len(self._track.sequence))
+                    self._set_state(NavState.COMPLETE)
+            else:
+                self._seq_idx = next_idx
+                self._gate_id = self._seq_gate_id()
+                log.info("Gate passed — seeking %s (gate %d)",
+                         self._gate_label(), self._gate_id)
+                self._reset_search()
+                self._apply_heading_hint()
+                self._set_state(NavState.SEARCHING)
         else:
-            log.info("Gate %d passed — seeking gate %d", self._gate_id, next_gate)
-            self._gate_id = next_gate
-            self._reset_search()
-            self._set_state(NavState.SEARCHING)
+            # No track — original formula behaviour
+            next_gate = self._gate_id + 1
+            if next_gate >= self.cfg.max_gates:
+                log.info("All %d gates complete!", self.cfg.max_gates)
+                self._set_state(NavState.COMPLETE)
+            else:
+                log.info("Gate %d passed — seeking gate %d", self._gate_id, next_gate)
+                self._gate_id = next_gate
+                self._reset_search()
+                self._set_state(NavState.SEARCHING)
 
     # ── Target resolution ─────────────────────────────────────────────────────
 
@@ -503,23 +755,29 @@ class ArucoNavigator:
 
         Returns (target_x_pixels, distance_m, camera_bearing_degrees).
 
-        Gate N uses outside post (front tag 2N, even) and inside post (front tag 2N+1, odd).
-        Front face tags are 0–99; rear face tags are 100–199.
-        Rear tags indicate the gate has already been passed and are ignored here —
-        the detector still reports them so the dashboard can show them as passed.
+        When a track is loaded, tag IDs and outside/inside roles come from the
+        TrackGate definition.  Without a track the original even/odd formula is
+        used (gate N → outside front tag 2N, inside front tag 2N+1).
 
-        Priority: full gate → outside-only → inside-only → None.
-        Single-tag aim (front tags only):
-          outside (even ID) → aim RIGHT of tag (gate opening is to the right)
-          inside  (odd  ID) → aim LEFT  of tag (gate opening is to the left)
+        Priority: full gate pair → outside-only → inside-only → None.
+        Single-tag aim:
+          outside post → aim RIGHT of tag (gate opening is to the right)
+          inside  post → aim LEFT  of tag (gate opening is to the left)
         """
-        gate_id      = self._gate_id
-        base_outside = gate_id * 2        # even base → outside post
-        base_inside  = gate_id * 2 + 1   # odd  base → inside  post
+        gate_id = self._gate_id
+        tg      = self._current_track_gate()
 
-        gate = state.gates.get(gate_id)
+        # ── Resolve tag IDs for this gate ─────────────────────────────────────
+        if tg:
+            front_outside = tg.outside_front
+            front_inside  = tg.inside_front
+        else:
+            front_outside = gate_id * 2
+            front_inside  = gate_id * 2 + 1
 
-        # Full gate visible
+        # ── Full gate (both posts) ────────────────────────────────────────────
+        gate = (self._find_gate_in_state(state, tg)
+                if tg else state.gates.get(gate_id))
         if gate is not None:
             if not gate.correct_dir:
                 log.warning("Gate %d: correct_dir=False (approaching from rear)", gate_id)
@@ -527,18 +785,23 @@ class ArucoNavigator:
                       else _pixel_bearing(gate.centre_x, frame_cx)
             return gate.centre_x, gate.distance, bearing
 
-        # Single-tag fallback — front face only (0–99).
-        # Rear tags (100–199) mean the gate has already been passed; ignore them.
-        outside = state.tags.get(base_outside)
-        inside  = state.tags.get(base_inside)
-        tag = outside if outside is not None else inside
-        if tag is None:
+        # ── Single-tag fallback ───────────────────────────────────────────────
+        # Accept both front and rear variants of each post (base_id = tag_id % 100)
+        # so the robot can re-acquire after passing through from either side.
+        outside_tag = (state.tags.get(front_outside)
+                       or (state.tags.get(tg.outside_rear) if tg else None))
+        inside_tag  = (state.tags.get(front_inside)
+                       or (state.tags.get(tg.inside_rear)  if tg else None))
+
+        if outside_tag is not None:
+            tag, is_inside = outside_tag, False
+        elif inside_tag is not None:
+            tag, is_inside = inside_tag, True
+        else:
             return None, None, None
 
-        is_inside = tag.id % 2 == 1   # odd front ID = inside post
-        offset    = self._single_tag_offset(tag)
-        # Inside post: gate opening is to the LEFT  → subtract offset
-        # Outside post: gate opening is to the RIGHT → add offset
+        offset = self._single_tag_offset(tag)
+        # Outside post → aim RIGHT (+offset); inside post → aim LEFT (−offset)
         tx = tag.center_x + (-offset if is_inside else offset)
 
         if tag.bearing is not None:
@@ -584,6 +847,7 @@ class ArucoNavigator:
 # ── robot.ini [navigator] reference ──────────────────────────────────────────
 #
 # [navigator]
+# track_file            =            # path to track.toml; empty = use max_gates formula
 # max_gates             = 10
 # tag_size              = 0.15
 # pass_distance         = 0.6

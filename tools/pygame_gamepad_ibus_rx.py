@@ -6,26 +6,28 @@ Uses a pygame joystick/gamepad to drive iBUS packets on a PTY, replacing the
 keyboard-based ibus_sim.py for use with a physical gamepad or RC-style joystick.
 
 Channel layout matches robot.ini defaults:
-  CH1   Aileron      right stick ← →
-  CH2   Elevator     right stick ↑ ↓
-  CH3   Throttle     left  stick ↑ ↓
-  CH4   Rudder       left  stick ← →
-  CH5   SwA  mode    button toggle  (MANUAL / AUTO)
-  CH6   SwB  speed   button cycle   (slow / mid / max)
-  CH7   SwC  type    button cycle   (Camera / GPS / Cam+GPS)
-  CH8   SwD  GPS log button toggle  (off / on)
-  CH10  Bookmark     momentary button (auto-returns after 300 ms)
+  CH1   Right X      right stick ← →
+  CH2   Right Y      right stick ↑ ↓
+  CH3   Left Y       left  stick ↑ ↓
+  CH4   Left X       left  stick ← →
+  CH5   SF   mode    button toggle  (MANUAL / AUTO)
+  CH6   SE   speed   button cycle   (slow / mid / max)
+  CH7   SA   type    button cycle   (Camera / GPS / Cam+GPS)
+  CH8   SB   GPS log button toggle  (off / on)
+  CH10  SD   pause   button toggle  (running / paused)
+  CH12  SH   Bookmark momentary button (auto-returns after 300 ms)
 
 Default button layout (Xbox-style / generic USB gamepad):
-  Axis 0   Left  stick H  → CH4 Rudder
-  Axis 1   Left  stick V  → CH3 Throttle  (inverted: up = 2000)
-  Axis 2   Right stick H  → CH1 Aileron   (generic; Xbox users: --axis-aileron=3)
-  Axis 3   Right stick V  → CH2 Elevator  (generic; Xbox users: --axis-elevator=4)
-  Btn  0   (A / Cross)    → CH5 mode toggle
-  Btn  1   (B / Circle)   → CH6 speed cycle
-  Btn  2   (X / Square)   → CH7 type cycle
-  Btn  3   (Y / Triangle) → CH8 GPS log toggle
-  Btn  4   (LB / L1)      → CH10 bookmark (momentary)
+  Axis 0   Left  stick H  → CH4 Left X
+  Axis 1   Left  stick V  → CH3 Left Y   (inverted: up = 2000)
+  Axis 2   Right stick H  → CH1 Right X  (generic; Xbox users: --axis-aileron=3)
+  Axis 3   Right stick V  → CH2 Right Y  (generic; Xbox users: --axis-elevator=4)
+  Btn  0   (A / Cross)    → CH5 SF mode toggle
+  Btn  1   (B / Circle)   → CH6 SE speed cycle
+  Btn  2   (X / Square)   → CH7 SA type cycle
+  Btn  3   (Y / Triangle) → CH8 SB GPS log toggle
+  Btn  4   (LB / L1)      → CH12 SH bookmark (momentary)
+  Btn  5   (RB / R1)      → CH10 SD pause toggle
   Btn  6   (Back/Select)  → Centre sticks + throttle to 1000
   Btn  7   (Start)        → Toggle RC signal loss
 
@@ -41,21 +43,23 @@ Options:
   --joystick N        Joystick index to use (default: 0)
   --hz HZ             iBUS packet rate in Hz (default: 143 ≈ 7 ms/packet)
   --deadzone D        Axis deadzone 0.0–1.0 (default: 0.05)
-  --axis-rudder N     Axis index for CH4 Rudder          (default: 0)
-  --axis-throttle N   Axis index for CH3 Throttle        (default: 1)
-  --axis-aileron N    Axis index for CH1 Aileron         (default: 2)
-  --axis-elevator N   Axis index for CH2 Elevator        (default: 3)
+  --axis-rudder N     Axis index for CH4 Left X          (default: 0)
+  --axis-throttle N   Axis index for CH3 Left Y          (default: 1)
+  --axis-aileron N    Axis index for CH1 Right X         (default: 2)
+  --axis-elevator N   Axis index for CH2 Right Y         (default: 3)
   --btn-mode N        Button for CH5 mode toggle         (default: 0)
   --btn-speed N       Button for CH6 speed cycle         (default: 1)
   --btn-type N        Button for CH7 type cycle          (default: 2)
   --btn-gpslog N      Button for CH8 GPS log toggle      (default: 3)
-  --btn-bookmark N    Button for CH10 bookmark           (default: 4)
+  --btn-bookmark N    Button for CH12 SH bookmark        (default: 4)
+  --btn-pause N       Button for CH10 SD pause toggle    (default: 5)
   --btn-centre N      Button to centre sticks            (default: 6)
   --btn-signal N      Button to toggle signal loss       (default: 7)
 """
 
 import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pty
 import tty
 import struct
@@ -65,6 +69,12 @@ import argparse
 
 import pygame
 
+from robot.rc_channels import (
+    CH_STEER, CH_RIGHT_Y, CH_THROTTLE, CH_LEFT_X,
+    CH_MODE, CH_SPEED, CH_AUTO_TYPE, CH_GPS_LOG, CH_PAUSE, CH_BOOKMARK,
+    MODE_NAMES, SPEED_NAMES, AUTO_TYPE_NAMES, GPS_LOG_NAMES, PAUSE_NAMES,
+)
+
 # ── iBUS protocol constants ───────────────────────────────────────────────────
 
 PACKET_LEN   = 32
@@ -73,26 +83,6 @@ CH_MIN       = 1000
 CH_MAX       = 2000
 CH_MID       = 1500
 PACKET_HZ    = 143        # ~7 ms per packet — same as a real FlySky receiver
-
-# ── Channel indices (0-based) ─────────────────────────────────────────────────
-
-CH_AILERON   = 0    # CH1   right stick horizontal
-CH_ELEVATOR  = 1    # CH2   right stick vertical
-CH_THROTTLE  = 2    # CH3   left  stick vertical
-CH_RUDDER    = 3    # CH4   left  stick horizontal
-CH_MODE      = 4    # CH5   SwA 2-pos
-CH_SPEED     = 5    # CH6   SwB 3-pos
-CH_AUTO_TYPE = 6    # CH7   SwC 3-pos
-CH_GPS_LOG   = 7    # CH8   SwD 2-pos
-                    # CH9   unused (index 8)
-CH_BOOKMARK  = 9    # CH10  momentary
-
-# ── Named switch positions ────────────────────────────────────────────────────
-
-SWA_NAMES = {1000: 'MANUAL', 2000: 'AUTO'}
-SWB_NAMES = {1000: 'slow 25%', 1500: 'mid', 2000: 'max'}
-SWC_NAMES = {1000: 'Camera', 1500: 'GPS', 2000: 'Cam+GPS'}
-SWD_NAMES = {1000: 'off', 2000: 'on'}
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -107,14 +97,15 @@ _state = {
 
 # Safe power-on defaults
 _state['channels'][CH_THROTTLE]  = CH_MIN    # throttle at bottom for safety
-_state['channels'][CH_AILERON]   = CH_MID
-_state['channels'][CH_ELEVATOR]  = CH_MID
-_state['channels'][CH_RUDDER]    = CH_MID
-_state['channels'][CH_MODE]      = 1000      # SwA: MANUAL
-_state['channels'][CH_SPEED]     = 1500      # SwB: mid
-_state['channels'][CH_AUTO_TYPE] = 1000      # SwC: Camera
-_state['channels'][CH_GPS_LOG]   = 1000      # SwD: GPS log off
-_state['channels'][CH_BOOKMARK]  = 1000      # CH10: low
+_state['channels'][CH_STEER]   = CH_MID
+_state['channels'][CH_RIGHT_Y]  = CH_MID
+_state['channels'][CH_LEFT_X]    = CH_MID
+_state['channels'][CH_MODE]      = 1000      # SF: MANUAL
+_state['channels'][CH_SPEED]     = 1500      # SE: mid
+_state['channels'][CH_AUTO_TYPE] = 1000      # SA: Camera
+_state['channels'][CH_GPS_LOG]   = 1000      # SB: GPS log off
+_state['channels'][CH_PAUSE]     = 1000      # SD: motors running
+_state['channels'][CH_BOOKMARK]  = 1000      # SH: low
 
 # ── iBUS packet builder ───────────────────────────────────────────────────────
 
@@ -263,13 +254,13 @@ def main():
                         help='Axis deadzone 0.0–1.0 (default: 0.05)')
     # Axis assignments
     parser.add_argument('--axis-rudder',   type=int, default=0,
-                        help='Axis → CH4 Rudder          (default: 0, left H)')
+                        help='Axis → CH4 Left X          (default: 0, left H)')
     parser.add_argument('--axis-throttle', type=int, default=1,
-                        help='Axis → CH3 Throttle        (default: 1, left V)')
+                        help='Axis → CH3 Left Y          (default: 1, left V)')
     parser.add_argument('--axis-aileron',  type=int, default=2,
-                        help='Axis → CH1 Aileron         (default: 2, right H; Xbox: 3)')
+                        help='Axis → CH1 Right X         (default: 2, right H; Xbox: 3)')
     parser.add_argument('--axis-elevator', type=int, default=3,
-                        help='Axis → CH2 Elevator        (default: 3, right V; Xbox: 4)')
+                        help='Axis → CH2 Right Y         (default: 3, right V; Xbox: 4)')
     # Button assignments
     parser.add_argument('--btn-mode',      type=int, default=0,
                         help='Button → CH5 mode toggle   (default: 0, A/Cross)')
@@ -280,7 +271,9 @@ def main():
     parser.add_argument('--btn-gpslog',    type=int, default=3,
                         help='Button → CH8 GPS log       (default: 3, Y/Triangle)')
     parser.add_argument('--btn-bookmark',  type=int, default=4,
-                        help='Button → CH10 bookmark     (default: 4, LB/L1)')
+                        help='Button → CH12 SH bookmark  (default: 4, LB/L1)')
+    parser.add_argument('--btn-pause',     type=int, default=5,
+                        help='Button → CH10 SD pause     (default: 5, RB/R1)')
     parser.add_argument('--btn-centre',    type=int, default=6,
                         help='Button → centre sticks     (default: 6, Back/Select)')
     parser.add_argument('--btn-signal',    type=int, default=7,
@@ -377,13 +370,13 @@ def main():
                 with _lock:
                     chs = _state['channels']
                     # Sticks: vertical axes inverted (axis up = −1.0 → 2000)
-                    chs[CH_RUDDER]   = _axis_to_ch(
+                    chs[CH_LEFT_X]   = _axis_to_ch(
                         _safe_axis(args.axis_rudder),   invert=False, deadzone=args.deadzone)
                     chs[CH_THROTTLE] = _axis_to_ch(
                         _safe_axis(args.axis_throttle), invert=True,  deadzone=args.deadzone)
-                    chs[CH_AILERON]  = _axis_to_ch(
+                    chs[CH_STEER]  = _axis_to_ch(
                         _safe_axis(args.axis_aileron),  invert=False, deadzone=args.deadzone)
-                    chs[CH_ELEVATOR] = _axis_to_ch(
+                    chs[CH_RIGHT_Y] = _axis_to_ch(
                         _safe_axis(args.axis_elevator), invert=True,  deadzone=args.deadzone)
 
                 # ── Button edge detection → switches ──────────────────────────
@@ -393,6 +386,7 @@ def main():
                     'type'    : _btn_pressed(args.btn_type),
                     'gpslog'  : _btn_pressed(args.btn_gpslog),
                     'bookmark': _btn_pressed(args.btn_bookmark),
+                    'pause'   : _btn_pressed(args.btn_pause),
                     'centre'  : _btn_pressed(args.btn_centre),
                     'signal'  : _btn_pressed(args.btn_signal),
                 }
@@ -406,13 +400,15 @@ def main():
                         chs[CH_AUTO_TYPE] = _cycle3(chs[CH_AUTO_TYPE])
                     if pressed['gpslog']:
                         chs[CH_GPS_LOG]   = 2000 if chs[CH_GPS_LOG] == 1000 else 1000
+                    if pressed['pause']:
+                        chs[CH_PAUSE]     = 2000 if chs[CH_PAUSE]   == 1000 else 1000
                     if pressed['bookmark']:
                         chs[CH_BOOKMARK]  = CH_MAX
                         _state['bookmark_until'] = time.monotonic() + 0.30
                     if pressed['centre']:
-                        chs[CH_AILERON]   = CH_MID
-                        chs[CH_ELEVATOR]  = CH_MID
-                        chs[CH_RUDDER]    = CH_MID
+                        chs[CH_STEER]   = CH_MID
+                        chs[CH_RIGHT_Y]  = CH_MID
+                        chs[CH_LEFT_X]    = CH_MID
                         chs[CH_THROTTLE]  = CH_MIN   # throttle to safe bottom
                     if pressed['signal']:
                         _state['rc_valid'] = not _state['rc_valid']
@@ -456,10 +452,10 @@ def main():
             y = _section(screen, font_sm, 10, y,
                          '─── Channels ─────────────────────────────────────────────')
             bars = [
-                ('CH1  Aileron',  ch[CH_AILERON],   BLUE),
-                ('CH2  Elevator', ch[CH_ELEVATOR],  BLUE),
-                ('CH3  Throttle', ch[CH_THROTTLE],  GREEN),
-                ('CH4  Rudder',   ch[CH_RUDDER],    GREEN),
+                ('CH1  Right X',  ch[CH_STEER],   BLUE),
+                ('CH2  Right Y',  ch[CH_RIGHT_Y],  BLUE),
+                ('CH3  Left Y',   ch[CH_THROTTLE],  GREEN),
+                ('CH4  Left X',   ch[CH_LEFT_X],    GREEN),
             ]
             for lbl, val, color in bars:
                 _draw_channel_bar(screen, font_sm, 10, y, lbl, val, color)
@@ -469,18 +465,20 @@ def main():
             # ── Switches ──────────────────────────────────────────────────────
             y = _section(screen, font_sm, 10, y,
                          '─── Switches ─────────────────────────────────────────────')
-            swa = ch[CH_MODE]
-            swb = ch[CH_SPEED]
-            swc = ch[CH_AUTO_TYPE]
-            swd = ch[CH_GPS_LOG]
+            swf = ch[CH_MODE]
+            swe = ch[CH_SPEED]
+            swa = ch[CH_AUTO_TYPE]
+            swb = ch[CH_GPS_LOG]
+            swd = ch[CH_PAUSE]
             bkm = ch[CH_BOOKMARK]
 
             switch_rows = [
-                (f'CH5  SwA Mode   : {SWA_NAMES.get(swa, str(swa)):<12s}',  swa == 2000),
-                (f'CH6  SwB Speed  : {SWB_NAMES.get(swb, str(swb)):<12s}',  swb != 1000),
-                (f'CH7  SwC Type   : {SWC_NAMES.get(swc, str(swc)):<12s}',  swc != 1000),
-                (f'CH8  SwD GPSLog : {SWD_NAMES.get(swd, str(swd)):<12s}',  swd == 2000),
-                (f'CH10 Bookmark   : {"TRIGGERED" if bkm >= CH_MID else "ready":<12s}',
+                (f'CH5  SF  Mode   : {MODE_NAMES.get(swf, str(swf)):<12s}',      swf == 2000),
+                (f'CH6  SE  Speed  : {SPEED_NAMES.get(swe, str(swe)):<12s}',     swe != 1000),
+                (f'CH7  SA  Type   : {AUTO_TYPE_NAMES.get(swa, str(swa)):<12s}', swa != 1000),
+                (f'CH8  SB  GPSLog : {GPS_LOG_NAMES.get(swb, str(swb)):<12s}',   swb == 2000),
+                (f'CH10 SD  Pause  : {PAUSE_NAMES.get(swd, str(swd)):<12s}',     swd >= CH_MID),
+                (f'CH12 SH  Bookmark: {"TRIGGERED" if bkm >= CH_MID else "ready":<11s}',
                  bkm >= CH_MID),
             ]
             for text, active in switch_rows:
@@ -494,17 +492,18 @@ def main():
             y = _section(screen, font_sm, 10, y,
                          '─── Controls ─────────────────────────────────────────────')
             ctrl_lines = [
-                f'Left  stick H  axis {args.axis_rudder}   → Rudder',
-                f'Left  stick V  axis {args.axis_throttle}   → Throttle (up=2000)',
-                f'Right stick H  axis {args.axis_aileron}   → Aileron',
-                f'Right stick V  axis {args.axis_elevator}   → Elevator (up=2000)',
-                f'Btn {args.btn_mode} (A)       → Mode toggle      '
-                f'Btn {args.btn_speed} (B) → Speed cycle',
-                f'Btn {args.btn_type} (X)       → Type cycle       '
-                f'Btn {args.btn_gpslog} (Y) → GPS log toggle',
-                f'Btn {args.btn_bookmark} (LB)      → Bookmark         '
-                f'Btn {args.btn_centre} (Back) → Centre sticks',
-                f'Btn {args.btn_signal} (Start)   → Toggle signal loss',
+                f'Left  stick H  axis {args.axis_rudder}   → Left X',
+                f'Left  stick V  axis {args.axis_throttle}   → Left Y (up=2000)',
+                f'Right stick H  axis {args.axis_aileron}   → Right X',
+                f'Right stick V  axis {args.axis_elevator}   → Right Y (up=2000)',
+                f'Btn {args.btn_mode} (A)     → Mode toggle   '
+                f'Btn {args.btn_speed} (B)  → Speed cycle',
+                f'Btn {args.btn_type} (X)     → Type cycle    '
+                f'Btn {args.btn_gpslog} (Y)  → GPS log toggle',
+                f'Btn {args.btn_bookmark} (LB)    → Bookmark      '
+                f'Btn {args.btn_pause} (RB) → Pause toggle',
+                f'Btn {args.btn_centre} (Back) → Centre sticks  '
+                f'Btn {args.btn_signal} (Start) → Toggle signal',
                 'Close window  → Quit',
             ]
             for line in ctrl_lines:
@@ -514,10 +513,10 @@ def main():
 
             # ── Stick visualisers (right side) ────────────────────────────────
             _draw_stick(screen, 650, 200, 75,
-                        ch[CH_RUDDER], ch[CH_THROTTLE],
+                        ch[CH_LEFT_X], ch[CH_THROTTLE],
                         'Left Stick', font_sm)
             _draw_stick(screen, 790, 200, 75,
-                        ch[CH_AILERON], ch[CH_ELEVATOR],
+                        ch[CH_STEER], ch[CH_RIGHT_Y],
                         'Right Stick', font_sm)
 
             pygame.display.flip()

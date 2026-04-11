@@ -497,11 +497,12 @@ python3 tools/pygame_gamepad_ibus_rx.py --axis-aileron 3 --axis-elevator 4  # Xb
 | `--axis-throttle N` | `1` | Axis index for CH3 throttle (left stick V, inverted) |
 | `--axis-aileron N` | `2` | Axis index for CH1 aileron (right stick H) |
 | `--axis-elevator N` | `3` | Axis index for CH2 elevator (right stick V) |
-| `--btn-mode N` | `0` | Button for CH5 mode toggle |
-| `--btn-speed N` | `1` | Button for CH6 speed cycle |
-| `--btn-type N` | `2` | Button for CH7 type cycle |
-| `--btn-gpslog N` | `3` | Button for CH8 GPS log toggle |
-| `--btn-bookmark N` | `4` | Button for CH10 momentary bookmark |
+| `--btn-mode N` | `0` | Button for CH5 SF mode toggle (MANUAL/AUTO) |
+| `--btn-speed N` | `1` | Button for CH6 SE speed cycle (slow/mid/max) |
+| `--btn-type N` | `2` | Button for CH7 SA type cycle (Camera/GPS/Cam+GPS) |
+| `--btn-gpslog N` | `3` | Button for CH8 SB GPS log toggle |
+| `--btn-bookmark N` | `4` | Button for CH12 SH momentary bookmark |
+| `--btn-pause N` | `5` | Button for CH10 SD AUTO pause toggle |
 | `--btn-centre N` | `6` | Button to centre sticks and drop throttle |
 | `--btn-signal N` | `7` | Button to toggle RC signal loss |
 
@@ -527,14 +528,15 @@ python3 tools/ibus_sim.py --hz 143 --step 50
 
 | Key | Action |
 |-----|--------|
-| `W` / `S` | Throttle up / down (CH3) |
-| `A` / `D` | Rudder left / right (CH4) |
-| Arrow keys | Aileron / elevator (CH1 / CH2) |
-| `1` | Toggle SwA — MANUAL / AUTO (CH5) |
-| `2` | Cycle SwB — slow 25% / mid / max (CH6) |
-| `3` | Cycle SwC — Camera / GPS / Cam+GPS (CH7) |
-| `4` | Toggle SwD — GPS log off / on (CH8) |
-| `5` | Momentary bookmark pulse (CH10, 300 ms) |
+| `W` / `S` | Left Y up / down (CH3) |
+| `A` / `D` | Left X left / right (CH4) |
+| Arrow keys | Right X / Right Y (CH1 / CH2) |
+| `1` | Toggle SF — MANUAL / AUTO (CH5) |
+| `2` | Cycle SE — slow 25% / mid / max (CH6) |
+| `3` | Cycle SA — Camera / GPS / Cam+GPS (CH7) |
+| `4` | Toggle SB — GPS log off / on (CH8) |
+| `6` | Toggle SD — AUTO motors running / paused (CH10) |
+| `5` | Momentary bookmark pulse SH (CH12, 300 ms) |
 | `Space` | Centre sticks and drop throttle to 1000 |
 | `V` | Toggle RC signal loss (stops emitting packets) |
 | `Q` | Quit |

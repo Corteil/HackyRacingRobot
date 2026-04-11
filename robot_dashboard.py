@@ -89,15 +89,13 @@ _jpeg_encode = None
 
 # ── State serialiser ──────────────────────────────────────────────────────────
 
-def _nav_aim_bearing(aruco_state, gate_id: int, cap_w: int):
-    """Compute camera-relative aim bearing (°) for *gate_id* from *aruco_state*.
+def _nav_aim_bearing(aruco_state, outside_tag_id: int, inside_tag_id: int, cap_w: int):
+    """Compute camera-relative aim bearing (°) for the target gate from *aruco_state*.
 
-    Mirrors ArucoNavigator._resolve_target so the nav panel shows the correct
-    aim direction even when the navigator is not active (e.g. MANUAL mode).
+    Uses the actual tag IDs from the track (or formula fallback) rather than
+    the hardcoded even/odd convention, so non-standard tag assignments work.
 
-    Gate N: outside post = tag 2N (even), inside post = tag 2N+1 (odd).
-    Single-tag offset: inside → aim LEFT (subtract pixels), outside → aim RIGHT.
-    Returns None when no relevant front-face tag or gate is visible.
+    Returns None when no relevant tag or gate is visible.
     """
     if aruco_state is None:
         return None
@@ -106,22 +104,30 @@ def _nav_aim_bearing(aruco_state, gate_id: int, cap_w: int):
     def _pixel_bear(px: int) -> float:
         return ((px - frame_cx) / max(frame_cx, 1)) * 31.0  # ±31° for 62° HFOV
 
-    # Full gate visible — aim at gate centre
-    gate = aruco_state.gates.get(gate_id)
-    if gate is not None:
-        return gate.bearing if gate.bearing is not None else _pixel_bear(gate.centre_x)
+    # Full gate: both posts visible — aim at gate centre
+    # Accept front or rear face variants (base_id = tag_id % 100)
+    out_base = outside_tag_id % 100
+    ins_base = inside_tag_id  % 100
+    for gate in aruco_state.gates.values():
+        if (gate.outside_tag % 100 in (out_base, ins_base) or
+                gate.inside_tag % 100 in (out_base, ins_base)):
+            return gate.bearing if gate.bearing is not None else _pixel_bear(gate.centre_x)
 
-    # Single front-face tag (ID 0–99)
-    base_outside = gate_id * 2
-    base_inside  = gate_id * 2 + 1
-    tag = aruco_state.tags.get(base_outside) or aruco_state.tags.get(base_inside)
-    if tag is None or tag.id >= 100:
+    # Single tag — front face only (0–99; rear ≥100 means already passed)
+    tag_map = aruco_state.tags
+    outside = tag_map.get(outside_tag_id) or tag_map.get(outside_tag_id + 100)
+    inside  = tag_map.get(inside_tag_id)  or tag_map.get(inside_tag_id  + 100)
+    if outside is not None:
+        tag, is_inside = outside, False
+    elif inside is not None:
+        tag, is_inside = inside, True
+    else:
         return None
+    if tag.id >= 100:
+        return None  # rear face only — gate already passed
 
-    is_inside  = tag.id % 2 == 1
-    offset_px  = int(5000 / math.sqrt(tag.area)) if tag.area > 0 else 80
-    aim_x      = tag.center_x + (-offset_px if is_inside else offset_px)
-
+    offset_px = int(5000 / math.sqrt(tag.area)) if tag.area > 0 else 80
+    aim_x     = tag.center_x + (-offset_px if is_inside else offset_px)
     if tag.bearing is not None:
         lateral = (aim_x - tag.center_x) / max(frame_cx, 1)
         return tag.bearing + math.degrees(math.atan(lateral))
@@ -189,7 +195,8 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
         fl = aruco_states.get('front_left')
         if fl:
             fl_aruco, fl_cap_w, _ = fl
-            nav_target_bearing = _nav_aim_bearing(fl_aruco, state.nav_gate, fl_cap_w)
+            nav_target_bearing = _nav_aim_bearing(
+                fl_aruco, state.nav_outside_tag, state.nav_inside_tag, fl_cap_w)
 
     return {
         'mode':          state.mode.name,
@@ -213,6 +220,13 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
         'nav_target_bearing': nav_target_bearing,
         'nav_target_dist':    state.nav_target_dist,
         'nav_tags_visible':   state.nav_tags_visible,
+        'nav_outside_tag':    state.nav_outside_tag,
+        'nav_inside_tag':     state.nav_inside_tag,
+        'nav_gate_label':     state.nav_gate_label,
+        'nav_next_gate':          state.nav_next_gate,
+        'nav_next_outside_tag':   state.nav_next_outside_tag,
+        'nav_next_inside_tag':    state.nav_next_inside_tag,
+        'nav_next_gate_label':    state.nav_next_gate_label,
         'nav_wp':             state.nav_wp,
         'nav_wp_dist':        state.nav_wp_dist,
         'nav_wp_bear':        state.nav_wp_bear,
@@ -675,7 +689,7 @@ button:active{background:#2a2a42}
 // ── Palette ───────────────────────────────────────────────────────────────────
 const C = {
   green:'#3cdc50', yellow:'#f0c828', orange:'#f08c28',
-  red:'#dc3c3c',   cyan:'#3cc8dc',   gray:'#82829a',
+  red:'#dc3c3c',   cyan:'#3cc8dc',   gray:'#82829a',   teal:'#28a890',
   border:'#3c3c5a', bg:'#12121e', white:'#e6e6f0', purple:'#b450dc',
 };
 const MODE_COLORS = { MANUAL:C.yellow, AUTO:C.green, ESTOP:C.red };
@@ -880,6 +894,7 @@ function htmlNav(i) {
     <div class="nav-status">
       <span class="nav-state-badge" id="q${i}-nav-state-badge">IDLE</span>
       <span id="q${i}-nav-gate-lbl" style="color:var(--gray)">--</span>
+      <span id="q${i}-nav-next-lbl" style="color:var(--gray);font-size:10px;margin-left:6px"></span>
     </div>
     <div class="nav-rows">
       <div class="nav-row"><label>Bearing err</label>
@@ -1056,7 +1071,7 @@ function updateCameraPanel(i, camKey, s) {
     const camAruco = s.aruco && s.aruco[camKey] ? s.aruco[camKey] : null;
     const show = camEnabled && camAruco !== null;
     bCanvas.style.display = show ? 'block' : 'none';
-    if (show) drawBearingOverlay(bCanvas, camAruco, s.nav_gate, s.telemetry.heading, showBearing);
+    if (show) drawBearingOverlay(bCanvas, camAruco, s.nav_gate, s.telemetry.heading, showBearing, s.nav_outside_tag, s.nav_inside_tag);
   }
 }
 
@@ -1346,13 +1361,32 @@ function updateNavPanel(i, s) {
   const badge = el(`q${i}-nav-state-badge`);
   if (badge) { badge.textContent = s.nav_state || 'IDLE'; badge.style.background = nc + '33'; badge.style.color = nc; }
 
-  // Gate label
+  // Gate label (current target)
   const gateLbl = el(`q${i}-nav-gate-lbl`);
   if (gateLbl) {
     const autoGps = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
-    if (autoGps) gateLbl.textContent = `WP ${s.nav_wp}`;
-    else gateLbl.textContent = `Gate ${s.nav_gate}`;
-    gateLbl.style.color = C.gray;
+    if (autoGps) { gateLbl.textContent = `WP ${s.nav_wp}`; gateLbl.style.color = C.gray; }
+    else {
+      const glbl = s.nav_gate_label || `Gate ${s.nav_gate}`;
+      const postIds = (s.nav_outside_tag != null && s.nav_inside_tag != null)
+        ? ` [#${s.nav_outside_tag}/#${s.nav_inside_tag}]` : '';
+      gateLbl.textContent = glbl + postIds;
+      gateLbl.style.color = C.green;
+    }
+  }
+  // Next gate hint
+  const nextLbl = el(`q${i}-nav-next-lbl`);
+  if (nextLbl) {
+    const autoGps = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
+    if (!autoGps && s.nav_next_gate != null) {
+      const nlbl = s.nav_next_gate_label || `Gate ${s.nav_next_gate}`;
+      const npostIds = (s.nav_next_outside_tag != null && s.nav_next_inside_tag != null)
+        ? ` [#${s.nav_next_outside_tag}/#${s.nav_next_inside_tag}]` : '';
+      nextLbl.textContent = `→ ${nlbl}${npostIds}`;
+      nextLbl.style.color = C.teal;
+    } else {
+      nextLbl.textContent = '';
+    }
   }
 
   // Bearing error bar
@@ -1412,11 +1446,65 @@ function drawNavCanvas(canvas, s) {
 
   // Range rings — auto-scale to furthest visible gate
   const camAruco = s.aruco && s.aruco['front_left'] ? s.aruco['front_left'] : null;
-  const allGates = camAruco ? camAruco.gates : [];
+  const allGates = (() => {
+    const gates = camAruco ? [...camAruco.gates] : [];
+    // If the navigator found a gate via track.toml that the detector missed, inject it
+    let navAim = null;
+    if (s.nav_outside_tag != null && s.aruco) {
+      const gid = s.nav_gate || 0;
+      if (!gates.find(g => g.gate_id === gid)) {
+        for (const a of Object.values(s.aruco)) {
+          const outside = a.tags.find(t => t.id === s.nav_outside_tag || t.id === s.nav_outside_tag + 100);
+          const inside  = a.tags.find(t => t.id === s.nav_inside_tag  || t.id === s.nav_inside_tag  + 100);
+          if (!outside && !inside) continue;
+          const tags = [outside, inside].filter(Boolean);
+          const dists = tags.map(t => t.distance).filter(d => d != null);
+          const bears = tags.map(t => t.bearing).filter(b => b != null);
+          navAim = {
+            gate_id: gid,
+            outside_tag: outside ? outside.id : null,
+            inside_tag:  inside  ? inside.id  : null,
+            centre_x: tags.reduce((acc,t)=>acc+t.cx,0)/tags.length,
+            centre_y: tags.reduce((acc,t)=>acc+t.cy,0)/tags.length,
+            bearing:  bears.length ? bears.reduce((a,b)=>a+b,0)/bears.length : null,
+            distance: dists.length ? dists.reduce((a,b)=>a+b,0)/dists.length : null,
+          };
+          break;
+        }
+      }
+    }
+    if (navAim) gates.push(navAim);
+    // Also inject next gate if its tags are visible but not in detector gates
+    if (s.nav_next_outside_tag != null && s.aruco) {
+      const ngid = s.nav_next_gate ?? 0;
+      if (!gates.find(g => g.gate_id === ngid)) {
+        for (const a of Object.values(s.aruco)) {
+          const outside = a.tags.find(t => t.id === s.nav_next_outside_tag || t.id === s.nav_next_outside_tag + 100);
+          const inside  = a.tags.find(t => t.id === s.nav_next_inside_tag  || t.id === s.nav_next_inside_tag  + 100);
+          if (!outside && !inside) continue;
+          const tags = [outside, inside].filter(Boolean);
+          const dists = tags.map(t => t.distance).filter(d => d != null);
+          const bears = tags.map(t => t.bearing).filter(b => b != null);
+          gates.push({
+            gate_id: ngid,
+            outside_tag: outside ? outside.id : null,
+            inside_tag:  inside  ? inside.id  : null,
+            centre_x: tags.reduce((acc,t)=>acc+t.cx,0)/tags.length,
+            centre_y: tags.reduce((acc,t)=>acc+t.cy,0)/tags.length,
+            bearing:  bears.length ? bears.reduce((a,b)=>a+b,0)/bears.length : null,
+            distance: dists.length ? dists.reduce((a,b)=>a+b,0)/dists.length : null,
+          });
+          break;
+        }
+      }
+    }
+    return gates;
+  })();
   const allTags  = camAruco ? camAruco.tags  : [];
   const maxDist = allGates.reduce((m, g) => g.distance != null ? Math.max(m, g.distance) : m,
                   allTags.reduce ((m, t) => t.distance != null ? Math.max(m, t.distance) : m, 2.0));
-  const scale = maxR / Math.max(maxDist, 0.5);  // px per metre
+  // 82% of maxR so the furthest gate sits inside the boundary and labels don't clip
+  const scale = (maxR * 0.82) / Math.max(maxDist, 0.5);  // px per metre
 
   // Draw rings
   const ringDistances = [0.5, 1, 2, 3, 5, 8];
@@ -1450,28 +1538,47 @@ function drawNavCanvas(canvas, s) {
   const nativeW = s.cam_cap_w && s.cam_cap_w['front_left'];
   const capW = (camAruco && camAruco.cap_w) || nativeW || 640;
   const HFOV_HALF = 31;  // degrees — half of ~62° IMX296 HFOV
-  const UNKNOWN_R = maxR * 0.65;  // radius used when distance is unknown
+  const UNKNOWN_R = maxR * 0.55;  // radius used when distance is unknown
   const _bearing = (pxBearing, pxCx) =>
     pxBearing != null ? pxBearing : ((pxCx - capW / 2) / (capW / 2)) * HFOV_HALF;
-  const _radius  = dist => dist != null ? Math.min(dist * scale, maxR) : UNKNOWN_R;
+  const _radius  = dist => dist != null ? Math.min(dist * scale, maxR * 0.97) : UNKNOWN_R;
+  // Radar XY for a given bearing+distance
+  const _xy = (bear, dist, fallbackCx) => {
+    const b = _bearing(bear, fallbackCx);
+    const r = _radius(dist);
+    return { x: cx + r * Math.cos((b - 90) * Math.PI / 180),
+             y: cy + r * Math.sin((b - 90) * Math.PI / 180) };
+  };
+  // Build tag-id → radar position map from all visible tags
+  const tagPosMap = new Map();
+  for (const t of allTags) {
+    const pos = _xy(t.bearing, t.distance, t.cx);
+    tagPosMap.set(t.id, { x: pos.x, y: pos.y, distKnown: t.distance != null });
+  }
 
   // Draw individual tags (not part of a gate) as small dots
-  const navGate = s.nav_gate || 0;
-  // Gate N: outside front tag = 2N (even), inside front tag = 2N+1 (odd)
+  const navGate   = s.nav_gate || 0;
+  const navOutTag = s.nav_outside_tag ?? navGate * 2;
+  const navInTag  = s.nav_inside_tag  ?? navGate * 2 + 1;
+  const nextGate   = s.nav_next_gate   ?? navGate + 1;
+  const nextOutTag = s.nav_next_outside_tag ?? nextGate * 2;
+  const nextInTag  = s.nav_next_inside_tag  ?? nextGate * 2 + 1;
   // Rear tags (≥100) mean the gate has been passed
-  const isTargetTag = id => id < 100 && (id === navGate*2 || id === navGate*2+1);
-  const gateTagIds = new Set(allGates.flatMap(g => [g.gate_id*2, g.gate_id*2+1, g.gate_id*2+100, g.gate_id*2+101]));
+  const isTargetTag = id => id < 100 && (id === navOutTag || id === navInTag);
+  const isNextTag   = id => id < 100 && (id === nextOutTag || id === nextInTag);
+  // Build set from actual tag IDs stored in each gate object
+  const gateTagIds = new Set(allGates.flatMap(g => {
+    const ot = g.outside_tag != null ? g.outside_tag % 100 : g.gate_id * 2;
+    const it = g.inside_tag  != null ? g.inside_tag  % 100 : g.gate_id * 2 + 1;
+    return [ot, it, ot + 100, it + 100];
+  }));
 
   for (const tag of allTags) {
     if (gateTagIds.has(tag.id)) continue;  // shown as part of gate below
-    const bearing = _bearing(tag.bearing, tag.cx);
-    const rad = (bearing - 90) * Math.PI / 180;
-    const r   = _radius(tag.distance);
-    const tx  = cx + r * Math.cos(rad);
-    const ty  = cy + r * Math.sin(rad);
+    const {x: tx, y: ty} = _xy(tag.bearing, tag.distance, tag.cx);
     const isPassed   = tag.id >= 100;
     const distKnown  = tag.distance != null;
-    const col = isPassed ? C.gray : isTargetTag(tag.id) ? C.cyan : C.yellow;
+    const col = isPassed ? C.gray : isTargetTag(tag.id) ? C.green : isNextTag(tag.id) ? C.teal : C.yellow;
     ctx.globalAlpha = distKnown ? 1.0 : 0.55;
     ctx.beginPath(); ctx.arc(tx, ty, 4, 0, 2 * Math.PI);
     ctx.fillStyle = col + '99'; ctx.fill();
@@ -1485,56 +1592,101 @@ function drawNavCanvas(canvas, s) {
     ctx.fillText('#' + tag.id + distStr, tx + 6, ty + 4);
   }
 
-  // Draw gates — two posts + centre line
+  // Draw gates — two posts + centre bar
   // A gate formed from rear tags (outside_tag ≥ 100) means it has been passed
   for (const gate of allGates) {
     const isPassed = gate.outside_tag != null && gate.outside_tag >= 100;
-    const isTarget = gate.gate_id === navGate && !isPassed;
-    const col = isPassed ? C.gray : isTarget ? C.cyan : C.yellow;
+    const gOt = gate.outside_tag != null ? gate.outside_tag % 100 : gate.gate_id * 2;
+    const gIt = gate.inside_tag  != null ? gate.inside_tag  % 100 : gate.gate_id * 2 + 1;
+    const isTarget = !isPassed && (gOt === navOutTag || gIt === navInTag || gate.gate_id === navGate);
+    const isNext   = !isPassed && !isTarget &&
+                     (gOt === nextOutTag || gIt === nextInTag || gate.gate_id === nextGate);
+    const col = isPassed ? C.gray : isTarget ? C.green : isNext ? C.teal : C.yellow;
+    const distKnown = gate.distance != null;
+
+    // --- Resolve individual post positions ---
+    // Prefer actual tag positions from allTags (correct side guaranteed).
+    // Fall back to perpendicular-from-centre estimate only when tag not visible.
+    const gCentre = _xy(gate.bearing, gate.distance, gate.centre_x);
+    const gx = gCentre.x, gy = gCentre.y;
+
+    // Look up each post in tagPosMap by its detected ID (also try ±100 variant)
+    const lookupPost = (id) => {
+      if (id == null) return null;
+      return tagPosMap.get(id) || tagPosMap.get(id < 100 ? id + 100 : id - 100) || null;
+    };
+    const otPos = lookupPost(gate.outside_tag);
+    const itPos = lookupPost(gate.inside_tag);
+
+    // Perpendicular fallback — used when a post tag is not individually visible
     const bearing = _bearing(gate.bearing, gate.centre_x);
     const rad = (bearing - 90) * Math.PI / 180;
-    const r   = _radius(gate.distance);
-    const distKnown = gate.distance != null;
-    const gx  = cx + r * Math.cos(rad);
-    const gy  = cy + r * Math.sin(rad);
-
-    // Gate posts — draw as a perpendicular bar at that range
     const perpRad = rad + Math.PI / 2;
-    const halfW   = 14;  // half-width of gate bar in px
-    const lx = gx + halfW * Math.cos(perpRad);
-    const ly = gy + halfW * Math.sin(perpRad);
-    const rx = gx - halfW * Math.cos(perpRad);
-    const ry = gy - halfW * Math.sin(perpRad);
+    const halfW = isTarget ? 16 : 14;
+    const fbOt = { x: gx + halfW * Math.cos(perpRad), y: gy + halfW * Math.sin(perpRad), distKnown };
+    const fbIt = { x: gx - halfW * Math.cos(perpRad), y: gy - halfW * Math.sin(perpRad), distKnown };
 
-    // Post dots (dashed outline when distance unknown)
-    ctx.globalAlpha = distKnown ? 1.0 : 0.55;
-    if (!distKnown) ctx.setLineDash([3, 3]);
-    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, 2 * Math.PI);
+    const opx = (otPos || fbOt).x, opy = (otPos || fbOt).y;
+    const ipx = (itPos || fbIt).x, ipy = (itPos || fbIt).y;
+    const opKnown = otPos ? otPos.distKnown : distKnown;
+    const ipKnown = itPos ? itPos.distKnown : distKnown;
+
+    // Gate centre = midpoint of two posts
+    const mcx = (opx + ipx) / 2, mcy = (opy + ipy) / 2;
+
+    const postR = isTarget ? 5 : 4;
+
+    // Outside post dot
+    ctx.globalAlpha = opKnown ? 1.0 : 0.55;
+    if (!opKnown) ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(opx, opy, postR, 0, 2 * Math.PI);
     ctx.fillStyle = col + 'bb'; ctx.fill();
-    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
-    ctx.beginPath(); ctx.arc(rx, ry, 4, 0, 2 * Math.PI);
+    ctx.strokeStyle = col; ctx.lineWidth = isTarget ? 2 : 1; ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Inside post dot
+    ctx.globalAlpha = ipKnown ? 1.0 : 0.55;
+    if (!ipKnown) ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.arc(ipx, ipy, postR, 0, 2 * Math.PI);
     ctx.fillStyle = col + 'bb'; ctx.fill();
     ctx.strokeStyle = col; ctx.stroke();
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1.0;
 
     // Bar between posts
     ctx.strokeStyle = col; ctx.lineWidth = isTarget ? 2.5 : 1.5;
-    ctx.globalAlpha = distKnown ? (isTarget ? 0.9 : 0.5) : 0.35;
-    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(rx, ry); ctx.stroke();
+    ctx.globalAlpha = distKnown ? (isTarget ? 0.9 : isNext ? 0.6 : 0.5) : 0.35;
+    ctx.beginPath(); ctx.moveTo(opx, opy); ctx.lineTo(ipx, ipy); ctx.stroke();
     ctx.globalAlpha = 1.0;
 
-    // Aim line from robot to gate centre (target only)
+    // Target gate: dashed aim line to gate midpoint + bullseye crosshair
     if (isTarget) {
-      ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-      ctx.globalAlpha = 0.5;
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(gx, gy); ctx.stroke();
+      ctx.strokeStyle = C.green; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(mcx, mcy); ctx.stroke();
       ctx.setLineDash([]); ctx.globalAlpha = 1.0;
+      ctx.strokeStyle = C.green; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(mcx, mcy, 7, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(mcx, mcy, 2, 0, 2 * Math.PI);
+      ctx.fillStyle = C.green; ctx.fill();
+      ctx.strokeStyle = C.green + '88'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(mcx - 11, mcy); ctx.lineTo(mcx + 11, mcy);
+      ctx.moveTo(mcx, mcy - 11); ctx.lineTo(mcx, mcy + 11); ctx.stroke();
     }
 
-    // Gate label
-    ctx.fillStyle = col; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
-    const lbl = 'G' + gate.gate_id + (distKnown ? ' ' + gate.distance.toFixed(1) + 'm' : '?');
-    ctx.fillText(lbl, gx, gy - 10);
+    // Post ID labels — at each post's actual position
+    ctx.font = '9px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = col;
+    if (gate.outside_tag != null) ctx.fillText('#' + (gate.outside_tag % 100), opx, opy - 7);
+    if (gate.inside_tag  != null) ctx.fillText('#' + (gate.inside_tag  % 100), ipx, ipy - 7);
+
+    // Gate label above the midpoint
+    ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center';
+    const gBaseLbl = (isTarget && s.nav_gate_label)       ? s.nav_gate_label
+                   : (isNext   && s.nav_next_gate_label)  ? 'NEXT:' + s.nav_next_gate_label
+                   : 'G' + gate.gate_id;
+    const lbl = gBaseLbl + (distKnown ? ' ' + gate.distance.toFixed(1) + 'm' : '?');
+    ctx.fillStyle = col; ctx.fillText(lbl, mcx, mcy - 18);
   }
 
   // Target bearing line — pre-computed by navigator (aim offset already applied)
@@ -1543,7 +1695,7 @@ function drawNavCanvas(canvas, s) {
     const targetBear = autoGps ? s.nav_wp_bear : s.nav_target_bearing;
     if (targetBear != null) {
       const tRad = (targetBear - 90) * Math.PI / 180;
-      const col  = C.cyan;
+      const col  = autoGps ? C.cyan : C.green;
       // Line from centre to radar edge
       ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.globalAlpha = 0.75;
       ctx.beginPath(); ctx.moveTo(cx, cy);
@@ -1610,7 +1762,7 @@ function updateNavBadgeEl(badge, s) {
     if (s.nav_wp_dist!=null) txt += ` ${s.nav_wp_dist.toFixed(1)}m`;
     if (s.nav_wp_bear!=null) txt += ` ${s.nav_wp_bear.toFixed(0)}°`;
   } else {
-    txt = `${s.nav_state} G${s.nav_gate}`;
+    txt = `${s.nav_state} ${s.nav_gate_label || 'G'+s.nav_gate}`;
     if (s.nav_bearing_err!=null) txt += ` ${s.nav_bearing_err>=0?'+':''}${s.nav_bearing_err.toFixed(1)}°`;
   }
   badge.textContent=txt; badge.style.color=nc; badge.style.display='block';
@@ -1620,7 +1772,7 @@ function updateNavInfoEl(el2, s) {
   const autoGps = s.mode==='AUTO' && (s.auto_type==='GPS'||s.auto_type==='Cam+GPS');
   if (!s.nav_state || s.nav_state==='IDLE') { el2.textContent=''; return; }
   const nc=NAV_COLORS[s.nav_state]||C.gray;
-  let txt = autoGps ? `GPS:${s.nav_state} WP${s.nav_wp}` : `NAV:${s.nav_state} G${s.nav_gate}`;
+  let txt = autoGps ? `GPS:${s.nav_state} WP${s.nav_wp}` : `NAV:${s.nav_state} ${s.nav_gate_label || 'G'+s.nav_gate}`;
   if (autoGps && s.nav_wp_dist!=null) txt += ` ${s.nav_wp_dist.toFixed(1)}m`;
   el2.textContent=txt; el2.style.color=nc;
 }
@@ -1673,7 +1825,7 @@ function updateMobile(s) {
     const camEnabled = s.aruco_enabled && s.aruco_enabled['front_left'];
     const show = camEnabled && camAruco !== null;
     mc.style.display=show?'block':'none';
-    if(show) drawBearingOverlay(mc, camAruco, s.nav_gate, t.heading, mobShowBearing);
+    if(show) drawBearingOverlay(mc, camAruco, s.nav_gate, t.heading, mobShowBearing, s.nav_outside_tag, s.nav_inside_tag);
   }
 
   // Telem tab
@@ -2051,7 +2203,7 @@ function drawLidar(canvas, angles, distances) {
   ctx.fillStyle=C.green; ctx.fill();
 }
 
-function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=false) {
+function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=false, navOutTag=null, navInTag=null) {
   if (!canvas) return;
   // Resize canvas to match its CSS display size
   const W=canvas.offsetWidth||canvas.parentElement.clientWidth;
@@ -2082,15 +2234,16 @@ function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=fal
   const fcx = ox + rW / 2;
   const fcy = oy + rH / 2;
 
-  // Gate N: outside front tag=2N (even), inside front tag=2N+1 (odd)
   // Rear tags (≥100) mean the gate has been passed — show dimmed, not as target
-  const _isNavTarget = id => id < 100 && (id === navGate*2 || id === navGate*2+1);
+  const _outTag = navOutTag ?? navGate * 2;
+  const _inTag  = navInTag  ?? navGate * 2 + 1;
+  const _isNavTarget = id => id < 100 && (id === _outTag || id === _inTag);
   ctx.font='bold 10px monospace'; ctx.lineWidth=1.5;
   for (const tag of aruco.tags) {
     const tx=ox+tag.cx*csx, ty=oy+tag.cy*csy;
     const isPassed = tag.id >= 100;
     const isTarget=_isNavTarget(tag.id);
-    const color=isPassed?C.gray:isTarget?C.cyan:C.yellow;
+    const color=isPassed?C.gray:isTarget?C.green:C.yellow;
     // Bounding box from corners (always shown when ArUco active)
     if (tag.corners && tag.corners.length===4) {
       ctx.strokeStyle=color; ctx.lineWidth=2; ctx.globalAlpha=0.9;
@@ -2125,7 +2278,9 @@ function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=fal
   }
   if (showBearingInfo) {
     for (const gate of aruco.gates) {
-      if(gate.gate_id!==navGate) continue;
+      const _gOt = gate.outside_tag != null ? gate.outside_tag % 100 : gate.gate_id * 2;
+      const _gIt = gate.inside_tag  != null ? gate.inside_tag  % 100 : gate.gate_id * 2 + 1;
+      if (gate.gate_id !== navGate && _gOt !== _outTag && _gIt !== _inTag) continue;
       const gx=ox+gate.centre_x*csx, gy=oy+gate.centre_y*csy;
       ctx.strokeStyle=C.green; ctx.lineWidth=1.5; ctx.globalAlpha=0.8;
       ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(gx,gy); ctx.stroke();
@@ -2742,7 +2897,8 @@ def main():
         speed_ch       = _cfg(cfg, 'rc',     'speed_ch',    6,     int),
         auto_type_ch   = _cfg(cfg, 'rc',     'auto_type_ch',7,     int),
         gps_log_ch     = _cfg(cfg, 'rc',     'gps_log_ch',  8,     int),
-        gps_bookmark_ch= _cfg(cfg, 'rc',     'gps_bookmark_ch',2,  int),
+        gps_bookmark_ch= _cfg(cfg, 'rc',     'gps_bookmark_ch',12, int),
+        pause_ch       = _cfg(cfg, 'rc',     'pause_ch',        0, int),
         gps_log_dir    = _cfg(cfg, 'gps',    'log_dir',     ''),
         gps_log_hz     = _cfg(cfg, 'gps',    'log_hz',      5.0,   float),
         deadzone       = _cfg(cfg, 'rc',     'deadzone',    30,    int),

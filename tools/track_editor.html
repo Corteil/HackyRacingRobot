@@ -154,6 +154,25 @@ html, body { height: 100%; background: var(--bg); color: var(--white);
 .toml-num     { color: var(--yellow); }
 .toml-bool    { color: var(--purple); }
 
+/* ── Auto-generate panel ── */
+details.gen-panel { }
+details.gen-panel summary {
+  font-size: 0.65rem; font-weight: 700; color: var(--cyan); letter-spacing: 2px;
+  text-transform: uppercase; cursor: pointer; list-style: none; display: flex;
+  align-items: center; gap: 6px; user-select: none; }
+details.gen-panel summary::-webkit-details-marker { display: none; }
+details.gen-panel summary::before { content: "▶"; font-size: 0.55rem; transition: transform .15s; }
+details.gen-panel[open] summary::before { transform: rotate(90deg); }
+.gen-body { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.gen-row { display: flex; gap: 8px; }
+.gen-row .field { flex: 1; margin: 0; }
+select.gen-select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  color: var(--white); font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+  padding: 5px 8px; border-radius: 4px; outline: none; transition: border-color .15s;
+  cursor: pointer; }
+select.gen-select:focus { border-color: var(--cyan); }
+
 /* ── Empty state ── */
 #empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
   flex: 1; gap: 10px; color: var(--gray); }
@@ -234,6 +253,45 @@ html, body { height: 100%; background: var(--bg); color: var(--white);
             Loop (circuit racing)
           </label>
         </div>
+      </div>
+
+      <!-- Auto Generate -->
+      <div class="sb-section">
+        <details class="gen-panel">
+          <summary>Auto Generate</summary>
+          <div class="gen-body">
+            <div class="gen-row">
+              <div class="field">
+                <label>Start gate #</label>
+                <input type="number" id="gen-from" min="0" max="49" value="0">
+              </div>
+              <div class="field">
+                <label>Gate count</label>
+                <input type="number" id="gen-count" min="1" max="50" value="5">
+              </div>
+            </div>
+            <div class="field">
+              <label>Tag parity</label>
+              <select id="gen-parity" class="gen-select">
+                <option value="even-outside">Outside = Even / Inside = Odd (clockwise)</option>
+                <option value="odd-outside">Outside = Odd / Inside = Even (counter-clockwise)</option>
+              </select>
+            </div>
+            <div class="gen-row">
+              <div class="field">
+                <label>Width (m)</label>
+                <input type="number" id="gen-width" min="0.3" max="5" step="0.1" value="1.0">
+              </div>
+              <div class="field" style="display:flex;align-items:flex-end;padding-bottom:2px">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox" id="gen-replace" checked style="width:auto;accent-color:var(--cyan)">
+                  Replace all
+                </label>
+              </div>
+            </div>
+            <button class="btn btn-orange" style="width:100%" onclick="generateTrack()">⚡ GENERATE</button>
+          </div>
+        </details>
       </div>
 
       <!-- Sequence -->
@@ -645,6 +703,57 @@ function renderPreview() {
 
 function esc(s) {
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Auto generate
+// ═══════════════════════════════════════════════════════════════════════════════
+function generateTrack() {
+  const fromId  = parseInt(document.getElementById("gen-from").value)  || 0;
+  const count   = parseInt(document.getElementById("gen-count").value)  || 5;
+  const parity  = document.getElementById("gen-parity").value;
+  const width   = parseFloat(document.getElementById("gen-width").value) || 1.0;
+  const replace = document.getElementById("gen-replace").checked;
+
+  if (count < 1 || count > 50) { showToast("Count must be 1–50", "err"); return; }
+  if (fromId < 0 || fromId > 49) { showToast("Start gate must be 0–49", "err"); return; }
+
+  const evenOutside = (parity === "even-outside");
+
+  const newGates = [];
+  for (let i = 0; i < count; i++) {
+    const id = fromId + i;
+    const evenTag = id * 2;
+    const oddTag  = id * 2 + 1;
+    newGates.push({
+      id,
+      label:         id === 0 ? "Start / Finish" : `Gate ${id}`,
+      outside_front: evenOutside ? evenTag      : oddTag,
+      outside_rear:  evenOutside ? 100 + evenTag : 100 + oddTag,
+      inside_front:  evenOutside ? oddTag        : evenTag,
+      inside_rear:   evenOutside ? 100 + oddTag  : 100 + evenTag,
+      width_m:       width,
+      heading_hint:  -1.0,
+      notes:         "",
+    });
+  }
+
+  if (replace) {
+    gates      = newGates;
+    sequence   = newGates.map(g => g.id);
+    selectedId = newGates[0].id;
+    render();
+    showToast(`Generated ${newGates.length} gates`);
+  } else {
+    const existingIds = new Set(gates.map(g => g.id));
+    const toAdd = newGates.filter(g => !existingIds.has(g.id));
+    if (toAdd.length === 0) { showToast("All gate IDs already exist", "err"); return; }
+    gates.push(...toAdd);
+    sequence.push(...toAdd.map(g => g.id));
+    selectedId = toAdd[0].id;
+    render();
+    showToast(`Added ${toAdd.length} gate${toAdd.length !== 1 ? "s" : ""}`);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

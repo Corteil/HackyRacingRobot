@@ -175,6 +175,13 @@ class _GsState:
             "nav_state": "IDLE", "nav_gate": 0, "nav_wp": 0,
             "nav_wp_dist": None, "nav_wp_bear": None,
             "nav_bearing_err": None, "nav_tags_visible": 0,
+            # Tag IDs computed by formula fallback (gate*2 / gate*2+1)
+            # Updated from TYPE_NAV gate field; override with track.toml values when available
+            "nav_outside_tag": 0, "nav_inside_tag": 1,
+            "nav_gate_label": "",
+            "nav_next_gate": 1,
+            "nav_next_outside_tag": 2, "nav_next_inside_tag": 3,
+            "nav_next_gate_label": "",
         }
         self._lidar = {"angles": [], "distances": []}
         # ArUco tags: per-camera dict → list of tag dicts  (matches s.aruco[camKey].tags)
@@ -231,13 +238,23 @@ class _GsState:
 
     def handle_nav(self, d: dict):
         with self._lock:
+            gate = d["gate"]
             self._nav["nav_state"]      = d["nav_state_name"]
-            self._nav["nav_gate"]       = d["gate"]
+            self._nav["nav_gate"]       = gate
             self._nav["nav_wp"]         = d["wp"]
             self._nav["nav_wp_dist"]    = d["dist"]
             self._nav["nav_wp_bear"]    = d["bearing"]
             self._nav["nav_bearing_err"]= d["bearing_err"]
             self._nav["nav_tags_visible"] = d["tags"]
+            # Derive tag IDs from gate index (formula fallback; protocol doesn't carry them)
+            self._nav["nav_outside_tag"] = gate * 2
+            self._nav["nav_inside_tag"]  = gate * 2 + 1
+            self._nav["nav_gate_label"]  = f"Gate {gate}"
+            next_gate = gate + 1
+            self._nav["nav_next_gate"]          = next_gate
+            self._nav["nav_next_outside_tag"]   = next_gate * 2
+            self._nav["nav_next_inside_tag"]    = next_gate * 2 + 1
+            self._nav["nav_next_gate_label"]    = f"Gate {next_gate}"
             self._touch()
 
     def handle_lidar(self, d: dict):

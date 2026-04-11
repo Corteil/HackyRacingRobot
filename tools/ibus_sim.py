@@ -6,19 +6,20 @@ Creates a virtual serial port (PTY) that emits iBUS packets at ~7 ms intervals,
 mimicking a FlySky iBUS receiver connected to a RadioMaster TX-16S transmitter.
 
 Channel layout matches robot.ini defaults:
-  CH1   Aileron      right stick ← →   Arrow left / right
-  CH2   Elevator     right stick ↑ ↓   Arrow up / down
-  CH3   Throttle     left  stick ↑ ↓   W / S
-  CH4   Rudder       left  stick ← →   A / D
-  CH5   SwA  mode    2-pos              1  (toggle MANUAL / AUTO)
-  CH6   SwB  speed   3-pos              2  (cycle slow / mid / max)
-  CH7   SwC  type    3-pos              3  (cycle Camera / GPS / Cam+GPS)
-  CH8   SwD  GPS log 2-pos              4  (toggle off / on)
-  CH10  Bookmark     momentary          5  (momentary high, auto-returns after 300 ms)
-  CH9, CH11–14       unused             held at 1500
+  CH1   Right X      right stick ← →   Arrow left / right
+  CH2   Right Y      right stick ↑ ↓   Arrow up / down
+  CH3   Left Y       left  stick ↑ ↓   W / S
+  CH4   Left X       left  stick ← →   A / D
+  CH5   SF   mode    2-pos              1  (toggle MANUAL / AUTO)
+  CH6   SE   speed   3-pos              2  (cycle slow / mid / max)
+  CH7   SA   type    3-pos              3  (cycle Camera / GPS / Cam+GPS)
+  CH8   SB   GPS log 2-pos              4  (toggle off / on)
+  CH10  SD   pause   2-pos              6  (toggle running / paused)
+  CH12  SH   Bookmark momentary         5  (momentary high, auto-returns after 300 ms)
+  CH9, CH11, CH13–14  unused            held at 1500
 
 TX-16S behaviour notes:
-  - Throttle starts at 1000 (stick bottom) for safety.
+  - Left Y (throttle) starts at 1000 (stick bottom) for safety.
   - Space centres right gimbal + rudder and drops throttle to 1000.
   - V toggles signal: when lost, packet emission stops → robot failsafe triggers.
   - Stick increment is 50 µs per keypress (adjustable with --step).
@@ -30,6 +31,7 @@ Usage:
 
 import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pty
 import tty
 import termios
@@ -39,6 +41,12 @@ import time
 import select
 import argparse
 
+from robot.rc_channels import (
+    CH_STEER, CH_RIGHT_Y, CH_THROTTLE, CH_LEFT_X,
+    CH_MODE, CH_SPEED, CH_AUTO_TYPE, CH_GPS_LOG, CH_PAUSE, CH_BOOKMARK,
+    MODE_NAMES, SPEED_NAMES, AUTO_TYPE_NAMES, GPS_LOG_NAMES, PAUSE_NAMES,
+)
+
 # ── iBUS protocol constants ───────────────────────────────────────────────────
 
 PACKET_LEN   = 32
@@ -47,26 +55,6 @@ CH_MIN       = 1000
 CH_MAX       = 2000
 CH_MID       = 1500
 PACKET_HZ    = 143        # ~7 ms per packet, same as real FlySky receiver
-
-# ── TX-16S channel indices (0-based) ─────────────────────────────────────────
-
-CH_AILERON   = 0    # CH1   right stick horizontal
-CH_ELEVATOR  = 1    # CH2   right stick vertical
-CH_THROTTLE  = 2    # CH3   left  stick vertical
-CH_RUDDER    = 3    # CH4   left  stick horizontal
-CH_MODE      = 4    # CH5   SwA  2-pos
-CH_SPEED     = 5    # CH6   SwB  3-pos
-CH_AUTO_TYPE = 6    # CH7   SwC  3-pos
-CH_GPS_LOG   = 7    # CH8   SwD  2-pos
-                    # CH9   unused (index 8)
-CH_BOOKMARK  = 9    # CH10  momentary button
-
-# ── Named switch positions ────────────────────────────────────────────────────
-
-SWA_NAMES = {1000: 'MANUAL', 2000: 'AUTO'}
-SWB_NAMES = {1000: 'slow 25%', 1500: 'mid', 2000: 'max'}
-SWC_NAMES = {1000: 'Camera', 1500: 'GPS', 2000: 'Cam+GPS'}
-SWD_NAMES = {1000: 'off', 2000: 'on'}
 
 # ── Shared state ─────────────────────────────────────────────────────────────
 
@@ -81,14 +69,15 @@ _state = {
 
 # Safe power-on defaults
 _state['channels'][CH_THROTTLE]  = CH_MIN    # throttle at bottom (safety)
-_state['channels'][CH_AILERON]   = CH_MID
-_state['channels'][CH_ELEVATOR]  = CH_MID
-_state['channels'][CH_RUDDER]    = CH_MID
-_state['channels'][CH_MODE]      = 1000      # SwA: MANUAL
-_state['channels'][CH_SPEED]     = 1500      # SwB: mid
-_state['channels'][CH_AUTO_TYPE] = 1000      # SwC: Camera
-_state['channels'][CH_GPS_LOG]   = 1000      # SwD: GPS log off
-_state['channels'][CH_BOOKMARK]  = 1000      # CH10: low
+_state['channels'][CH_STEER]   = CH_MID
+_state['channels'][CH_RIGHT_Y]  = CH_MID
+_state['channels'][CH_LEFT_X]    = CH_MID
+_state['channels'][CH_MODE]      = 1000      # SF: MANUAL
+_state['channels'][CH_SPEED]     = 1500      # SE: mid
+_state['channels'][CH_AUTO_TYPE] = 1000      # SA: Camera
+_state['channels'][CH_GPS_LOG]   = 1000      # SB: GPS log off
+_state['channels'][CH_PAUSE]     = 1000      # SD: motors running
+_state['channels'][CH_BOOKMARK]  = 1000      # SH: low
 
 # ── iBUS packet builder ───────────────────────────────────────────────────────
 
@@ -163,10 +152,11 @@ def draw(pty_path):
         valid = _state['rc_valid']
         pkts  = _state['packets_sent']
 
-    swa = ch[CH_MODE]
-    swb = ch[CH_SPEED]
-    swc = ch[CH_AUTO_TYPE]
-    swd = ch[CH_GPS_LOG]
+    swf = ch[CH_MODE]
+    swe = ch[CH_SPEED]
+    swa = ch[CH_AUTO_TYPE]
+    swb = ch[CH_GPS_LOG]
+    swd = ch[CH_PAUSE]
     bkm = ch[CH_BOOKMARK]
 
     sig_str = 'OK' if valid else '*** LOST (V to restore) ***'
@@ -178,25 +168,26 @@ def draw(pty_path):
         f'  Packets    : {pkts:>7d}   Signal: {sig_str}',
         '',
         '─── Right gimbal ─── Arrow keys ─────────────────────────────────',
-        f'  CH1 Aileron   {_bar(ch[CH_AILERON])}',
-        f'  CH2 Elevator  {_bar(ch[CH_ELEVATOR])}',
+        f'  CH1 Right X   {_bar(ch[CH_STEER])}',
+        f'  CH2 Right Y   {_bar(ch[CH_RIGHT_Y])}',
         '',
-        '─── Left gimbal  ─── W/S=throttle  A/D=rudder ───────────────────',
-        f'  CH3 Throttle  {_bar(ch[CH_THROTTLE])}',
-        f'  CH4 Rudder    {_bar(ch[CH_RUDDER])}',
+        '─── Left gimbal  ─── W/S=Left Y  A/D=Left X ─────────────────────',
+        f'  CH3 Left Y    {_bar(ch[CH_THROTTLE])}',
+        f'  CH4 Left X    {_bar(ch[CH_LEFT_X])}',
         '',
         '─── Switches ────────────────────────────────────────────────────',
-        f'  [1] CH5  SwA mode    {SWA_NAMES.get(swa, str(swa)):>10s}  {"●" if swa == 2000 else "○"}',
-        f'  [2] CH6  SwB speed   {SWB_NAMES.get(swb, str(swb)):>10s}',
-        f'  [3] CH7  SwC type    {SWC_NAMES.get(swc, str(swc)):>10s}',
-        f'  [4] CH8  SwD GPS log {SWD_NAMES.get(swd, str(swd)):>10s}  {"●" if swd == 2000 else "○"}',
-        f'  [5] CH10 Bookmark    {"TRIGGERED" if bkm >= CH_MID else "ready":>10s}',
+        f'  [1] CH5  SF  mode    {MODE_NAMES.get(swf, str(swf)):>10s}  {"●" if swf == 2000 else "○"}',
+        f'  [2] CH6  SE  speed   {SPEED_NAMES.get(swe, str(swe)):>10s}',
+        f'  [3] CH7  SA  type    {AUTO_TYPE_NAMES.get(swa, str(swa)):>10s}',
+        f'  [4] CH8  SB  GPS log {GPS_LOG_NAMES.get(swb, str(swb)):>10s}  {"●" if swb == 2000 else "○"}',
+        f'  [6] CH10 SD  pause   {PAUSE_NAMES.get(swd, str(swd)):>10s}  {"■" if swd >= CH_MID else "□"}',
+        f'  [5] CH12 SH  Bookmark {"TRIGGERED" if bkm >= CH_MID else "ready":>9s}',
         '',
         '─── Keys ────────────────────────────────────────────────────────',
-        '  Arrows  right gimbal (aileron / elevator)',
-        '  W / S   throttle up / down',
-        '  A / D   rudder left / right',
-        '  1–5     switches / bookmark (see above)',
+        '  Arrows  right gimbal (Right X / Right Y)',
+        '  W / S   Left Y up / down',
+        '  A / D   Left X left / right',
+        '  1–6     switches / bookmark (see above)',
         '  Space   centre sticks + throttle to 1000',
         '  V       toggle RC signal (simulate loss)',
         '  Q       quit',
@@ -232,9 +223,9 @@ def _handle_key(ch, step):
         elif ch in ('s', 'S'):
             chs[CH_THROTTLE]  = _clamp(chs[CH_THROTTLE], -step)
         elif ch in ('a', 'A'):
-            chs[CH_RUDDER]    = _clamp(chs[CH_RUDDER], -step)
+            chs[CH_LEFT_X]    = _clamp(chs[CH_LEFT_X], -step)
         elif ch in ('d', 'D'):
-            chs[CH_RUDDER]    = _clamp(chs[CH_RUDDER], +step)
+            chs[CH_LEFT_X]    = _clamp(chs[CH_LEFT_X], +step)
 
         # Switches
         elif ch == '1':
@@ -248,12 +239,14 @@ def _handle_key(ch, step):
         elif ch == '5':
             chs[CH_BOOKMARK]  = CH_MAX
             _state['bookmark_until'] = time.monotonic() + 0.30
+        elif ch == '6':
+            chs[CH_PAUSE] = 2000 if chs[CH_PAUSE] == 1000 else 1000
 
         # Centre / kill-switch
         elif ch == ' ':
-            chs[CH_AILERON]   = CH_MID
-            chs[CH_ELEVATOR]  = CH_MID
-            chs[CH_RUDDER]    = CH_MID
+            chs[CH_STEER]   = CH_MID
+            chs[CH_RIGHT_Y]  = CH_MID
+            chs[CH_LEFT_X]    = CH_MID
             chs[CH_THROTTLE]  = CH_MIN   # throttle to safe bottom
 
         # Signal toggle
@@ -266,13 +259,13 @@ def _handle_arrow(code, step):
     with _lock:
         chs = _state['channels']
         if   code == b'A':   # up
-            chs[CH_ELEVATOR] = _clamp(chs[CH_ELEVATOR], +step)
+            chs[CH_RIGHT_Y] = _clamp(chs[CH_RIGHT_Y], +step)
         elif code == b'B':   # down
-            chs[CH_ELEVATOR] = _clamp(chs[CH_ELEVATOR], -step)
+            chs[CH_RIGHT_Y] = _clamp(chs[CH_RIGHT_Y], -step)
         elif code == b'C':   # right
-            chs[CH_AILERON]  = _clamp(chs[CH_AILERON],  +step)
+            chs[CH_STEER]  = _clamp(chs[CH_STEER],  +step)
         elif code == b'D':   # left
-            chs[CH_AILERON]  = _clamp(chs[CH_AILERON],  -step)
+            chs[CH_STEER]  = _clamp(chs[CH_STEER],  -step)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

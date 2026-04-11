@@ -11,7 +11,7 @@ Subsystems
   LiDAR    : LDROBOT LD06 via drivers/ld06.py
   GPS      : Allystar TAU1308 RTK via gnss/ package; optional NTRIP/RTCM corrections
 
-Mode switching (RC channel 5, SwA — configurable via [rc] mode_ch)
+Mode switching (RC channel 5, SA — configurable via [rc] mode_ch)
 -------------------------------------------------------------------
   CH5 ≤ 1500  →  MANUAL  (RC tank-mix drives motors directly at 50 Hz)
   CH5 > 1500  →  AUTO    (call robot.drive(left, right) from your navigator)
@@ -45,6 +45,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from typing import List, Optional
+
+from robot.rc_channels import (
+    CH_STEER, CH_THROTTLE, CH_MODE, CH_SPEED, CH_AUTO_TYPE, CH_GPS_LOG,
+)
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +229,13 @@ class RobotState:
     nav_target_bearing: Optional[float] = None  # camera-relative aim bearing (° offset applied)
     nav_target_dist:    Optional[float] = None  # metres to aim point
     nav_tags_visible:   int             = 0     # ArUco tags in current camera frame
+    nav_outside_tag:    int             = 0     # front-face tag ID for outside post of target gate
+    nav_inside_tag:     int             = 1     # front-face tag ID for inside  post of target gate
+    nav_gate_label:     str             = ""    # human label from track.toml ("Gate 0" / "Start")
+    nav_next_gate:          int             = 1     # next gate index in sequence
+    nav_next_outside_tag:   int             = 2     # front-face tag ID for outside post of next gate
+    nav_next_inside_tag:    int             = 3     # front-face tag ID for inside  post of next gate
+    nav_next_gate_label:    str             = ""    # human label for next gate
     no_motors:          bool            = False  # drive commands suppressed
     bench_enabled:   bool        = True   # bench power output enabled (on at startup)
 
@@ -271,7 +282,7 @@ class _YukonLink:
         import serial
         self._no_motors = no_motors
         self._closed   = False
-        self._ser      = serial.Serial(port, baud, timeout=0.1, dsrdtr=False)
+        self._ser      = serial.Serial(port, baud, timeout=0.1, write_timeout=0.5, dsrdtr=False)
         time.sleep(0.5)
         self._ser.reset_input_buffer()
         self._cmd_lock  = threading.Lock()
@@ -289,7 +300,10 @@ class _YukonLink:
             # from the previous run; without this keepalive the ~0.5–1 s gap
             # between the old process's last CMD_MODE and the control thread's
             # first CMD_MODE triggers a spurious startup WATCHDOG ESTOP.
-            self.set_mode(0)   # 0 = MANUAL
+            try:
+                self.set_mode(0)   # 0 = MANUAL
+            except Exception as e:
+                log.warning("Initial CMD_MODE failed (%s) — control thread will retry", e)
 
     # ── background reader ────────────────────────────────────────────────────
 
@@ -1623,13 +1637,13 @@ class _DataLogger:
 # Robot
 # ──────────────────────────────────────────────────────────────────────────────
 
-# RC channel indices (0-based)
-_CH_THROTTLE  = 2    # CH3
-_CH_STEER     = 0    # CH1
-_CH_MODE      = 4    # CH5 — SwA: ≤1500 = MANUAL, >1500 = AUTO
-_CH_SPEED     = 5    # CH6 — SwB: 1000=slow, 1500=mid, 2000=max
-_CH_AUTO_TYPE = 6    # CH7 — SwC: 1000=Camera, 1500=GPS, 2000=Cam+GPS
-_CH_GPS_LOG   = 7    # CH8 — SwD: ≤1500=logging off, >1500=logging on
+# RC channel indices (0-based) — defaults from robot.rc_channels; overridden by robot.ini
+_CH_STEER     = CH_STEER      # CH1
+_CH_THROTTLE  = CH_THROTTLE   # CH3
+_CH_MODE      = CH_MODE       # CH5 — SA: ≤1500 = MANUAL, >1500 = AUTO
+_CH_SPEED     = CH_SPEED      # CH6 — SB: 1000=slow, 1500=mid, 2000=max
+_CH_AUTO_TYPE = CH_AUTO_TYPE  # CH7 — SC: 1000=Camera, 1500=GPS, 2000=Cam+GPS
+_CH_GPS_LOG   = CH_GPS_LOG    # CH8 — SD: ≤1500=logging off, >1500=logging on
 
 _SPEED_MIN    = 0.25  # scale factor at CH6=1000
 
@@ -1803,8 +1817,8 @@ class Robot:
     enable_camera / enable_lidar / enable_gps : toggle optional subsystems
     throttle_ch    : RC throttle channel, 1-based (default 3)
     steer_ch       : RC steering channel, 1-based (default 1)
-    mode_ch        : RC mode-switch channel, 1-based (default 5 = SwA)
-    speed_ch       : RC speed-limit channel, 1-based (default 6 = SwB)
+    mode_ch        : RC mode-switch channel, 1-based (default 5 = SA)
+    speed_ch       : RC speed-limit channel, 1-based (default 6 = SB)
     deadzone       : RC stick deadzone in µs either side of mid (default 30)
     failsafe_s     : Seconds without iBUS packet before failsafe (default 0.5)
     speed_min      : Minimum speed scale when speed_ch is at low end (default 0.25)
@@ -1846,7 +1860,8 @@ class Robot:
         speed_ch:       int   = 6,
         auto_type_ch:   int   = 7,
         gps_log_ch:      int   = 8,
-        gps_bookmark_ch: int   = 2,
+        gps_bookmark_ch: int   = 12,
+        pause_ch:        int   = 0,    # RC channel for AUTO motor pause (0 = disabled)
         gps_log_dir:     str   = '',
         gps_log_hz:      float = 5.0,
         rec_dir:              str   = '',   # video recordings; blank = ~/Videos/HackyRacingRobot
@@ -1891,6 +1906,7 @@ class Robot:
         self._ch_auto_type  = auto_type_ch  - 1
         self._ch_gps_log      = gps_log_ch      - 1
         self._ch_gps_bookmark = gps_bookmark_ch - 1 if gps_bookmark_ch > 0 else None
+        self._ch_pause        = pause_ch        - 1 if pause_ch        > 0 else None
         self._gps_log_dir   = (gps_log_dir.strip() or
                                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs'))
         self._rec_dir       = (rec_dir.strip() or
@@ -2266,6 +2282,13 @@ class Robot:
             nav_target_bearing = self._navigator.target_bearing   if self._navigator else None,
             nav_target_dist    = self._navigator.tag_dist          if self._navigator else None,
             nav_tags_visible   = self._navigator.tags_visible      if self._navigator else 0,
+            nav_outside_tag    = self._navigator.outside_tag_id   if self._navigator else 0,
+            nav_inside_tag     = self._navigator.inside_tag_id    if self._navigator else 1,
+            nav_gate_label     = self._navigator.gate_label       if self._navigator else "",
+            nav_next_gate          = self._navigator.next_gate_id        if self._navigator else 1,
+            nav_next_outside_tag   = self._navigator.next_outside_tag_id if self._navigator else 2,
+            nav_next_inside_tag    = self._navigator.next_inside_tag_id  if self._navigator else 3,
+            nav_next_gate_label    = self._navigator.next_gate_label     if self._navigator else "",
             no_motors          = self._no_motors,
             bench_enabled   = self._bench_enabled,
         )
@@ -2583,7 +2606,7 @@ class Robot:
         return self._data_logger.is_active()
 
     def get_auto_type(self) -> AutoType:
-        """Return the current AutoType selected by SwC."""
+        """Return the current AutoType selected by SC."""
         with self._mode_lock:
             return self._auto_type
 
@@ -2763,7 +2786,7 @@ class Robot:
                 auto_right = self._auto_right
                 self._auto_type = _auto_type_from_ch(self._rc_channels[self._ch_auto_type])
 
-            # SwD: GPS logging on/off
+            # SD: GPS logging on/off
             gps_log_want = self._rc_channels[self._ch_gps_log] > 1500
             if gps_log_want != self._gps_logging:
                 self._gps_logging = gps_log_want
@@ -2776,6 +2799,12 @@ class Robot:
                     self.bookmark_gps()
                 self._prev_bookmark_ch = bm_val
 
+            # SD: AUTO motor pause switch — syncs no_motors flag from RC channel
+            if self._ch_pause is not None:
+                want_pause = self._rc_channels[self._ch_pause] > 1500
+                if want_pause != self._no_motors:
+                    self.set_no_motors(want_pause)
+
             # Auto-enable ArUco on mode/type transitions only, so the T-key
             # toggle is not overridden every tick.
             if mode is not last_mode or self._auto_type is not last_auto_type:
@@ -2784,6 +2813,7 @@ class Robot:
                 self.set_aruco_enabled(want_aruco)
                 log.info(f"ArUco {'ON' if want_aruco else 'OFF'} "
                          f"(mode={mode.name} type={self._auto_type.label})")
+                last_mode      = mode
                 last_auto_type = self._auto_type
 
             # RC signal transition detection
@@ -2912,15 +2942,16 @@ class Robot:
 
             else:  # AUTO
                 # ── Camera autonomous: feed ArUco state + IMU heading ─────────
+                _nav_cam = self._cam('front_left')   # multi-cam or legacy fallback
                 if (self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)
                         and self._navigator is not None
-                        and self._camera is not None):
-                    aruco_state = self._camera.get_aruco_state()
+                        and _nav_cam is not None):
+                    aruco_state = _nav_cam.get_aruco_state()
                     with self._mode_lock:
                         heading = self._telemetry.heading
                     if aruco_state is not None:
                         nav_left, nav_right = self._navigator.update(
-                            aruco_state, self._cam_width,
+                            aruco_state, getattr(_nav_cam, '_capture_w', self._cam_width),
                             heading   = heading,
                             yukon     = self._yukon,
                         )
@@ -2965,7 +2996,7 @@ class Robot:
                         self._mode = RobotMode.MANUAL
                     log.info("RC → MANUAL")
 
-            # Apply speed limit from SwB
+            # Apply speed limit from SB
             scale              = _speed_scale(self._rc_channels[self._ch_speed], self._speed_min)
             self._speed_scale  = scale
             left               = left  * scale
@@ -2991,7 +3022,7 @@ class Robot:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _gps_log_thread(self):
-        """Write GPS state to CSV while _gps_logging is True (toggled by SwD)."""
+        """Write GPS state to CSV while _gps_logging is True (toggled by SD)."""
         log_file = None
         writer   = None
 
@@ -3063,18 +3094,22 @@ class Robot:
             log_file.close()
 
     @staticmethod
-    def _find_yukon() -> str:
+    def _find_yukon() -> Optional[str]:
+        """Auto-detect the Yukon RP2040 by USB VID (0x2E8A).
+
+        Returns the device path if found, or None if no Raspberry Pi USB
+        device is present.  Returning None means Yukon is skipped entirely;
+        the old fallback to /dev/ttyACM0 caused start() to hang forever when
+        the board was not connected.
+        """
         try:
             import serial.tools.list_ports
             for p in serial.tools.list_ports.comports():
                 if p.vid == 0x2E8A:
                     return p.device
-            ports = serial.tools.list_ports.comports()
-            if ports:
-                return ports[0].device
         except (ImportError, AttributeError):
             pass
-        return '/dev/ttyACM0'
+        return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -3231,7 +3266,8 @@ def main():
         speed_ch       = _cfg(cfg, "rc", "speed_ch",       6,    int),
         auto_type_ch   = _cfg(cfg, "rc", "auto_type_ch",   7,    int),
         gps_log_ch      = _cfg(cfg, "rc", "gps_log_ch",      8,   int),
-        gps_bookmark_ch = _cfg(cfg, "rc", "gps_bookmark_ch", 10,  int),
+        gps_bookmark_ch = _cfg(cfg, "rc", "gps_bookmark_ch", 12,  int),
+        pause_ch        = _cfg(cfg, "rc", "pause_ch",         0,  int),
         gps_log_dir     = _cfg(cfg, "gps", "log_dir",        ""),
         gps_log_hz      = _cfg(cfg, "gps", "log_hz",         5.0, float),
         deadzone       = _cfg(cfg, "rc", "deadzone",       30,   int),
