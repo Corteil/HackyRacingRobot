@@ -143,6 +143,18 @@ button:active{background:#2a2a42}
 .tlog.warning{color:var(--yellow)}.tlog.error,.tlog.critical{color:var(--red)}
 .tlog.debug{color:var(--gray)}
 
+/* Alarm panel */
+.alm-toolbar{display:flex;align-items:center;justify-content:space-between;padding:4px 7px;flex-shrink:0}
+.alm-box{flex:1;overflow-y:auto;padding:2px 4px;font-size:11px;font-family:monospace}
+.alm-row{display:flex;align-items:baseline;gap:5px;padding:2px 4px;border-bottom:1px solid var(--border)}
+.alm-ts{color:var(--gray);width:48px;flex-shrink:0;font-size:10px}
+.alm-sev{width:52px;flex-shrink:0;font-weight:bold;font-size:10px}
+.alm-name{color:var(--cyan);min-width:80px;flex-shrink:0}
+.alm-msg{color:var(--white);flex:1;font-size:10px}
+.alm-warning .alm-sev{color:var(--yellow)}
+.alm-critical .alm-sev{color:var(--red)}
+.alm-info .alm-sev{color:var(--gray)}
+
 /* Lidar */
 .lidar-canvas{display:block;width:100%;flex:1}
 
@@ -431,6 +443,7 @@ const PANEL_DEFS = [
   { type:'system',             label:'System'       },
   { type:'logs',               label:'Logs'         },
   { type:'terminal',           label:'Terminal'     },
+  { type:'alarms',             label:'Alarms'       },
   { type:'nav',                label:'Navigation'   },
 ];
 
@@ -627,6 +640,14 @@ function htmlLogs(i) {
     </div>
     <div class="log-box" id="q${i}-log-box"></div>`;
 }
+function htmlAlarms(i) {
+  return `
+    <div class="alm-toolbar">
+      <span style="font-size:11px;color:var(--gray)">Alarm Log</span>
+      <button onclick="el('q${i}-alm-box').innerHTML=''" style="font-size:11px">Clear</button>
+    </div>
+    <div class="alm-box" id="q${i}-alm-box"></div>`;
+}
 
 // ── Render quad ───────────────────────────────────────────────────────────────
 function renderQuad(i) {
@@ -672,6 +693,7 @@ function renderQuad(i) {
   else if (kind === 'logs')     html = htmlLogs(i);
   else if (kind === 'terminal') html = htmlTerminal(i);
   else if (kind === 'nav')      html = htmlNav(i);
+  else if (kind === 'alarms')   html = htmlAlarms(i);
   body.innerHTML = html;
 
   if (kind === 'lidar') resizeLidar(`q${i}-lidar-canvas`);
@@ -1035,6 +1057,24 @@ function updateTerminalPanel(i, s) {
   // terminal boxes pick up log lines via the shared fetchLogs() / logPolling mechanism
   // The term-box is treated the same as log-box by fetchLogs — it has class term-box
   // but we hook into the same querySelectorAll by adding it to the selector
+}
+
+// ── Alarms panel ──────────────────────────────────────────────────────────────
+const _almSeenCount = {};
+function updateAlarmsPanel(i, s) {
+  const alarms = s._alarms || [];
+  const box = el(`q${i}-alm-box`); if (!box) return;
+  if (_almSeenCount[i] === alarms.length) return;
+  _almSeenCount[i] = alarms.length;
+  box.innerHTML = alarms.map(a => {
+    const sev = a.severity || 'info';
+    return `<div class="alm-row alm-${sev}">` +
+      `<span class="alm-ts">${(+a.ts).toFixed(1)}</span>` +
+      `<span class="alm-sev">${sev.toUpperCase()}</span>` +
+      `<span class="alm-name">${a.name||''}</span>` +
+      `<span class="alm-msg">${a.message||''}</span>` +
+      `</div>`;
+  }).join('');
 }
 
 function updateSystemPanel(i, s) {
@@ -1498,6 +1538,7 @@ function updateAllQuads(s) {
     else if (kind==='lidar')     updateLidarPanel(i, s);
     else if (kind==='terminal')  updateTerminalPanel(i, s);
     else if (kind==='nav')       updateNavPanel(i, s);
+    else if (kind==='alarms')    updateAlarmsPanel(i, s);
     // logs: updated by polling, not state
   }
 }
@@ -2129,13 +2170,13 @@ const PRESET_MAP = {
   fpv:'camera:fpv', front_left:'camera:front_left', front_right:'camera:front_right',
   rear:'camera:rear', lidar:'lidar', telemetry:'telemetry',
   gps_sky:'gps', gps_track:'gps', system:'system', imu:'telemetry',
-  depth_map:'system', motor:'motor', logs:'logs',
+  depth_map:'system', motor:'motor', logs:'logs', alarms:'alarms',
 };
 const PRESETS_DEFAULT = {
   Race:  ['camera:fpv','camera:front_left','telemetry','lidar'],
   Nav:   ['camera:front_left','camera:front_right','nav','lidar'],
   Setup: ['camera:front_left','camera:front_right','gps','telemetry'],
-  Debug: ['lidar','camera:front_left','telemetry','logs'],
+  Debug: ['lidar','camera:front_left','telemetry','alarms'],
 };
 let activePreset = '';
 
@@ -2178,11 +2219,13 @@ function _activeCamKey() {
 
 async function sendCmd(cmd, extra) {
   try {
-    await fetch('/api/cmd', {
+    const resp = await fetch('/api/cmd', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({cmd, ...(extra||{})}),
     });
+    const body = await resp.json();
+    if (body.ok && body.state) applyState(body.state);
   } catch(e){ console.error('cmd failed:',e); }
 }
 
@@ -2249,7 +2292,7 @@ function startLogPolling() {
 }
 
 // ── SSE connection ────────────────────────────────────────────────────────────
-let evtSrc=null;
+let _statePollTimer=null;
 
 function reloadCameraStreams() {
   // Force all active MJPEG streams to reconnect by cycling their src.
@@ -2276,22 +2319,27 @@ function reloadCameraStreams() {
 }
 
 function connect() {
-  if(evtSrc) evtSrc.close();
-  const cb=el('sb-conn');
-  cb.textContent='⚫ Connecting…'; cb.style.color=C.yellow;
-  let _live=false;
-  evtSrc=new EventSource('/api/state');
-  evtSrc.onopen=()=>{
-    if(!_live){ _live=true; cb.textContent='🟢 Live'; cb.style.color=C.green; reloadCameraStreams(); }
-  };
-  evtSrc.onmessage=e=>{
-    if(!_live){ _live=true; cb.textContent='🟢 Live'; cb.style.color=C.green; reloadCameraStreams(); }
-    try { applyState(JSON.parse(e.data)); } catch(err){ console.error('SSE:',err); }
-  };
-  evtSrc.onerror=()=>{
-    cb.textContent='🔴 Reconnecting…'; cb.style.color=C.red;
-    evtSrc.close(); setTimeout(connect,3000);
-  };
+  // Poll /api/state every 250 ms instead of SSE — keeps a connection slot free
+  // so button POSTs are never blocked by the 6-connection-per-origin limit.
+  if (_statePollTimer) { clearTimeout(_statePollTimer); _statePollTimer = null; }
+  const cb = el('sb-conn');
+  cb.textContent = '⚫ Connecting…'; cb.style.color = C.yellow;
+  let _live = false;
+
+  async function _poll() {
+    try {
+      const resp = await fetch('/api/state');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      if (!_live) { _live = true; cb.textContent = '🟢 Live'; cb.style.color = C.green; reloadCameraStreams(); }
+      applyState(data);
+    } catch(e) {
+      _live = false;
+      cb.textContent = '🔴 Reconnecting…'; cb.style.color = C.red;
+    }
+    _statePollTimer = setTimeout(_poll, 250);
+  }
+  _poll();
 }
 
 // ── Resize ────────────────────────────────────────────────────────────────────

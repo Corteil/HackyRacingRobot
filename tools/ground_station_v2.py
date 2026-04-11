@@ -82,6 +82,7 @@ try:
         state_flags,
         SF_RC_ACTIVE, SF_LIDAR_OK, SF_GPS_OK, SF_CAM_OK,
         SF_CAM_RECORDING, SF_DATA_LOGGING, SF_NO_MOTORS,
+        SF_BENCH_ENABLED, SF_FRONT_CAP, SF_REAR_CAP,
         ALARM_LOW_VOLTAGE, ALARM_SEV_WARNING,
         NAV_IDLE, NAV_DRIVING,
     )
@@ -324,7 +325,7 @@ class _GsState:
                 "cam_recording": bool(flags & SF_CAM_RECORDING),
                 "data_logging":  bool(flags & SF_DATA_LOGGING),
                 "no_motors":     bool(flags & SF_NO_MOTORS),
-                "bench_enabled": True,
+                "bench_enabled": bool(flags & SF_BENCH_ENABLED),
                 "aruco_ok":      False,
                 "aruco_enabled": {},
                 "cam_rotation":  0,
@@ -336,6 +337,9 @@ class _GsState:
                 "cam_fl_rec": bool(flags & SF_CAM_RECORDING),
                 "cam_fr_rec": False,
                 "cam_re_rec": False,
+                "cam_fl_cap": bool(flags & SF_FRONT_CAP),
+                "cam_fr_cap": False,
+                "cam_re_cap": bool(flags & SF_REAR_CAP),
                 "gate_confirmed": False, "current_gate_id": 0,
                 "cam_cap_w": {}, "cam_cap_h": {}, "aruco": dict(self._aruco),
                 # Navigation (unpack flat from _nav)
