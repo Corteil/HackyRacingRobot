@@ -897,17 +897,8 @@ def index():
 
 @app.route('/api/state')
 def api_state():
-    """SSE stream — pushes state JSON at ~10 Hz to the browser."""
-    def _gen():
-        yield "retry: 1000\n\n"   # browser reconnects within 1 s on drop
-        while True:
-            yield f"data: {json.dumps(_gs.get())}\n\n"
-            time.sleep(0.1)
-    return Response(
-        _gen(),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    """Single-shot state snapshot (polled by browser at ~250 ms)."""
+    return jsonify(_gs.get())
 
 
 @app.route('/stream/fpv')
