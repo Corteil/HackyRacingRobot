@@ -224,7 +224,7 @@ SYNC = `0x48 0x52` (`HR`). CRC16 covers TYPE through end of PAYLOAD.
 ## NAV packet (TYPE 0x05) — variable length
 
 ```
-Fixed header (14 bytes): <BBBHHhBBBBB>
+Fixed header (15 bytes): <BBBHHhBBBBBB>
   nav_state:u8        NAV_IDLE=0, NAV_DRIVING=1 …
   gate:u8             Current target gate index
   wp:u8               Current GPS waypoint index
@@ -236,6 +236,7 @@ Fixed header (14 bytes): <BBBHHhBBBBB>
   inside_tag:u8       Front-face tag ID for inside post  (0xFF = use gate*2+1 formula)
   next_outside_tag:u8 Outside tag ID for next gate
   next_inside_tag:u8  Inside  tag ID for next gate
+  next_gate:u8        Next gate index in sequence (0xFF = use gate+1 formula)
 
 Variable tail (labels, both optional if payload ends early):
   gate_label_len:u8   Length of gate label string (0–31)
@@ -244,7 +245,7 @@ Variable tail (labels, both optional if payload ends early):
   next_label:M bytes  UTF-8 next gate label
 ```
 
-Tag IDs use the gate-numbering formula (`gate*2`, `gate*2+1`) when `0xFF` or when the payload is shorter than 14 bytes (backward compatibility with older firmware).
+Tag IDs use the gate-numbering formula (`gate*2`, `gate*2+1`) when `0xFF` or when the payload is shorter than 14 bytes (backward compatibility with older firmware). `next_gate` uses `gate+1` when `0xFF` or when the payload is shorter than 15 bytes.
 
 ## Uplink (ground station → robot)
 

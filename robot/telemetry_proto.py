@@ -477,12 +477,13 @@ def decode_sys(payload: bytes) -> dict:
 # NAV — variable length
 # Fixed header (14 bytes):
 #   nav_state:u8 gate:u8 wp:u8 dist:u16(0.1m) bearing:u16(0.1°) bearing_err:i16(0.1°) tags:u8
-#   outside_tag:u8 inside_tag:u8 next_outside_tag:u8 next_inside_tag:u8
+#   outside_tag:u8 inside_tag:u8 next_outside_tag:u8 next_inside_tag:u8 next_gate:u8
 # Variable tail (optional, for backward compat):
 #   gate_label_len:u8  gate_label:N bytes  (UTF-8, max 31 chars, no NUL)
 #   next_label_len:u8  next_label:M bytes  (UTF-8, max 31 chars, no NUL)
-_FMT_NAV     = struct.Struct('<BBBHHhB')    # 10-byte legacy base (used for size sentinel)
-_FMT_NAV_EXT = struct.Struct('<BBBHHhBBBBB')  # 14-byte extended fixed header
+_FMT_NAV        = struct.Struct('<BBBHHhB')      # 10-byte legacy base (used for size sentinel)
+_FMT_NAV_EXT    = struct.Struct('<BBBHHhBBBBBB') # 15-byte extended fixed header
+_NAV_EXT_V1_SIZE = 14                            # v1 had no next_gate field
 _NAV_LABEL_MAX = 31
 
 def encode_nav(nav_state: int, gate: int, wp: int,
@@ -490,7 +491,8 @@ def encode_nav(nav_state: int, gate: int, wp: int,
                bearing_err: Optional[float], tags: int,
                outside_tag: int = 0xFF, inside_tag: int = 0xFF,
                next_outside_tag: int = 0xFF, next_inside_tag: int = 0xFF,
-               gate_label: str = "", next_gate_label: str = "") -> bytes:
+               gate_label: str = "", next_gate_label: str = "",
+               next_gate: int = 0xFF) -> bytes:
     _dist = NULL_U16 if dist        is None else max(0,     min(65534, int(round(dist        * 10))))
     _bear = NULL_U16 if bearing     is None else max(0,     min(3599,  int(round(bearing     * 10))))
     _berr = NULL_I16 if bearing_err is None else max(-1800, min(1800,  int(round(bearing_err * 10))))
@@ -498,6 +500,7 @@ def encode_nav(nav_state: int, gate: int, wp: int,
         nav_state & 0xFF, gate & 0xFF, wp & 0xFF, _dist, _bear, _berr, tags & 0xFF,
         outside_tag & 0xFF, inside_tag & 0xFF,
         next_outside_tag & 0xFF, next_inside_tag & 0xFF,
+        next_gate & 0xFF,
     )
     def _lbl(s: str) -> bytes:
         enc = s.encode("utf-8")[:_NAV_LABEL_MAX]
@@ -508,17 +511,23 @@ def encode_nav(nav_state: int, gate: int, wp: int,
 def decode_nav(payload: bytes) -> dict:
     base_size = _FMT_NAV.size  # 10 bytes
     st, gate, wp, dist, bear, berr, tags = _FMT_NAV.unpack(payload[:base_size])
-    # Extended fixed header (4 tag-ID bytes)
+    # Extended fixed header (tag IDs + next_gate)
     if len(payload) >= _FMT_NAV_EXT.size:
-        *_, ot, it, not_, nit = _FMT_NAV_EXT.unpack(payload[:_FMT_NAV_EXT.size])
+        *_, ot, it, not_, nit, ng = _FMT_NAV_EXT.unpack(payload[:_FMT_NAV_EXT.size])
+    elif len(payload) >= _NAV_EXT_V1_SIZE:
+        # v1 extended header (no next_gate field)
+        _, _, _, _, _, _, _, ot, it, not_, nit = struct.unpack('<BBBHHhBBBBB', payload[:_NAV_EXT_V1_SIZE])
+        ng = 0xFF  # sentinel: use formula fallback
     else:
         ot = gate * 2;       it  = gate * 2 + 1
         not_ = (gate+1) * 2; nit = (gate+1) * 2 + 1
+        ng = 0xFF
     # Sentinel 0xFF means "use formula fallback"
     if ot  == 0xFF: ot  = gate * 2
     if it  == 0xFF: it  = gate * 2 + 1
-    if not_== 0xFF: not_= (gate+1) * 2
-    if nit == 0xFF: nit = (gate+1) * 2 + 1
+    if ng  == 0xFF: ng  = gate + 1
+    if not_== 0xFF: not_= ng * 2
+    if nit == 0xFF: nit = ng * 2 + 1
     # Variable-length labels
     def _read_lbl(buf: bytes, off: int) -> tuple:
         if off >= len(buf):
@@ -540,6 +549,7 @@ def decode_nav(payload: bytes) -> dict:
         "tags":             tags,
         "outside_tag":      ot,
         "inside_tag":       it,
+        "next_gate":        ng,
         "next_outside_tag": not_,
         "next_inside_tag":  nit,
         "gate_label":       gate_lbl,

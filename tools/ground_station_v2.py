@@ -256,7 +256,7 @@ class _GsState:
             self._nav["nav_outside_tag"]    = d["outside_tag"]
             self._nav["nav_inside_tag"]     = d["inside_tag"]
             self._nav["nav_gate_label"]     = d["gate_label"] or f"Gate {gate}"
-            next_gate = gate + 1
+            next_gate = d["next_gate"]
             self._nav["nav_next_gate"]          = next_gate
             self._nav["nav_next_outside_tag"]   = d["next_outside_tag"]
             self._nav["nav_next_inside_tag"]    = d["next_inside_tag"]

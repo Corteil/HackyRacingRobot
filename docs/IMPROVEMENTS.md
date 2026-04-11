@@ -6,10 +6,10 @@ Concrete issues found by code review, ordered by effort. Pick up from here next 
 
 ## Quick (15–30 min each)
 
-### 1. Remove `or 0` guards for tag IDs
-**File:** `tools/serial_telemetry_v2.py:377–380`
-`state.nav_outside_tag or 0` uses Python's falsy `0` to guard against `None`, but the field is typed `int = 0` so `None` can never occur. The pattern would silently corrupt tag ID 0 if it were ever used.
-**Fix:** Remove all four `or 0` guards on the nav tag ID fields.
+### ~~1. Remove `or 0` guards for tag IDs~~ ✓ done
+~~**File:** `tools/serial_telemetry_v2.py:377–380`~~
+~~`state.nav_outside_tag or 0` uses Python's falsy `0` to guard against `None`, but the field is typed `int = 0` so `None` can never occur. The pattern would silently corrupt tag ID 0 if it were ever used.~~
+~~**Fix:** Remove all four `or 0` guards on the nav tag ID fields.~~
 
 ### 2. Log zlib decompression failures
 **File:** `robot/telemetry_proto.py` — `FrameDecoder._try_decode()`
@@ -25,10 +25,10 @@ If the waypoint JSON file is empty or missing the navigator starts with `_waypoi
 
 ## Medium (1–2 hours each)
 
-### 4. Transmit `next_gate` index in TYPE_NAV packet
-**Files:** `robot/telemetry_proto.py`, `tools/serial_telemetry_v2.py`, `tools/ground_station_v2.py`
-`next_outside_tag` and `next_inside_tag` are transmitted but not the actual `next_gate` index. The ground station derives it as `gate + 1`, which is wrong for non-sequential tracks (e.g. sequence `[0, 3, 1]`).
-**Fix:** Add `next_gate: u8` to `_FMT_NAV_EXT` (bump to 15 bytes), pass `state.nav_next_gate` in `serial_telemetry_v2.py`, and use it in `ground_station_v2.py:handle_nav` instead of `gate + 1`.
+### ~~4. Transmit `next_gate` index in TYPE_NAV packet~~ ✓ done
+~~**Files:** `robot/telemetry_proto.py`, `tools/serial_telemetry_v2.py`, `tools/ground_station_v2.py`~~
+~~`next_outside_tag` and `next_inside_tag` are transmitted but not the actual `next_gate` index. The ground station derives it as `gate + 1`, which is wrong for non-sequential tracks (e.g. sequence `[0, 3, 1]`).~~
+~~**Fix:** Add `next_gate: u8` to `_FMT_NAV_EXT` (bump to 15 bytes), pass `state.nav_next_gate` in `serial_telemetry_v2.py`, and use it in `ground_station_v2.py:handle_nav` instead of `gate + 1`.~~
 
 ### 5. NTRIP socket not guaranteed closed on exception
 **File:** `gnss/ntrip.py` — `_connect_and_stream()`
