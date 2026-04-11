@@ -2456,11 +2456,13 @@ function _activeCamKey() {
 
 async function sendCmd(cmd, extra) {
   try {
-    await fetch('/api/cmd', {
+    const resp = await fetch('/api/cmd', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({cmd, ...(extra||{})}),
     });
+    const body = await resp.json();
+    if (body.ok && body.state) applyState(body.state);
   } catch(e){ console.error('cmd failed:',e); }
 }
 
@@ -2527,7 +2529,7 @@ function startLogPolling() {
 }
 
 // ── SSE connection ────────────────────────────────────────────────────────────
-let evtSrc=null;
+let _statePollTimer=null;
 
 function reloadCameraStreams() {
   // Force all active MJPEG streams to reconnect by cycling their src.
@@ -2554,22 +2556,27 @@ function reloadCameraStreams() {
 }
 
 function connect() {
-  if(evtSrc) evtSrc.close();
-  const cb=el('sb-conn');
-  cb.textContent='⚫ Connecting…'; cb.style.color=C.yellow;
-  let _live=false;
-  evtSrc=new EventSource('/api/state');
-  evtSrc.onopen=()=>{
-    if(!_live){ _live=true; cb.textContent='🟢 Live'; cb.style.color=C.green; reloadCameraStreams(); }
-  };
-  evtSrc.onmessage=e=>{
-    if(!_live){ _live=true; cb.textContent='🟢 Live'; cb.style.color=C.green; reloadCameraStreams(); }
-    try { applyState(JSON.parse(e.data)); } catch(err){ console.error('SSE:',err); }
-  };
-  evtSrc.onerror=()=>{
-    cb.textContent='🔴 Reconnecting…'; cb.style.color=C.red;
-    evtSrc.close(); setTimeout(connect,3000);
-  };
+  // Poll /api/state every 250 ms instead of SSE — keeps a connection slot free
+  // so button POSTs are never blocked by the 6-connection-per-origin limit.
+  if (_statePollTimer) { clearTimeout(_statePollTimer); _statePollTimer = null; }
+  const cb = el('sb-conn');
+  cb.textContent = '⚫ Connecting…'; cb.style.color = C.yellow;
+  let _live = false;
+
+  async function _poll() {
+    try {
+      const resp = await fetch('/api/state');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      if (!_live) { _live = true; cb.textContent = '🟢 Live'; cb.style.color = C.green; reloadCameraStreams(); }
+      applyState(data);
+    } catch(e) {
+      _live = false;
+      cb.textContent = '🔴 Reconnecting…'; cb.style.color = C.red;
+    }
+    _statePollTimer = setTimeout(_poll, 250);
+  }
+  _poll();
 }
 
 // ── Resize ────────────────────────────────────────────────────────────────────
@@ -2712,36 +2719,30 @@ def _depth_map_to_jpeg(dm) -> Optional[bytes]:
         return None
 
 
+def _snapshot():
+    """Serialise current robot state for HTTP responses."""
+    nav_bearing_err = None
+    if _robot._navigator is not None:
+        nav_bearing_err = _robot._navigator.bearing_err
+    elif _robot._gps_navigator is not None:
+        nav_bearing_err = _robot._gps_navigator.heading_err
+    return _serialise(
+        _robot.get_state(),
+        cam_rotation    = _robot.get_cam_rotation(),
+        aruco_enabled   = _robot.get_aruco_enabled('all'),
+        aruco_states    = {
+            cam: (_robot.get_aruco_state(cam),
+                  *_robot.get_cam_capture_size(cam))
+            for cam in ('front_left', 'front_right', 'rear')
+        },
+        nav_bearing_err = nav_bearing_err,
+    )
+
+
 @app.route('/api/state')
 def api_state():
-    def _gen():
-        while True:
-            try:
-                nav_bearing_err = None
-                if _robot._navigator is not None:
-                    nav_bearing_err = _robot._navigator.bearing_err
-                elif _robot._gps_navigator is not None:
-                    nav_bearing_err = _robot._gps_navigator.heading_err
-                data = _serialise(
-                    _robot.get_state(),
-                    cam_rotation    = _robot.get_cam_rotation(),
-                    aruco_enabled   = _robot.get_aruco_enabled('all'),
-                    aruco_states    = {
-                        cam: (_robot.get_aruco_state(cam),
-                              *_robot.get_cam_capture_size(cam))
-                        for cam in ('front_left', 'front_right', 'rear')
-                    },
-                    nav_bearing_err = nav_bearing_err,
-                )
-                yield f"data: {json.dumps(data)}\n\n"
-            except Exception as exc:
-                yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-            time.sleep(0.1)
-    return Response(
-        _gen(),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    """Single-shot state snapshot (polled by dashboard at ~250 ms)."""
+    return jsonify(_snapshot())
 
 
 @app.route('/api/cmd', methods=['POST'])
@@ -2785,7 +2786,7 @@ def api_cmd():
         else: return jsonify({'ok': False, 'error': 'Unknown mode'}), 400
     else:
         return jsonify({'ok': False, 'error': f'Unknown command: {cmd}'}), 400
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'state': _snapshot()})
 
 
 @app.route('/api/logs')

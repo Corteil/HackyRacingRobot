@@ -1973,6 +1973,7 @@ class Robot:
         self._rc_channels  = [1500] * 14
         self._rc_ts        = 0.0     # monotonic time of last good iBUS packet
         self._rc_active    = False
+        self._rc_lost_streak = 0     # consecutive rc_valid=0 readings (debounce)
         self._speed_scale  = 0.25
 
         self._stop_evt         = threading.Event()
@@ -2767,12 +2768,17 @@ class Robot:
                     if result is not None:
                         channels, rc_valid = result
                         self._rc_channels = channels
-                        # Trust the Yukon's own 500 ms iBUS failsafe directly.
-                        # Update the Pi-side timestamp so the None-fallback below
-                        # stays warm while RC is connected.
-                        self._rc_active = rc_valid
                         if rc_valid:
-                            self._rc_ts = time.monotonic()
+                            # Good packet — declare active immediately, reset streak.
+                            self._rc_lost_streak = 0
+                            self._rc_active      = True
+                            self._rc_ts          = time.monotonic()
+                        else:
+                            # Bad packet — require 3 consecutive misses (~300 ms) before
+                            # declaring inactive, to suppress brief RF glitches.
+                            self._rc_lost_streak += 1
+                            if self._rc_lost_streak >= 3:
+                                self._rc_active = False
                     else:
                         # query_rc() timed out (serial hiccup) — use local timestamp
                         # so a single bad exchange doesn't instantly drop RC status.
@@ -2799,8 +2805,9 @@ class Robot:
                     self.bookmark_gps()
                 self._prev_bookmark_ch = bm_val
 
-            # SD: AUTO motor pause switch — syncs no_motors flag from RC channel
-            if self._ch_pause is not None:
+            # SD: AUTO motor pause switch — syncs no_motors flag from RC channel.
+            # Only applies when RC is active; otherwise the dashboard toggle wins.
+            if self._ch_pause is not None and self._rc_active:
                 want_pause = self._rc_channels[self._ch_pause] > 1500
                 if want_pause != self._no_motors:
                     self.set_no_motors(want_pause)
