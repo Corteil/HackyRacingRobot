@@ -238,10 +238,12 @@ Buttons in the browser send CMD frames over the SiK uplink.
 | ESTOP | 0x01 | Kill motors immediately |
 | Reset ESTOP | 0x02 | Clear ESTOP, return to MANUAL |
 | AUTO / MANUAL | 0x03 | Switch robot mode |
-| ⏺ REC | 0x05 | Toggle camera recording |
-| ⬤ DLOG | 0x06 | Toggle ML data logging |
-| No Motors | 0x09 | Toggle no-motors bench mode |
-| ArUco | 0x0A | Toggle ArUco detection |
+| ⬤ DLOG | 0x04 | Toggle ML data logging |
+| 📍 Bookmark | 0x05 | Save current GPS position |
+| ⏺ REC | 0x06 | Toggle camera recording |
+| FPV Camera | 0x07 | Toggle bench power (FPV camera supply) |
+| No Motors | 0x08 | Toggle no-motors bench mode |
+| ArUco | 0x09 | Toggle ArUco detection |
 
 ---
 
@@ -314,9 +316,9 @@ station reconnects automatically — badge turns green within 3 seconds of
 the link recovering.
 
 **GPS shows no satellite sky view**
-Satellite detail requires ArUco-enabled `serial_telemetry_v2.py` — the per-
-satellite data (elevation, azimuth, SNR) is included in the GPS packet. Check
-that `[telemetry_radio] disabled = false` in `robot.ini`.
+Per-satellite data (elevation, azimuth, SNR) is included in the GPS packet.
+Check that `serial_telemetry_v2.py` is running on the Pi and that
+`[telemetry_radio] disabled = false` in `robot.ini`.
 
 **FPV feed not showing**
 Install `opencv-python`. Try `--fpv-device 1` if device 0 is the built-in
