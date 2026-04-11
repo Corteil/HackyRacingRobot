@@ -20,8 +20,8 @@ Frame overhead: 8 bytes per packet.
 Downlink packet types (robot → ground)
 ---------------------------------------
   0x01  STATE   6 B   5 Hz   mode, drive, flags, speed_scale
-  0x02  TELEM  13 B   5 Hz   voltage, current, temps, faults, IMU heading/pitch/roll
-  0x03  GPS    18 B   2 Hz   lat, lon, alt, speed, heading, fix, h_error, hdop, sats
+  0x02  TELEM  14 B   5 Hz   voltage, current, temps, faults, IMU heading/pitch/roll
+  0x03  GPS    19 B   2 Hz   lat, lon, alt, speed, heading, fix, h_error, hdop, sats
   0x04  SYS     4 B   1 Hz   cpu, mem, disk, pi_temp
   0x05  NAV    10 B   2 Hz   nav state, gate, wp, dist, bearing, bearing_error, tags
   0x06  LIDAR   var   1 Hz   distance array, zlib compressed
@@ -163,13 +163,19 @@ CMD_NAMES = {
 SF_RC_ACTIVE      = 1 << 0
 SF_LIDAR_OK       = 1 << 1
 SF_GPS_OK         = 1 << 2
-SF_CAM_OK         = 1 << 3
+SF_CAM_OK         = 1 << 3   # front-left (primary) camera OK
 SF_CAM_RECORDING  = 1 << 4
 SF_DATA_LOGGING   = 1 << 5
 SF_NO_MOTORS      = 1 << 6
 SF_BENCH_ENABLED  = 1 << 7
 SF_FRONT_CAP      = 1 << 8
 SF_REAR_CAP       = 1 << 9
+SF_CAM_FR_OK      = 1 << 10  # front-right camera OK
+SF_CAM_RE_OK      = 1 << 11  # rear camera OK
+# Auto-type (2 bits, only meaningful when mode == AUTO)
+#   00 = Camera   01 = GPS   10 = Cam+GPS
+SF_AUTO_TYPE_0    = 1 << 12
+SF_AUTO_TYPE_1    = 1 << 13
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -640,19 +646,27 @@ def state_flags(robot_state) -> int:
     """Build the STATE flags uint16 from a RobotState dataclass instance."""
     s = robot_state
     flags = 0
-    if getattr(s, 'rc_active',      False): flags |= SF_RC_ACTIVE
-    if getattr(s, 'lidar_ok',       False): flags |= SF_LIDAR_OK
-    if getattr(s, 'gps_ok',         False): flags |= SF_GPS_OK
-    if getattr(s, 'camera_ok',      False): flags |= SF_CAM_OK
-    if getattr(s, 'cam_recording',  False): flags |= SF_CAM_RECORDING
-    if getattr(s, 'data_logging',   False): flags |= SF_DATA_LOGGING
-    if getattr(s, 'no_motors',      False): flags |= SF_NO_MOTORS
-    if getattr(s, 'bench_enabled',  False): flags |= SF_BENCH_ENABLED
+    if getattr(s, 'rc_active',            False): flags |= SF_RC_ACTIVE
+    if getattr(s, 'lidar_ok',             False): flags |= SF_LIDAR_OK
+    if getattr(s, 'gps_ok',               False): flags |= SF_GPS_OK
+    if getattr(s, 'camera_ok',            False): flags |= SF_CAM_OK
+    if getattr(s, 'cam_recording',        False): flags |= SF_CAM_RECORDING
+    if getattr(s, 'data_logging',         False): flags |= SF_DATA_LOGGING
+    if getattr(s, 'no_motors',            False): flags |= SF_NO_MOTORS
+    if getattr(s, 'bench_enabled',        False): flags |= SF_BENCH_ENABLED
     # Lens cap: either front camera triggers SF_FRONT_CAP
     front_cap = (getattr(s, 'cam_front_left_cap',  False) or
                  getattr(s, 'cam_front_right_cap', False))
-    if front_cap:                         flags |= SF_FRONT_CAP
-    if getattr(s, 'cam_rear_cap', False): flags |= SF_REAR_CAP
+    if front_cap:                                 flags |= SF_FRONT_CAP
+    if getattr(s, 'cam_rear_cap',         False): flags |= SF_REAR_CAP
+    # Per-camera OK (front-left is covered by SF_CAM_OK above)
+    if getattr(s, 'cam_front_right_ok',   False): flags |= SF_CAM_FR_OK
+    if getattr(s, 'cam_rear_ok',          False): flags |= SF_CAM_RE_OK
+    # Auto-type: encode 2-bit value in bits 12-13
+    # auto_type.name is one of CAMERA / GPS / CAMERA_GPS
+    auto_type_name = getattr(getattr(s, 'auto_type', None), 'name', 'CAMERA')
+    auto_type_bits = {'CAMERA': 0, 'GPS': 1, 'CAMERA_GPS': 2}.get(auto_type_name, 0)
+    flags |= (auto_type_bits & 0x3) << 12
     return flags
 
 

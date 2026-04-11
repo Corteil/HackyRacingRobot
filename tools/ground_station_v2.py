@@ -83,6 +83,7 @@ try:
         SF_RC_ACTIVE, SF_LIDAR_OK, SF_GPS_OK, SF_CAM_OK,
         SF_CAM_RECORDING, SF_DATA_LOGGING, SF_NO_MOTORS,
         SF_BENCH_ENABLED, SF_FRONT_CAP, SF_REAR_CAP,
+        SF_CAM_FR_OK, SF_CAM_RE_OK, SF_AUTO_TYPE_0, SF_AUTO_TYPE_1,
         ALARM_LOW_VOLTAGE, ALARM_SEV_WARNING,
         NAV_IDLE, NAV_DRIVING,
     )
@@ -148,6 +149,7 @@ class _GsState:
 
         # State sub-dicts — set once a packet of each type arrives
         self._mode:       str   = "MANUAL"
+        self._auto_type:  str   = "Camera"
         self._drv_left:   float = 0.0
         self._drv_right:  float = 0.0
         self._flags:      int   = 0
@@ -195,12 +197,15 @@ class _GsState:
     # ── Packet handlers ───────────────────────────────────────────────────────
 
     def handle_state(self, d: dict):
-        mode_names = {0: "MANUAL", 1: "AUTO", 2: "ESTOP"}
+        mode_names      = {0: "MANUAL", 1: "AUTO", 2: "ESTOP"}
+        auto_type_names = {0: "Camera", 1: "GPS", 2: "Cam+GPS"}
+        flags = d["flags"]
         with self._lock:
             self._mode        = mode_names.get(d["mode"], "MANUAL")
+            self._auto_type   = auto_type_names.get((flags >> 12) & 0x3, "Camera")
             self._drv_left    = d["drv_left"]
             self._drv_right   = d["drv_right"]
-            self._flags       = d["flags"]
+            self._flags       = flags
             self._speed_scale = d["speed_scale"]
             self._touch()
 
@@ -316,7 +321,7 @@ class _GsState:
             return {
                 # Top-level
                 "mode":          self._mode,
-                "auto_type":     "Camera",
+                "auto_type":     self._auto_type,
                 "speed_scale":   self._speed_scale,
                 "rc_active":     bool(flags & SF_RC_ACTIVE),
                 "camera_ok":     bool(flags & SF_CAM_OK),
@@ -332,8 +337,8 @@ class _GsState:
                 "gps_logging":   False,
                 # Per-camera stubs (single camera info from flags)
                 "cam_fl_ok":  bool(flags & SF_CAM_OK),
-                "cam_fr_ok":  False,
-                "cam_re_ok":  False,
+                "cam_fr_ok":  bool(flags & SF_CAM_FR_OK),
+                "cam_re_ok":  bool(flags & SF_CAM_RE_OK),
                 "cam_fl_rec": bool(flags & SF_CAM_RECORDING),
                 "cam_fr_rec": False,
                 "cam_re_rec": False,
@@ -408,13 +413,20 @@ class _LinkBase:
 
     RX: feeds raw bytes into a FrameDecoder; dispatches decoded frames.
     TX: drains two queues — cmd_q (encode_cmd frames) and rtcm_q (encode_rtcm frames).
+        Also sends a PING heartbeat every 5 s so the robot's link-age watchdog stays fresh.
     """
+
+    _PING_INTERVAL  = 5.0   # seconds between keepalive PINGs to the robot
+    _STATS_INTERVAL = 30.0  # seconds between RX stats log lines
 
     def __init__(self, rtcm_q: queue.Queue, cmd_q: queue.Queue):
         self._rtcm_q  = rtcm_q
         self._cmd_q   = cmd_q
         self._stop    = threading.Event()
         self._tx_lock = threading.Lock()
+        self._rx_packets = 0
+        self._rx_bytes   = 0
+        self._bad_crc    = 0
 
     def stop(self):
         self._stop.set()
@@ -440,7 +452,9 @@ class _LinkBase:
                 continue
             if not chunk:
                 continue
+            self._rx_bytes += len(chunk)
             for ptype, payload in decoder.feed(chunk):
+                self._rx_packets += 1
                 _dispatch(ptype, payload)
 
     # ── shared TX loop ────────────────────────────────────────────────────────
@@ -449,9 +463,16 @@ class _LinkBase:
         """
         Drain cmd_q and rtcm_q.  Each item in cmd_q is an already-encoded frame
         (bytes).  Each item in rtcm_q is raw RTCM3 bytes that must be wrapped.
+        Also sends a PING every _PING_INTERVAL seconds and logs RX stats every
+        _STATS_INTERVAL seconds.
         """
+        next_ping  = time.monotonic() + self._PING_INTERVAL
+        next_stats = time.monotonic() + self._STATS_INTERVAL
+
         while not self._stop.is_set():
+            now  = time.monotonic()
             sent = False
+
             # CMD frames (already encoded)
             try:
                 frame = self._cmd_q.get_nowait()
@@ -459,6 +480,7 @@ class _LinkBase:
                 sent = True
             except queue.Empty:
                 pass
+
             # RTCM bytes — wrap and send in chunks to stay within MTU
             try:
                 raw = self._rtcm_q.get_nowait()
@@ -468,6 +490,21 @@ class _LinkBase:
                 sent = True
             except queue.Empty:
                 pass
+
+            # Periodic PING — keeps robot link-age watchdog fresh
+            if now >= next_ping:
+                self._safe_write(encode_ping())
+                next_ping = now + self._PING_INTERVAL
+
+            # Periodic RX stats log
+            if now >= next_stats:
+                age = round(_gs.link_age(), 1)
+                log.info("RX stats: pkts=%d  bytes=%d  link_age=%.1fs  "
+                         "ntrip=%s",
+                         self._rx_packets, self._rx_bytes, age,
+                         _gs.ntrip_status)
+                next_stats = now + self._STATS_INTERVAL
+
             if not sent:
                 time.sleep(0.02)
 
@@ -843,7 +880,10 @@ class FpvCapture:
             if ok:
                 with self._lock:
                     self._frame = buf.tobytes()
-        cap.release()
+        try:
+            cap.release()
+        except Exception:
+            pass
         self.ok = False
 
 
