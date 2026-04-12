@@ -254,4 +254,4 @@ Tag IDs use the gate-numbering formula (`gate*2`, `gate*2+1`) when `0xFF` or whe
 | CMD  | 0x81 | ↑ | Command: `cmd_id:u8` + optional body bytes |
 | RTCM | 0x82 | ↑ | Raw RTCM3 correction bytes injected into TAU1308 |
 
-CMD IDs: 0x01=ESTOP, 0x02=reset, 0x03=set_mode, 0x04=data_log_toggle, 0x05=gps_bookmark, 0x06=record_toggle, 0x07=bench_toggle, 0x08=no_motors_toggle, 0x09=aruco_toggle.
+CMD IDs: 0x01=ESTOP, 0x02=reset, 0x03=set_mode, 0x04=data_log_toggle, 0x05=gps_bookmark, 0x06=record_toggle, 0x07=bench_toggle, 0x08=no_motors_toggle, 0x09=aruco_toggle, 0x0A=nav_reset, 0x0B=nav_pause_toggle.
