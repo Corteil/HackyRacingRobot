@@ -214,6 +214,7 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
         'data_logging':  state.data_logging,
         'no_motors':     state.no_motors,
         'bench_enabled': state.bench_enabled,
+        'nav_paused':    state.nav_paused,
         'nav_state':          state.nav_state,
         'nav_gate':           state.nav_gate,
         'nav_bearing_err':    nav_bearing_err,
@@ -949,6 +950,10 @@ function renderQuad(i) {
         <button onclick="sendCmd('record_toggle',{cam:'${camKey}'})" id="q${i}-btn-rec" style="font-size:10px">⏺</button>
         <button onclick="sendCmd('record_stop',{cam:'${camKey}'})" style="font-size:10px" title="Stop recording">⏹</button>
         <button onclick="toggleStream(${i})" id="q${i}-btn-stream" style="font-size:10px" title="Pause/resume stream">📷</button>`;
+    } else if (kind === 'nav') {
+      hdr.innerHTML += `
+        <button onclick="sendCmd('nav_reset')" style="font-size:10px" title="Restart navigator from gate 0">Reset</button>
+        <button onclick="sendCmd('nav_pause_toggle')" id="q${i}-btn-nav-pause" style="font-size:10px" title="Pause/resume autonomous navigation">Pause</button>`;
     }
   }
 
@@ -1428,6 +1433,14 @@ function updateNavPanel(i, s) {
     const n = camAruco ? (camAruco.tag_count || 0) : (s.nav_tags_visible || 0);
     tagsEl.textContent = n;
     tagsEl.style.color = n ? C.cyan : C.gray;
+  }
+
+  // Pause button label
+  const pauseBtn = el(`q${i}-btn-nav-pause`);
+  if (pauseBtn) {
+    pauseBtn.textContent = s.nav_paused ? 'Resume' : 'Pause';
+    pauseBtn.style.color = s.nav_paused ? 'var(--yellow)' : '';
+    pauseBtn.style.borderColor = s.nav_paused ? 'var(--yellow)' : '';
   }
 
   // Canvas radar view
@@ -2779,6 +2792,10 @@ def api_cmd():
         _robot.set_bench(not _robot.get_state().bench_enabled)
     elif cmd == 'no_motors_toggle':
         _robot.set_no_motors(not _robot.get_state().no_motors)
+    elif cmd == 'nav_reset':
+        _robot.reset_nav()
+    elif cmd == 'nav_pause_toggle':
+        _robot.toggle_nav_pause()
     elif cmd == 'set_mode':
         mode = body.get('mode', '')
         if   mode == 'MANUAL': _robot.set_mode(RobotMode.MANUAL)

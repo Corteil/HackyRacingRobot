@@ -237,7 +237,8 @@ class RobotState:
     nav_next_inside_tag:    int             = 3     # front-face tag ID for inside  post of next gate
     nav_next_gate_label:    str             = ""    # human label for next gate
     no_motors:          bool            = False  # drive commands suppressed
-    bench_enabled:   bool        = True   # bench power output enabled (on at startup)
+    bench_enabled:      bool            = True   # bench power output enabled (on at startup)
+    nav_paused:         bool            = False  # navigator paused (drive commands suppressed in AUTO)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1920,6 +1921,7 @@ class Robot:
         self._speed_min   = speed_min
         self._control_hz  = control_hz
         self._no_motors   = no_motors
+        self._nav_paused  = False
         self._bench_enabled = True   # matches firmware startup state
         # LED strip config — read directly from robot.ini so it's consistent
         # across all frontends without each one needing to pass these values.
@@ -2291,7 +2293,8 @@ class Robot:
             nav_next_inside_tag    = self._navigator.next_inside_tag_id  if self._navigator else 3,
             nav_next_gate_label    = self._navigator.next_gate_label     if self._navigator else "",
             no_motors          = self._no_motors,
-            bench_enabled   = self._bench_enabled,
+            bench_enabled      = self._bench_enabled,
+            nav_paused         = self._nav_paused,
         )
 
     def get_heading(self) -> Optional[float]:
@@ -2645,6 +2648,20 @@ class Robot:
         self._no_motors = on
         log.info("No-motors mode %s", "ON" if on else "OFF")
 
+    def reset_nav(self):
+        """Restart the navigator from gate/waypoint 0.  Safe to call at any time."""
+        if self._navigator:
+            self._navigator.start()
+            log.info("Navigator reset to gate 0")
+        if self._gps_navigator:
+            self._gps_navigator.start()
+            log.info("GPS navigator reset to waypoint 0")
+
+    def toggle_nav_pause(self):
+        """Pause or resume autonomous navigation (drive output suppressed while paused)."""
+        self._nav_paused = not self._nav_paused
+        log.info("Navigator %s", "PAUSED" if self._nav_paused else "RESUMED")
+
     def bookmark_gps(self):
         """Insert a bookmark row into the active GPS log (no-op if not logging)."""
         if self._gps_logging:
@@ -2948,9 +2965,12 @@ class Robot:
                     log.info("RC → AUTO")
 
             else:  # AUTO
-                # ── Camera autonomous: feed ArUco state + IMU heading ─────────
                 _nav_cam = self._cam('front_left')   # multi-cam or legacy fallback
-                if (self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)
+                if self._nav_paused:
+                    self.drive(0.0, 0.0)
+                    left, right = 0.0, 0.0
+                # ── Camera autonomous: feed ArUco state + IMU heading ─────────
+                elif (self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)
                         and self._navigator is not None
                         and _nav_cam is not None):
                     aruco_state = _nav_cam.get_aruco_state()

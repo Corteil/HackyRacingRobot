@@ -74,6 +74,7 @@ try:
         CMD_DATA_LOG_TOGGLE, CMD_GPS_BOOKMARK,
         CMD_RECORD_TOGGLE, CMD_BENCH_TOGGLE,
         CMD_NO_MOTORS_TOGGLE, CMD_ARUCO_TOGGLE,
+        CMD_NAV_RESET, CMD_NAV_PAUSE_TOGGLE,
         MODE_MANUAL, MODE_AUTO,
         # fake generator encoders
         encode_state, encode_telem, encode_gps, encode_sys, encode_nav,
@@ -178,6 +179,7 @@ class _GsState:
             "nav_state": "IDLE", "nav_gate": 0, "nav_wp": 0,
             "nav_wp_dist": None, "nav_wp_bear": None,
             "nav_bearing_err": None, "nav_tags_visible": 0,
+            "nav_paused": False,
             # Tag IDs computed by formula fallback (gate*2 / gate*2+1)
             # Updated from TYPE_NAV gate field; override with track.toml values when available
             "nav_outside_tag": 0, "nav_inside_tag": 1,
@@ -324,6 +326,10 @@ class _GsState:
                     self._mode = mode_str
             elif cmd == 'no_motors_toggle':
                 self._flags ^= SF_NO_MOTORS
+            elif cmd == 'nav_pause_toggle':
+                self._nav["nav_paused"] = not self._nav["nav_paused"]
+            elif cmd == 'nav_reset':
+                pass  # state updates arrive via next TYPE_NAV packet
             elif cmd == 'data_log_toggle':
                 self._flags ^= SF_DATA_LOGGING
             elif cmd in ('record_toggle', 'record_start', 'record_stop'):
@@ -977,6 +983,8 @@ _CMD_MAP: dict[str, tuple[int, int]] = {
     'bench_toggle':     (CMD_BENCH_TOGGLE,      0),
     'no_motors_toggle': (CMD_NO_MOTORS_TOGGLE,  0),
     'aruco_toggle':     (CMD_ARUCO_TOGGLE,      0),
+    'nav_reset':        (CMD_NAV_RESET,         0),
+    'nav_pause_toggle': (CMD_NAV_PAUSE_TOGGLE,  0),
 }
 
 

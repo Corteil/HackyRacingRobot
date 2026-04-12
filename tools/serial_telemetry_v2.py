@@ -72,6 +72,7 @@ from robot.telemetry_proto import (
     CMD_DATA_LOG_TOGGLE, CMD_GPS_BOOKMARK,
     CMD_RECORD_TOGGLE, CMD_BENCH_TOGGLE,
     CMD_NO_MOTORS_TOGGLE, CMD_ARUCO_TOGGLE,
+    CMD_NAV_RESET, CMD_NAV_PAUSE_TOGGLE,
     MODE_MANUAL, MODE_AUTO,
 )
 
@@ -485,7 +486,9 @@ class TelemetryBridgeV2:
                 r.set_bench(not r.get_state().bench_enabled)
             elif cmd_id == CMD_NO_MOTORS_TOGGLE:
                 r.set_no_motors(not r.get_state().no_motors)
-            elif cmd_id == CMD_ARUCO_TOGGLE:     r.toggle_aruco()
+            elif cmd_id == CMD_ARUCO_TOGGLE:      r.toggle_aruco()
+            elif cmd_id == CMD_NAV_RESET:         r.reset_nav()
+            elif cmd_id == CMD_NAV_PAUSE_TOGGLE:  r.toggle_nav_pause()
             else:
                 log.debug("Unhandled CMD 0x%02X", cmd_id)
         except Exception as e:

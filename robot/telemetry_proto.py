@@ -145,6 +145,8 @@ CMD_RECORD_TOGGLE     = 0x06
 CMD_BENCH_TOGGLE      = 0x07
 CMD_NO_MOTORS_TOGGLE  = 0x08
 CMD_ARUCO_TOGGLE      = 0x09
+CMD_NAV_RESET         = 0x0A
+CMD_NAV_PAUSE_TOGGLE  = 0x0B
 
 CMD_NAMES = {
     CMD_ESTOP:            "ESTOP",
@@ -156,6 +158,8 @@ CMD_NAMES = {
     CMD_BENCH_TOGGLE:     "BENCH_TOGGLE",
     CMD_NO_MOTORS_TOGGLE: "NO_MOTORS_TOGGLE",
     CMD_ARUCO_TOGGLE:     "ARUCO_TOGGLE",
+    CMD_NAV_RESET:        "NAV_RESET",
+    CMD_NAV_PAUSE_TOGGLE: "NAV_PAUSE_TOGGLE",
 }
 
 # ── FLAGS bitmask (STATE packet) ──────────────────────────────────────────────
