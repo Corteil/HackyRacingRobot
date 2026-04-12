@@ -83,6 +83,11 @@ robot.set_bench(on: bool)           # enable / disable FPV camera power output
 robot.set_no_motors(on: bool)       # suppress drive commands; Yukon receives CMD_MODE=ESTOP
                                     # so motors stop in MANUAL (RC-driven) and AUTO modes
 
+# Navigator controls (take effect immediately in AUTO mode)
+robot.reset_nav()                   # restart navigator from gate/waypoint 0
+robot.toggle_nav_pause()            # pause or resume autonomous navigation;
+                                    # while paused drive(0, 0) is sent each control tick
+
 # Depth map (requires [depth] enabled = true in robot.ini)
 robot.get_depth_map() -> DepthMap                    # latest depth map snapshot
 robot.get_depth_at(px: int, py: int) -> float | None # metric depth at pixel coords
@@ -199,7 +204,7 @@ The 2×2 panel layout is configurable via `[layout_presets]` in `robot.ini`.  Do
 - Real-time telemetry via Server-Sent Events (10 Hz)
 - MJPEG camera streams for all three cameras
 - LiDAR polar plot
-- Navigation quad panel — overhead radar with gates, tags, target bearing line, and aim-point distance/bearing readout
+- Navigation quad panel — overhead radar with gates, tags, target bearing line, and aim-point distance/bearing readout; **Reset** button restarts the navigator from gate 0; **Pause/Resume** button stops motor output while staying in AUTO (button turns yellow when paused)
 - ESTOP / Reset controls
 - ArUco toggle and bearing overlay toggle (per camera)
 - **No Motors** toggle button — suppresses drive commands and forces Yukon ESTOP so motors stop in both MANUAL (RC-driven) and AUTO modes; button glows orange when active

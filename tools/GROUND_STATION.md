@@ -244,6 +244,8 @@ Buttons in the browser send CMD frames over the SiK uplink.
 | FPV Camera | 0x07 | Toggle bench power (FPV camera supply) |
 | No Motors | 0x08 | Toggle no-motors bench mode |
 | ArUco | 0x09 | Toggle ArUco detection |
+| Reset Nav | 0x0A | Restart navigator from gate/waypoint 0 |
+| Pause / Resume Nav | 0x0B | Pause or resume autonomous navigation (motors stop while paused; robot stays in AUTO) |
 
 ---
 
