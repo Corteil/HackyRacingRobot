@@ -184,7 +184,7 @@ All subsystem threads are daemon threads (die when the main process exits).
 | `gps`           | `_Gps`             | NMEA rate   | Parse NMEA sentences, inject RTCM |
 | `gps_log`       | `Robot`            | 5 Hz (cfg)  | Write GPS CSV log when enabled |
 | `telemetry`     | `Robot`            | 1 Hz        | Request sensor data from Yukon, update Telemetry |
-| `control`       | `Robot`            | 50 Hz (cfg) | Query RC channels via CMD_RC_QUERY (10 Hz), send CMD_MODE heartbeat, run navigator in AUTO, send drive commands |
+| `control`       | `Robot`            | 50 Hz (cfg) | Query RC channels via CMD_RC_QUERY (10 Hz), process edge-triggered RC switches (SC dlog, SG recording, SD no-motors, SH ESTOP-reset/bookmark), send CMD_MODE heartbeat, run navigator in AUTO, send drive commands |
 | `system`        | `_System`          | 1 Hz        | Poll CPU/mem/disk via psutil |
 | `depth`         | `Robot`            | camera fps  | Compute stereo/mono/fusion depth map from latest frames (only when `[depth] enabled = true`) |
 

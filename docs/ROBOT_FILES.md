@@ -50,7 +50,7 @@ Subsystem threads:
 | `gps` | NMEA rate | Parse NMEA sentences, inject RTCM corrections |
 | `gps_log` | 5 Hz (configurable) | Write GPS CSV log when enabled |
 | `telemetry` | 1 Hz | Request sensor data from Yukon, update `Telemetry` |
-| `control` | 50 Hz (configurable) | Query RC channels via CMD_RC_QUERY (10 Hz), send CMD_MODE heartbeat, compute motor speeds from navigator in AUTO, send to Yukon |
+| `control` | 50 Hz (configurable) | Query RC channels via CMD_RC_QUERY (10 Hz), process RC switches (mode, dlog, recording, no-motors, ESTOP reset, GPS bookmark), send CMD_MODE heartbeat, compute motor speeds from navigator in AUTO, send to Yukon |
 | `system` | 1 Hz | Poll CPU / mem / disk via psutil |
 
 Key public API:
@@ -97,6 +97,22 @@ robot.stop_data_log()
 robot.is_data_logging()             # bool
 
 robot.stop()                        # shutdown all subsystems cleanly
+
+# RC switch automation (control thread, 10 Hz polling via CMD_RC_QUERY)
+# All switches are edge-triggered — startup silently syncs position without acting.
+# Switch positions that were active at startup do not fire until the switch moves.
+# SF CH5  — mode switch:        low=MANUAL, high=AUTO
+# SE CH6  — speed limit:        1000=slow (25%), 1500=mid, 2000=max
+# SA CH7  — AUTO type:          1000=Camera, 1500=GPS, 2000=Cam+GPS
+# SB CH8  — GPS logging:        low=off, high=on
+# SC CH9  — data logging:       low=off, high=on  (dlog_ch in [rc])
+# SD CH10 — no-motors:          low=off, mid/high (>1333 µs)=on  (pause_ch in [rc])
+#            dashboard toggle is respected while switch stays at low
+# SG CH11 — camera recording:   low=hands off (GUI retains control)
+#                                mid=front camera only, high=all cameras  (rec_ch in [rc])
+#            switching back to low stops RC-started recording
+# SH CH12 — momentary:          rising edge in ESTOP → reset_estop()
+#                                rising edge in MANUAL/AUTO → GPS bookmark  (gps_bookmark_ch in [rc])
 
 # LED strip (NeoPixel, 8 LEDs on Yukon SLOT3)
 robot.yukon.set_strip(preset)           # fill all 8 LEDs with a colour preset
@@ -526,7 +542,7 @@ comment in the file.  Key sections:
 | Section | Controls |
 |---------|----------|
 | `[robot]` | Yukon serial port, iBUS port (iBUS port only used by `rc_drive.py`) |
-| `[rc]` | Channel mapping, deadzone, failsafe, control rate |
+| `[rc]` | Channel mapping (`throttle_ch`, `steer_ch`, `mode_ch`, `speed_ch`, `auto_type_ch`, `gps_log_ch`, `dlog_ch`, `rec_ch`, `pause_ch`, `gps_bookmark_ch`), deadzone, failsafe, control rate |
 | `[camera]` | Legacy single-camera settings (backward compat fallback) |
 | `[camera_front_left]` | IMX296 CSI CAM0 — resolution, fps, rotation (180°), ArUco, calibration file |
 | `[camera_front_right]` | IMX296 CSI CAM1 — resolution, fps, rotation (180°), ArUco, calibration file |

@@ -681,6 +681,8 @@ def main():
         speed_ch       = _cfg(cfg, "rc", "speed_ch",               6,     int),
         auto_type_ch   = _cfg(cfg, "rc", "auto_type_ch",           7,     int),
         gps_log_ch     = _cfg(cfg, "rc", "gps_log_ch",             8,     int),
+        dlog_ch        = _cfg(cfg, "rc", "dlog_ch",                0,     int),
+        rec_ch         = _cfg(cfg, "rc", "rec_ch",                 0,     int),
         gps_bookmark_ch= _cfg(cfg, "rc", "gps_bookmark_ch",        10,    int),
         pause_ch       = _cfg(cfg, "rc", "pause_ch",               0,     int),
         gps_log_dir    = _cfg(cfg, "gps", "log_dir",               ""),

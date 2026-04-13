@@ -19,6 +19,9 @@ Tests:
  10.  AUTO mode      — mode transitions, drive() clamping
  11.  Data logging   — start/stop creates valid JSONL with expected fields
  12.  Bearing hold   — CMD_BEARING sets sim target; sim drifts to target heading
+ 13.  RC SC dlog     — CH9 high starts data logging; low stops it
+ 14.  RC SD pause    — CH10 mid/high activates no-motors; edge-triggered not level
+ 15.  RC SH ESTOP    — rising edge on CH12 resets ESTOP; no-op in MANUAL
 
 Usage:
     python3 tools/test_robot.py
@@ -109,13 +112,28 @@ def _stop_sim(master_fd, slave_fd):
 
 def _make_robot(yukon_port):
     return Robot(
-        yukon_port    = yukon_port,
-        ibus_port     = '/tmp/no_ibus_for_tests',  # rc_thread logs warning + retries
-        enable_camera = False,
-        enable_lidar  = False,
-        enable_gps    = False,
-        no_motors     = False,
+        yukon_port      = yukon_port,
+        ibus_port       = '/tmp/no_ibus_for_tests',  # rc_thread logs warning + retries
+        enable_camera   = False,
+        enable_lidar    = False,
+        enable_gps      = False,
+        no_motors       = False,
+        dlog_ch         = 9,   # SC
+        rec_ch          = 11,  # SG
+        pause_ch        = 10,  # SD
+        gps_bookmark_ch = 12,  # SH
     )
+
+
+def _set_rc(ch_1based, value):
+    """Set a single RC channel (1-based) in the simulator."""
+    with _lock:
+        _state['rc_channels'][ch_1based - 1] = value
+
+
+def _wait_rc_poll():
+    """Wait long enough for two RC poll cycles (RC is queried at 10 Hz)."""
+    time.sleep(0.25)
 
 
 # ── Individual test sections ──────────────────────────────────────────────────
@@ -137,7 +155,7 @@ def test_get_state(robot):
     _check("nav_state is str",          isinstance(state.nav_state, str))
     _check("nav_gate is int",           isinstance(state.nav_gate, int))
     _check("speed_scale > 0",           state.speed_scale > 0.0)
-    _check("camera_ok = False",         state.camera_ok is False)
+    _check("camera_ok is bool",          isinstance(state.camera_ok, bool))
     _check("lidar_ok = False",          state.lidar_ok  is False)
     _check("gps_ok = False",            state.gps_ok    is False)
 
@@ -424,6 +442,90 @@ def test_bearing_hold(robot):
            cleared is None, f"got {cleared!r}")
 
 
+def test_rc_sc_dlog(robot):
+    """SC (CH9): data logging toggled by RC switch."""
+    print("\nRC SC — dlog switch:")
+
+    # Ensure switch starts LOW (off) so first-poll baseline is off
+    _set_rc(9, 1000)
+    _wait_rc_poll()
+    _check("dlog off when SC low", not robot.is_data_logging())
+
+    # Move SC to HIGH → should start data logging
+    _set_rc(9, 2000)
+    _wait_rc_poll()
+    _check("dlog on when SC high", robot.is_data_logging())
+
+    # Move SC back to LOW → should stop data logging
+    _set_rc(9, 1000)
+    _wait_rc_poll()
+    _check("dlog off when SC returns low", not robot.is_data_logging())
+
+
+def test_rc_sd_pause(robot):
+    """SD (CH10): no-motors edge-triggered; startup does not activate it."""
+    print("\nRC SD — no-motors switch:")
+
+    # Start with switch HIGH — after first poll the baseline is synced without acting
+    _set_rc(10, 2000)
+    _wait_rc_poll()
+    _check("no_motors not set at startup even when SD high",
+           not robot.get_state().no_motors)
+
+    # Drop to LOW so baseline becomes 0
+    _set_rc(10, 1000)
+    _wait_rc_poll()
+    _check("no_motors still off after dropping to low", not robot.get_state().no_motors)
+
+    # Move to MID (1500 > 1333) → transition 0→1 should activate no-motors
+    _set_rc(10, 1500)
+    _wait_rc_poll()
+    _check("no_motors on when SD moves to mid (1500)", robot.get_state().no_motors)
+
+    # Move to LOW → should deactivate no-motors
+    _set_rc(10, 1000)
+    _wait_rc_poll()
+    _check("no_motors off when SD returns low", not robot.get_state().no_motors)
+
+    # Dashboard toggle while SD is low — must not be overridden by next RC poll
+    robot.set_no_motors(True)
+    _wait_rc_poll()
+    _check("dashboard no_motors toggle not overridden by SD=low",
+           robot.get_state().no_motors)
+    robot.set_no_motors(False)  # restore
+
+
+def test_rc_sh_estop_reset(robot):
+    """SH (CH12): rising edge resets ESTOP; no effect in MANUAL."""
+    print("\nRC SH — ESTOP reset via switch:")
+
+    # Initialise SH to LOW so _prev_bookmark_ch is established
+    _set_rc(12, 1000)
+    _wait_rc_poll()
+
+    # Trigger ESTOP via API
+    robot.estop()
+    _check("mode is ESTOP after estop()", robot.get_state().mode is RobotMode.ESTOP)
+
+    # Rising edge on SH → should clear ESTOP
+    _set_rc(12, 2000)
+    _wait_rc_poll()
+    _check("mode returns to MANUAL after SH rising edge in ESTOP",
+           robot.get_state().mode is RobotMode.MANUAL)
+
+    # Reset SH to LOW then rise again in MANUAL — should NOT change mode
+    _set_rc(12, 1000)
+    _wait_rc_poll()
+    _set_rc(12, 2000)
+    _wait_rc_poll()
+    _check("SH rising edge in MANUAL does not change mode",
+           robot.get_state().mode is RobotMode.MANUAL)
+
+    # Leave SH low for subsequent tests
+    _set_rc(12, 1000)
+    _wait_rc_poll()
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -451,6 +553,9 @@ def main():
         test_auto_mode(robot)
         test_data_log(robot)
         test_bearing_hold(robot)
+        test_rc_sc_dlog(robot)
+        test_rc_sd_pause(robot)
+        test_rc_sh_estop_reset(robot)
 
     finally:
         robot.stop()

@@ -14,9 +14,11 @@ Channel layout matches robot.ini defaults:
   CH6   SE   speed   3-pos              2  (cycle slow / mid / max)
   CH7   SA   type    3-pos              3  (cycle Camera / GPS / Cam+GPS)
   CH8   SB   GPS log 2-pos              4  (toggle off / on)
-  CH10  SD   pause   2-pos              6  (toggle running / paused)
+  CH9   SC   dlog    2-pos              8  (toggle data logging off / on)
+  CH10  SD   pause   3-pos              6  (toggle running / paused)
+  CH11  SG   rec     3-pos              7  (cycle off / front cam / all cams)
   CH12  SH   Bookmark momentary         5  (momentary high, auto-returns after 300 ms)
-  CH9, CH11, CH13–14  unused            held at 1500
+  CH13–14  unused                       held at 1500
 
 TX-16S behaviour notes:
   - Left Y (throttle) starts at 1000 (stick bottom) for safety.
@@ -43,8 +45,8 @@ import argparse
 
 from robot.rc_channels import (
     CH_STEER, CH_RIGHT_Y, CH_THROTTLE, CH_LEFT_X,
-    CH_MODE, CH_SPEED, CH_AUTO_TYPE, CH_GPS_LOG, CH_PAUSE, CH_BOOKMARK,
-    MODE_NAMES, SPEED_NAMES, AUTO_TYPE_NAMES, GPS_LOG_NAMES, PAUSE_NAMES,
+    CH_MODE, CH_SPEED, CH_AUTO_TYPE, CH_GPS_LOG, CH_DLOG, CH_PAUSE, CH_REC, CH_BOOKMARK,
+    MODE_NAMES, SPEED_NAMES, AUTO_TYPE_NAMES, GPS_LOG_NAMES, DLOG_NAMES, PAUSE_NAMES, REC_NAMES,
 )
 
 # ── iBUS protocol constants ───────────────────────────────────────────────────
@@ -76,7 +78,9 @@ _state['channels'][CH_MODE]      = 1000      # SF: MANUAL
 _state['channels'][CH_SPEED]     = 1500      # SE: mid
 _state['channels'][CH_AUTO_TYPE] = 1000      # SA: Camera
 _state['channels'][CH_GPS_LOG]   = 1000      # SB: GPS log off
+_state['channels'][CH_DLOG]      = 1000      # SC: data logging off
 _state['channels'][CH_PAUSE]     = 1000      # SD: motors running
+_state['channels'][CH_REC]       = 1000      # SG: recording off
 _state['channels'][CH_BOOKMARK]  = 1000      # SH: low
 
 # ── iBUS packet builder ───────────────────────────────────────────────────────
@@ -156,10 +160,19 @@ def draw(pty_path):
     swe = ch[CH_SPEED]
     swa = ch[CH_AUTO_TYPE]
     swb = ch[CH_GPS_LOG]
+    swc = ch[CH_DLOG]
     swd = ch[CH_PAUSE]
+    swg = ch[CH_REC]
     bkm = ch[CH_BOOKMARK]
 
     sig_str = 'OK' if valid else '*** LOST (V to restore) ***'
+
+    def _rec_label(v):
+        if v > 1666:
+            return 'all cams'
+        if v > 1333:
+            return 'front'
+        return 'off'
 
     lines = [
         '\033[2J\033[H',
@@ -180,14 +193,16 @@ def draw(pty_path):
         f'  [2] CH6  SE  speed   {SPEED_NAMES.get(swe, str(swe)):>10s}',
         f'  [3] CH7  SA  type    {AUTO_TYPE_NAMES.get(swa, str(swa)):>10s}',
         f'  [4] CH8  SB  GPS log {GPS_LOG_NAMES.get(swb, str(swb)):>10s}  {"●" if swb == 2000 else "○"}',
-        f'  [6] CH10 SD  pause   {PAUSE_NAMES.get(swd, str(swd)):>10s}  {"■" if swd >= CH_MID else "□"}',
+        f'  [8] CH9  SC  dlog    {DLOG_NAMES.get(swc, str(swc)):>10s}  {"●" if swc == 2000 else "○"}',
+        f'  [6] CH10 SD  pause   {"paused" if swd > 1333 else "running":>10s}  {"■" if swd > 1333 else "□"}',
+        f'  [7] CH11 SG  rec     {_rec_label(swg):>10s}',
         f'  [5] CH12 SH  Bookmark {"TRIGGERED" if bkm >= CH_MID else "ready":>9s}',
         '',
         '─── Keys ────────────────────────────────────────────────────────',
         '  Arrows  right gimbal (Right X / Right Y)',
         '  W / S   Left Y up / down',
         '  A / D   Left X left / right',
-        '  1–6     switches / bookmark (see above)',
+        '  1–8     switches / bookmark (see above)',
         '  Space   centre sticks + throttle to 1000',
         '  V       toggle RC signal (simulate loss)',
         '  Q       quit',
@@ -240,7 +255,11 @@ def _handle_key(ch, step):
             chs[CH_BOOKMARK]  = CH_MAX
             _state['bookmark_until'] = time.monotonic() + 0.30
         elif ch == '6':
-            chs[CH_PAUSE] = 2000 if chs[CH_PAUSE] == 1000 else 1000
+            chs[CH_PAUSE] = 2000 if chs[CH_PAUSE] > 1333 else 1000
+        elif ch == '7':
+            chs[CH_REC]   = _cycle3(chs[CH_REC])
+        elif ch == '8':
+            chs[CH_DLOG]  = 2000 if chs[CH_DLOG] == 1000 else 1000
 
         # Centre / kill-switch
         elif ch == ' ':

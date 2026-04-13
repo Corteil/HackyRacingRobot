@@ -332,8 +332,16 @@ class _GsState:
                 pass  # state updates arrive via next TYPE_NAV packet
             elif cmd == 'data_log_toggle':
                 self._flags ^= SF_DATA_LOGGING
-            elif cmd in ('record_toggle', 'record_start', 'record_stop'):
+            elif cmd == 'record_toggle':
                 self._flags ^= SF_CAM_RECORDING
+            elif cmd == 'record_start':
+                self._flags |= SF_CAM_RECORDING
+            elif cmd == 'record_stop':
+                self._flags &= ~SF_CAM_RECORDING
+
+    def is_recording(self) -> bool:
+        with self._lock:
+            return bool(self._flags & SF_CAM_RECORDING)
 
     def _touch(self):
         """Must be called under self._lock."""
@@ -1072,14 +1080,25 @@ def stream_cam(cam):
 
 @app.route('/api/cmd', methods=['POST'])
 def api_cmd():
-    body  = request.json or {}
+    body = request.json or {}
+    cmd  = body.get('cmd', '')
+
+    # record_start/stop: only send the toggle when state needs to change so we
+    # match dashboard behaviour (start_cam_recording / stop_cam_recording).
+    if cmd == 'record_start' and _gs.is_recording():
+        _gs.apply_cmd(body)  # optimistic update only; robot already recording
+        return jsonify({'ok': True, 'state': _gs.get()})
+    if cmd == 'record_stop' and not _gs.is_recording():
+        _gs.apply_cmd(body)
+        return jsonify({'ok': True, 'state': _gs.get()})
+
     frame = _body_to_cmd_frame(body)
     if frame is None:
         return jsonify({'ok': True, 'ignored': True,
-                        'reason': f"unknown cmd '{body.get('cmd')}'"})
+                        'reason': f"unknown cmd '{cmd}'"})
     try:
         _cmd_q.put_nowait(frame)
-        log.info("CMD queued: %s", body.get('cmd'))
+        log.info("CMD queued: %s", cmd)
         # Apply optimistic local state so the UI updates immediately without
         # waiting for the radio round-trip confirmation.
         _gs.apply_cmd(body)

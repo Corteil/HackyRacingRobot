@@ -197,8 +197,37 @@ Tests covered:
 | 10 | AUTO mode | `set_mode(AUTO/MANUAL)` transitions; `set_mode(ESTOP)` raises; `drive()` clamps and stores values |
 | 11 | Data logging | `start_data_log()` / `stop_data_log()` create valid JSONL with `ts`, `mode`, `drive` fields |
 | 12 | Bearing hold | `set_bearing()` sets target in sim; heading drifts to target at 90°/s within 2.5 s; `clear_bearing()` removes target |
+| 13 | RC SC dlog | CH9 high starts data logging; low stops it; first poll at startup syncs baseline silently |
+| 14 | RC SD pause | CH10 mid/high (>1333 µs) activates no-motors; edge-triggered so dashboard toggle is not overridden; startup does not auto-activate |
+| 15 | RC SH ESTOP reset | Rising edge on CH12 resets ESTOP; same rising edge in MANUAL has no effect |
 
 The iBUS port is set to a non-existent path — this is expected and harmless; the main robot stack no longer uses Pi-side iBUS (RC input moved to Yukon GP26).
+
+---
+
+### test_ground_station.py
+
+Unit tests for `ground_station_v2.py`. No hardware, radio, or Flask server required — tests run fully in-process using Flask's test client.
+
+```
+python3 tools/test_ground_station.py
+```
+
+Tests covered:
+
+| # | Test | What is checked |
+|---|------|-----------------|
+| 1 | Default state | Fresh `_GsState` has correct zero/False defaults |
+| 2 | `apply_cmd` mode | estop→ESTOP; reset in ESTOP→MANUAL; reset in MANUAL no-op; set_mode blocked in ESTOP |
+| 3 | `apply_cmd` flags | `no_motors_toggle`, `data_log_toggle`, `nav_pause_toggle` toggle pairs |
+| 4 | `apply_cmd` recording | `record_start` sets flag (idempotent); `record_stop` clears flag (idempotent); `record_toggle` flips both ways |
+| 5 | `handle_state` | Flags decoded into `mode`, `rc_active`, `cam_recording`, `speed_scale` |
+| 6 | `handle_telem` | Voltage, current, board_temp, heading round-trip |
+| 7 | `handle_gps` | Lat/lon, fix quality name, satellite count |
+| 8 | `handle_alarm` | Entry fields; ring buffer capped at `MAX_ALARMS` |
+| 9 | `_body_to_cmd_frame` | All 10 commands produce the correct CMD byte; unknown→None; set_mode encodes mode parameter |
+| 10 | `api_cmd` idempotency | `record_start` only queues `CMD_RECORD_TOGGLE` when not recording; `record_stop` only when recording |
+| 11 | Telemetry pipeline | `encode_state` / `encode_telem` / `encode_gps` → `FrameDecoder` → `handle_*` full roundtrip |
 
 ---
 
@@ -478,7 +507,7 @@ Output: `docs/checkerboard_9x6.pdf`
 
 Physical gamepad → iBUS PTY simulator. Uses a pygame joystick/gamepad to drive iBUS packets on a PTY, replacing the keyboard-based `ibus_sim.py` for use with a physical controller.
 
-Channel layout matches `robot.ini` defaults: CH1 aileron, CH2 elevator, CH3 throttle, CH4 rudder, CH5–CH8 mode switches, CH10 bookmark.
+Channel layout matches `robot.ini` defaults: CH1 aileron, CH2 elevator, CH3 throttle, CH4 rudder, CH5 SF mode, CH6 SE speed, CH7 SA auto-type, CH8 SB GPS log, CH9 SC dlog, CH10 SD pause, CH11 SG recording, CH12 SH bookmark/ESTOP-reset.
 
 ```bash
 python3 tools/pygame_gamepad_ibus_rx.py                          # default joystick 0
@@ -535,8 +564,10 @@ python3 tools/ibus_sim.py --hz 143 --step 50
 | `2` | Cycle SE — slow 25% / mid / max (CH6) |
 | `3` | Cycle SA — Camera / GPS / Cam+GPS (CH7) |
 | `4` | Toggle SB — GPS log off / on (CH8) |
-| `6` | Toggle SD — AUTO motors running / paused (CH10) |
-| `5` | Momentary bookmark pulse SH (CH12, 300 ms) |
+| `8` | Toggle SC — data log off / on (CH9) |
+| `6` | Toggle SD — AUTO motors running / paused (CH10) — mid/high activates no-motors |
+| `7` | Cycle SG — recording off / front cam / all cameras (CH11) |
+| `5` | Momentary SH — GPS bookmark or ESTOP reset (CH12, 300 ms rising edge) |
 | `Space` | Centre sticks and drop throttle to 1000 |
 | `V` | Toggle RC signal loss (stops emitting packets) |
 | `Q` | Quit |

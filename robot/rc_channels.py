@@ -13,10 +13,10 @@ Channel layout (robot.ini defaults):
   CH6  SE        3-pos switch       speed limit: slow / mid / max
   CH7  SA        3-pos switch       AUTO type: Camera / GPS / Cam+GPS
   CH8  SB        2-pos switch       GPS logging: off / on
-  CH9  SC        unused
-  CH10 SD        2-pos switch       AUTO motor pause: running / paused
-  CH11 SG        unused
-  CH12 SH        momentary button   GPS log bookmark
+  CH9  SC        2-pos switch       data logging: off / on
+  CH10 SD        3-pos switch       AUTO motor pause: low=running, mid/high=paused
+  CH11 SG        3-pos switch       camera recording: low=off, mid=front cam, high=all
+  CH12 SH        momentary button   GPS log bookmark / ESTOP reset
 """
 
 # ── Channel indices (0-based) ─────────────────────────────────────────────────
@@ -29,10 +29,10 @@ CH_MODE      = 4    # CH5   SF  2-pos: MANUAL / AUTO
 CH_SPEED     = 5    # CH6   SE  3-pos: speed limit
 CH_AUTO_TYPE = 6    # CH7   SA  3-pos: Camera / GPS / Cam+GPS
 CH_GPS_LOG   = 7    # CH8   SB  2-pos: GPS logging on / off
-					# CH9   SC  unused (index 8)
-CH_PAUSE     = 9    # CH10  SD  2-pos: AUTO motor pause (running / paused)
-					# CH11  SG  unused (index 10)
-CH_BOOKMARK  = 11   # CH12  SH  momentary GPS log bookmark
+CH_DLOG      = 8    # CH9   SC  2-pos: data logging off / on
+CH_PAUSE     = 9    # CH10  SD  3-pos: AUTO motor pause (low=running, mid/high=paused)
+CH_REC       = 10   # CH11  SG  3-pos: camera recording (low=off, mid=front, high=all)
+CH_BOOKMARK  = 11   # CH12  SH  momentary: GPS bookmark or ESTOP reset
 					# CH13  unused (index 12)
 					# CH14  unused (index 13)
 
@@ -63,4 +63,6 @@ MODE_NAMES      = {1000: 'MANUAL',   2000: 'AUTO'}
 SPEED_NAMES     = {1000: 'slow 25%', 1500: 'mid',    2000: 'max'}
 AUTO_TYPE_NAMES = {1000: 'Camera',   1500: 'GPS',     2000: 'Cam+GPS'}
 GPS_LOG_NAMES   = {1000: 'off',      2000: 'on'}
-PAUSE_NAMES     = {1000: 'running',  2000: 'paused'}
+DLOG_NAMES      = {1000: 'off',      2000: 'on'}
+PAUSE_NAMES     = {1000: 'running',  1500: 'paused',  2000: 'paused'}  # mid/high both pause
+REC_NAMES       = {1000: 'off',      1500: 'front',   2000: 'all'}

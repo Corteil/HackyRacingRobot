@@ -1861,6 +1861,8 @@ class Robot:
         speed_ch:       int   = 6,
         auto_type_ch:   int   = 7,
         gps_log_ch:      int   = 8,
+        dlog_ch:         int   = 0,    # RC channel for data log on/off (0 = disabled)
+        rec_ch:          int   = 0,    # RC channel for recording (3-pos: off/front/all; 0 = disabled)
         gps_bookmark_ch: int   = 12,
         pause_ch:        int   = 0,    # RC channel for AUTO motor pause (0 = disabled)
         gps_log_dir:     str   = '',
@@ -1906,6 +1908,8 @@ class Robot:
         self._ch_speed      = speed_ch      - 1
         self._ch_auto_type  = auto_type_ch  - 1
         self._ch_gps_log      = gps_log_ch      - 1
+        self._ch_dlog         = dlog_ch         - 1 if dlog_ch         > 0 else None
+        self._ch_rec          = rec_ch          - 1 if rec_ch          > 0 else None
         self._ch_gps_bookmark = gps_bookmark_ch - 1 if gps_bookmark_ch > 0 else None
         self._ch_pause        = pause_ch        - 1 if pause_ch        > 0 else None
         self._gps_log_dir   = (gps_log_dir.strip() or
@@ -1968,6 +1972,8 @@ class Robot:
         self._auto_type   = AutoType.CAMERA
         self._gps_logging       = False
         self._prev_bookmark_ch  = 0
+        self._prev_rec_state    = -1   # -1 = uninitialised; 0=off 1=front 2=all
+        self._prev_pause_ch     = -1   # -1 = uninitialised; 0=running 1=paused
         self._auto_left   = 0.0
         self._auto_right  = 0.0
         self._telemetry   = Telemetry()
@@ -2809,25 +2815,64 @@ class Robot:
                 auto_right = self._auto_right
                 self._auto_type = _auto_type_from_ch(self._rc_channels[self._ch_auto_type])
 
-            # SD: GPS logging on/off
+            # SB: GPS logging on/off
             gps_log_want = self._rc_channels[self._ch_gps_log] > 1500
             if gps_log_want != self._gps_logging:
                 self._gps_logging = gps_log_want
                 log.info(f"GPS logging {'ON' if gps_log_want else 'OFF'}")
 
-            # RC bookmark button: rising edge (low→high) adds bookmark to GPS log
+            # SC: data logging on/off
+            if self._ch_dlog is not None:
+                dlog_want = self._rc_channels[self._ch_dlog] > 1500
+                if dlog_want and not self._data_logger.is_active():
+                    self.start_data_log()
+                    log.info("Data logging ON (RC SC)")
+                elif not dlog_want and self._data_logger.is_active():
+                    self.stop_data_log()
+                    log.info("Data logging OFF (RC SC)")
+
+            # SG: 3-pos recording switch — low=hands off, mid=front_left only, high=all cameras
+            if self._ch_rec is not None:
+                rv = self._rc_channels[self._ch_rec]
+                rec_state = 2 if rv > 1666 else (1 if rv > 1333 else 0)
+                if self._prev_rec_state == -1:
+                    # First poll: sync position without acting so startup state is neutral
+                    self._prev_rec_state = rec_state
+                elif rec_state != self._prev_rec_state:
+                    if rec_state == 1:
+                        self.stop_cam_recording()
+                        self.start_cam_recording('front_left')
+                        log.info("Recording ON: front camera (RC SG mid)")
+                    elif rec_state == 2:
+                        self.stop_cam_recording()
+                        self.start_cam_recording()
+                        log.info("Recording ON: all cameras (RC SG high)")
+                    elif self._prev_rec_state > 0:
+                        # Switched back to low from mid/high — stop RC-started recording
+                        self.stop_cam_recording()
+                        log.info("Recording OFF (RC SG low)")
+                    self._prev_rec_state = rec_state
+
+            # SH: rising edge (low→high) — reset ESTOP if in ESTOP, else GPS bookmark
             if self._ch_gps_bookmark is not None:
                 bm_val = self._rc_channels[self._ch_gps_bookmark]
                 if bm_val > 1500 and self._prev_bookmark_ch <= 1500:
-                    self.bookmark_gps()
+                    if mode is RobotMode.ESTOP:
+                        self.reset_estop()
+                        log.info("ESTOP reset via RC SH")
+                    else:
+                        self.bookmark_gps()
                 self._prev_bookmark_ch = bm_val
 
-            # SD: AUTO motor pause switch — syncs no_motors flag from RC channel.
-            # Only applies when RC is active; otherwise the dashboard toggle wins.
+            # SD: AUTO motor pause switch — edge-triggered so dashboard toggle is not overridden.
+            # Only applies when RC is active; first poll silently syncs baseline.
             if self._ch_pause is not None and self._rc_active:
-                want_pause = self._rc_channels[self._ch_pause] > 1500
-                if want_pause != self._no_motors:
-                    self.set_no_motors(want_pause)
+                pause_val = 1 if self._rc_channels[self._ch_pause] > 1333 else 0
+                if self._prev_pause_ch == -1:
+                    self._prev_pause_ch = pause_val
+                elif pause_val != self._prev_pause_ch:
+                    self.set_no_motors(bool(pause_val))
+                    self._prev_pause_ch = pause_val
 
             # Auto-enable ArUco on mode/type transitions only, so the T-key
             # toggle is not overridden every tick.
@@ -3293,6 +3338,8 @@ def main():
         speed_ch       = _cfg(cfg, "rc", "speed_ch",       6,    int),
         auto_type_ch   = _cfg(cfg, "rc", "auto_type_ch",   7,    int),
         gps_log_ch      = _cfg(cfg, "rc", "gps_log_ch",      8,   int),
+        dlog_ch         = _cfg(cfg, "rc", "dlog_ch",         0,   int),
+        rec_ch          = _cfg(cfg, "rc", "rec_ch",          0,   int),
         gps_bookmark_ch = _cfg(cfg, "rc", "gps_bookmark_ch", 12,  int),
         pause_ch        = _cfg(cfg, "rc", "pause_ch",         0,  int),
         gps_log_dir     = _cfg(cfg, "gps", "log_dir",        ""),
