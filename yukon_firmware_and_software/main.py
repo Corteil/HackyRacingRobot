@@ -119,7 +119,9 @@ _bench_enabled        = False       # tracks Pi CMD_BENCH state; False = FPV cam
 IBUS_FAILSAFE_MS      = 500   # ms without iBUS packet → zero motors in MANUAL
 PI_FAILSAFE_MS        = 500   # ms without CMD_MODE from Pi → ESTOP
 IBUS_DEADZONE         = 30    # µs deadzone either side of 1500
-IBUS_SPEED_MIN        = 0.25  # minimum speed scale at CH6=1000
+IBUS_SPEED_MIN        = 0.25  # scale at low switch position  (~1000 µs)
+IBUS_SPEED_MID        = 0.6   # scale at mid switch position  (~1500 µs)
+#                               high switch position (~2000 µs) always = 1.0
 IBUS_CH_THROTTLE      = 2     # 0-based: CH3 (left stick vertical)
 IBUS_CH_STEER         = 0     # 0-based: CH1 (right stick horizontal)
 IBUS_CH_SPEED         = 5     # 0-based: CH6 speed limit
@@ -186,8 +188,13 @@ def _ibus_tank_mix_raw(ch):
         return max(-1.0, min(1.0, raw / 500.0))
     thr   = norm(ch[IBUS_CH_THROTTLE])
     ste   = norm(ch[IBUS_CH_STEER])
-    t     = max(0.0, min(1.0, (ch[IBUS_CH_SPEED] - 1000) / 1000.0))
-    scale = IBUS_SPEED_MIN + t * (1.0 - IBUS_SPEED_MIN)
+    spd = ch[IBUS_CH_SPEED]
+    if spd > 1750:
+        scale = 1.0
+    elif spd >= 1250:
+        scale = IBUS_SPEED_MID
+    else:
+        scale = IBUS_SPEED_MIN
     return (max(-1.0, min(1.0, thr - ste)) * scale,
             max(-1.0, min(1.0, thr + ste)) * scale)
 
