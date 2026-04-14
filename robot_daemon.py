@@ -237,7 +237,7 @@ class RobotState:
     nav_next_inside_tag:    int             = 3     # front-face tag ID for inside  post of next gate
     nav_next_gate_label:    str             = ""    # human label for next gate
     no_motors:          bool            = False  # drive commands suppressed
-    bench_enabled:      bool            = True   # bench power output enabled (on at startup)
+    bench_enabled:      bool            = False  # bench power output disabled at startup (matches firmware)
     nav_paused:         bool            = False  # navigator paused (drive commands suppressed in AUTO)
 
 
@@ -1939,7 +1939,7 @@ class Robot:
         self._control_hz  = control_hz
         self._no_motors   = no_motors
         self._nav_paused  = False
-        self._bench_enabled = True   # matches firmware startup state
+        self._bench_enabled = False  # firmware starts with bench output disabled
         # LED strip config — read directly from robot.ini so it's consistent
         # across all frontends without each one needing to pass these values.
         _ini = configparser.ConfigParser(inline_comment_prefixes=('#',))
