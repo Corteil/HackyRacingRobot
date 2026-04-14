@@ -141,6 +141,94 @@ class ArUcoState:
     timestamp: float                = 0.0
 
 
+def merge_aruco_states(
+    state_a: Optional[ArUcoState],
+    state_b: Optional[ArUcoState],
+) -> Optional[ArUcoState]:
+    """Merge ArUco detection results from two cameras into one ArUcoState.
+
+    Intended for combining front-left and front-right camera detections so the
+    navigator sees tags from both fields of view simultaneously.
+
+    Tag deduplication: if the same tag ID appears in both states the tag with
+    a known distance is preferred; if both or neither have a distance estimate
+    the one with the larger bounding-box area wins (assumed closer / more
+    centred in frame).
+
+    Gates are re-derived from the merged tag set using the same even/odd
+    base-ID pairing logic as ArucoDetector._find_gates, without frame drawing.
+
+    Returns None if both inputs are None; returns the non-None input if only
+    one is provided.
+    """
+    if state_a is None and state_b is None:
+        return None
+    if state_a is None:
+        return state_b
+    if state_b is None:
+        return state_a
+
+    # Merge tags: for duplicate IDs prefer the one with distance, then larger area.
+    merged_tags: Dict[int, ArUcoTag] = dict(state_a.tags)
+    for tag_id, tag_b in state_b.tags.items():
+        if tag_id not in merged_tags:
+            merged_tags[tag_id] = tag_b
+        else:
+            tag_a = merged_tags[tag_id]
+            a_has_dist = tag_a.distance is not None
+            b_has_dist = tag_b.distance is not None
+            if b_has_dist and not a_has_dist:
+                merged_tags[tag_id] = tag_b
+            elif not b_has_dist and not a_has_dist and tag_b.area > tag_a.area:
+                merged_tags[tag_id] = tag_b
+
+    # Re-derive gates from merged tags (same pairing logic, no drawing).
+    merged_gates: Dict[int, ArUcoGate] = {}
+    base_map: Dict[int, ArUcoTag] = {}
+    for tag_id, tag in merged_tags.items():
+        base = tag_id % 100
+        if base not in base_map or tag_id < base_map[base].id:
+            base_map[base] = tag
+
+    for base_even in sorted(base_map):
+        if base_even % 2 != 0:
+            continue
+        base_odd = base_even + 1
+        if base_odd not in base_map:
+            continue
+
+        gate_id = base_even // 2
+        outside = base_map[base_even]
+        inside  = base_map[base_odd]
+
+        gcx = (outside.center_x + inside.center_x) // 2
+        gcy = (outside.center_y + inside.center_y) // 2
+
+        both_front = outside.id < 100 and inside.id < 100
+        both_rear  = outside.id >= 100 and inside.id >= 100
+        if both_front or both_rear:
+            correct_dir = both_front
+        else:
+            correct_dir = inside.center_x < outside.center_x
+
+        dists = [t.distance for t in (outside, inside) if t.distance is not None]
+        bears = [t.bearing  for t in (outside, inside) if t.bearing  is not None]
+
+        merged_gates[gate_id] = ArUcoGate(
+            gate_id=gate_id, outside_tag=outside.id, inside_tag=inside.id,
+            centre_x=gcx, centre_y=gcy, correct_dir=correct_dir,
+            distance=sum(dists) / len(dists) if dists else None,
+            bearing=sum(bears)  / len(bears) if bears else None,
+        )
+
+    return ArUcoState(
+        tags=merged_tags,
+        gates=merged_gates,
+        fps=(state_a.fps + state_b.fps) / 2.0,
+        timestamp=max(state_a.timestamp, state_b.timestamp),
+    )
+
+
 # ── Detector ──────────────────────────────────────────────────────────────────
 
 class ArucoDetector:

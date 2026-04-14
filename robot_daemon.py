@@ -55,9 +55,11 @@ log = logging.getLogger(__name__)
 # Navigator imports are deferred to avoid hard dependency when not used
 try:
     from robot.aruco_navigator import ArucoNavigator, NavState
+    from robot.aruco_detector import merge_aruco_states
     _NAVIGATOR_AVAILABLE = True
 except ImportError:
     _NAVIGATOR_AVAILABLE = False
+    merge_aruco_states = None
     log.debug("aruco_navigator not found — camera auto mode disabled")
 
 try:
@@ -2273,7 +2275,8 @@ class Robot:
             camera_ok = bool((self._camera and self._camera.ok) or
                              (self._cam_front_left and self._cam_front_left.ok)),
             aruco_ok  = bool((self._camera and self._camera.aruco_ok) or
-                             (self._cam_front_left and self._cam_front_left.aruco_ok)),
+                             (self._cam_front_left  and self._cam_front_left.aruco_ok) or
+                             (self._cam_front_right and self._cam_front_right.aruco_ok)),
             # Per-camera status
             cam_front_left_ok  = bool(self._cam_front_left  and self._cam_front_left.ok),
             cam_front_right_ok = bool(self._cam_front_right and self._cam_front_right.ok),
@@ -3023,7 +3026,9 @@ class Robot:
                     log.info("RC → AUTO")
 
             else:  # AUTO
-                _nav_cam = self._cam('front_left')   # multi-cam or legacy fallback
+                _nav_cam_l = self._cam_front_left
+                _nav_cam_r = self._cam_front_right
+                _nav_cam   = _nav_cam_l or _nav_cam_r or self._camera  # primary, for capture width
                 if self._nav_paused:
                     self.drive(0.0, 0.0)
                     left, right = 0.0, 0.0
@@ -3031,7 +3036,11 @@ class Robot:
                 elif (self._auto_type in (AutoType.CAMERA, AutoType.CAMERA_GPS)
                         and self._navigator is not None
                         and _nav_cam is not None):
-                    aruco_state = _nav_cam.get_aruco_state()
+                    aruco_l = _nav_cam_l.get_aruco_state() if _nav_cam_l else None
+                    aruco_r = _nav_cam_r.get_aruco_state() if _nav_cam_r else None
+                    aruco_state = (merge_aruco_states(aruco_l, aruco_r)
+                                   if merge_aruco_states is not None
+                                   else (aruco_l or aruco_r))
                     with self._mode_lock:
                         heading = self._telemetry.heading
                     if aruco_state is not None:
