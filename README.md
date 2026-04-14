@@ -88,6 +88,9 @@ tools/
   gps_route_builder.py      Pygame GPS waypoint editor
   gps_route_builder_web.py  Web GPS waypoint editor (port 5003)
   read_data_log.py          Web viewer for JSONL data logs (port 5004)
+  yukon_monitor.py          Terminal Yukon voltage & telemetry monitor
+  yukon_battery_monitor.py  Pygame Yukon battery gauge (voltage, current, temps, faults)
+  monitor_power.py          Raspberry Pi input power monitor (Pi PMIC / vcgencmd)
   test_*.py                 Unit tests and live-display tools
 docs/
   ARCHITECTURE.md           Component diagram, data flow, threading model

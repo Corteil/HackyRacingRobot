@@ -1671,10 +1671,19 @@ def _normalize(ch_val: int, deadzone: int) -> float:
     return max(-1.0, min(1.0, raw / 500.0))
 
 
-def _speed_scale(ch_val: int, speed_min: float) -> float:
-    """Map speed channel (1000-2000) linearly to speed_min..1.0."""
-    t = max(0.0, min(1.0, (ch_val - 1000) / 1000.0))
-    return speed_min + t * (1.0 - speed_min)
+def _speed_scale(ch_val: int, speed_min: float, speed_mid: float) -> float:
+    """Map 3-position speed switch to one of three discrete levels.
+
+    Switch positions (RadioMaster TX16S SE):
+      low  (~1000 µs) → speed_min  (slow)
+      mid  (~1500 µs) → speed_mid  (medium)
+      high (~2000 µs) → 1.0        (full power)
+    """
+    if ch_val > 1750:
+        return 1.0
+    if ch_val >= 1250:
+        return speed_mid
+    return speed_min
 
 
 def _tank_mix(throttle_raw: int, steer_raw: int, deadzone: int):
@@ -1822,7 +1831,9 @@ class Robot:
     speed_ch       : RC speed-limit channel, 1-based (default 6 = SB)
     deadzone       : RC stick deadzone in µs either side of mid (default 30)
     failsafe_s     : Seconds without iBUS packet before failsafe (default 0.5)
-    speed_min      : Minimum speed scale when speed_ch is at low end (default 0.25)
+    speed_min      : Speed scale at low switch position (default 0.25)
+    speed_mid      : Speed scale at mid switch position (default 0.6)
+    (high switch position always maps to 1.0 — full power)
     control_hz     : Motor control loop rate in Hz (default 50)
     """
 
@@ -1873,6 +1884,7 @@ class Robot:
         deadzone:       int   = 30,
         failsafe_s:     float = 0.5,
         speed_min:      float = 0.25,
+        speed_mid:      float = 0.6,
         control_hz:     int   = 50,
         no_motors:      bool  = False,  # suppress all drive commands (bench testing)
     ):
@@ -1923,6 +1935,7 @@ class Robot:
         self._deadzone    = deadzone
         self._failsafe_s  = failsafe_s
         self._speed_min   = speed_min
+        self._speed_mid   = speed_mid
         self._control_hz  = control_hz
         self._no_motors   = no_motors
         self._nav_paused  = False
@@ -3069,7 +3082,7 @@ class Robot:
                     log.info("RC → MANUAL")
 
             # Apply speed limit from SB
-            scale              = _speed_scale(self._rc_channels[self._ch_speed], self._speed_min)
+            scale              = _speed_scale(self._rc_channels[self._ch_speed], self._speed_min, self._speed_mid)
             self._speed_scale  = scale
             left               = left  * scale
             right              = right * scale
@@ -3347,6 +3360,7 @@ def main():
         deadzone       = _cfg(cfg, "rc", "deadzone",       30,   int),
         failsafe_s     = _cfg(cfg, "rc", "failsafe_s",     0.5,  float),
         speed_min      = _cfg(cfg, "rc", "speed_min",      0.25, float),
+        speed_mid      = _cfg(cfg, "rc", "speed_mid",      0.6,  float),
         control_hz     = _cfg(cfg, "rc", "control_hz",     50,   int),
         no_motors             = args.no_motors,
         rec_dir               = _cfg(cfg, 'output', 'videos_dir',           ''),

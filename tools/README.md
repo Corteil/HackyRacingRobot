@@ -298,7 +298,7 @@ Unit tests for `robot/aruco_navigator.py` state machine using synthetic `ArUcoSt
 python3 tools/test_aruco_navigator.py
 ```
 
-Tests all state transitions (IDLE → SEARCHING → ALIGNING → APPROACHING → PASSING → RECOVERING → COMPLETE), obstacle stop, single-tag fallback, IMU search stepping, and `from_ini()` config loading.
+Tests all state transitions (IDLE → SEARCHING → ALIGNING → APPROACHING → PASSING → RECOVERING → COMPLETE), obstacle stop, single-tag fallback, IMU spin-search stepping, serpentine search mode, and `from_ini()` config loading.
 
 ---
 
@@ -507,7 +507,7 @@ Output: `docs/checkerboard_9x6.pdf`
 
 Physical gamepad → iBUS PTY simulator. Uses a pygame joystick/gamepad to drive iBUS packets on a PTY, replacing the keyboard-based `ibus_sim.py` for use with a physical controller.
 
-Channel layout matches `robot.ini` defaults: CH1 aileron, CH2 elevator, CH3 throttle, CH4 rudder, CH5 SF mode, CH6 SE speed, CH7 SA auto-type, CH8 SB GPS log, CH9 SC dlog, CH10 SD pause, CH11 SG recording, CH12 SH bookmark/ESTOP-reset.
+Channel layout matches `robot.ini` defaults: CH1 aileron, CH2 elevator, CH3 throttle, CH4 rudder, CH5 SF mode, CH6 SE speed select (3-pos: slow/mid/full), CH7 SA auto-type, CH8 SB GPS log, CH9 SC dlog, CH10 SD pause, CH11 SG recording, CH12 SH bookmark/ESTOP-reset.
 
 ```bash
 python3 tools/pygame_gamepad_ibus_rx.py                          # default joystick 0
@@ -561,7 +561,7 @@ python3 tools/ibus_sim.py --hz 143 --step 50
 | `A` / `D` | Left X left / right (CH4) |
 | Arrow keys | Right X / Right Y (CH1 / CH2) |
 | `1` | Toggle SF — MANUAL / AUTO (CH5) |
-| `2` | Cycle SE — slow 25% / mid / max (CH6) |
+| `2` | Cycle SE — slow (`speed_min`) / mid (`speed_mid`) / full power (CH6) |
 | `3` | Cycle SA — Camera / GPS / Cam+GPS (CH7) |
 | `4` | Toggle SB — GPS log off / on (CH8) |
 | `8` | Toggle SC — data log off / on (CH9) |
@@ -849,6 +849,54 @@ python3 tools/setup_depth_model.py --no-verify     # skip Hailo device check
 | `--no-verify` | off | Skip Hailo device verification after download |
 
 Enable depth in `robot.ini` (`[depth] enabled = true`) then configure `mode` and `hailo_model` as needed.
+
+---
+
+### yukon_monitor.py
+
+Terminal voltage and telemetry monitor for the Yukon RP2040.
+Sends `CMD_SENSOR` over USB serial and prints voltage, current, power, motor temperatures, and fault flags.
+No `robot_daemon` dependency — works standalone even when the full robot stack is not running.
+
+```bash
+python3 tools/yukon_monitor.py                     # single reading
+python3 tools/yukon_monitor.py --watch             # live display (overwrites in-place)
+python3 tools/yukon_monitor.py --watch --interval 0.5
+python3 tools/yukon_monitor.py --port /dev/ttyACM0
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port DEV` | `/dev/yukon` | Serial port |
+| `--baud N` | `115200` | Baud rate |
+| `--watch` | off | Continuously overwrite display |
+| `--interval N` | `1.0` | Refresh interval in seconds (`--watch` only) |
+
+Voltage warnings: `< 10.5 V` → ⚠ LOW, `< 9.0 V` → ⚠ CRITICAL LOW, `< 6.0 V` → DEAD.
+Motor temperature warning at `> 60 °C`.
+
+---
+
+### yukon_battery_monitor.py
+
+Pygame battery gauge and telemetry display for the Yukon RP2040.
+Shows a live battery bar (colour-coded green → yellow → red), voltage sparkline, current, power, motor temperatures, and pulsing fault indicators.
+Reconnects automatically if the serial port drops.
+
+```bash
+python3 tools/yukon_battery_monitor.py             # 3S LiPo thresholds (default)
+python3 tools/yukon_battery_monitor.py --cells 4   # 4S LiPo
+python3 tools/yukon_battery_monitor.py --port /dev/ttyACM0 --interval 0.5
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port DEV` | `/dev/yukon` | Serial port |
+| `--baud N` | `115200` | Baud rate |
+| `--cells N` | `3` | LiPo cell count (2/3/4/6) — sets voltage range |
+| `--interval N` | `1.0` | Sensor poll interval in seconds |
+
+Press `Esc` or close the window to quit.
 
 ---
 

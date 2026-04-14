@@ -102,7 +102,7 @@ robot.stop()                        # shutdown all subsystems cleanly
 # All switches are edge-triggered — startup silently syncs position without acting.
 # Switch positions that were active at startup do not fire until the switch moves.
 # SF CH5  — mode switch:        low=MANUAL, high=AUTO
-# SE CH6  — speed limit:        1000=slow (25%), 1500=mid, 2000=max
+# SE CH6  — speed select (3-pos): 1000=slow (speed_min), 1500=mid (speed_mid), 2000=full power (1.0)
 # SA CH7  — AUTO type:          1000=Camera, 1500=GPS, 2000=Cam+GPS
 # SB CH8  — GPS logging:        low=off, high=on
 # SC CH9  — data logging:       low=off, high=on  (dlog_ch in [rc])

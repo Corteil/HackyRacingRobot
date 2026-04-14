@@ -16,11 +16,18 @@ When a heading is supplied to update() three features are enabled:
      relying solely on the camera bearing each frame.  This removes the
      camera frame-rate bottleneck from the steering loop entirely.
 
-  2. Controlled search rotation
-     Instead of spinning continuously the robot rotates in search_step_deg
-     increments (default 45°), pausing between each step to allow the camera
-     to catch a frame.  Rotation stops the moment the target gate appears.
-     After a full 360° with no result the counter resets and tries again.
+  2. Controlled search (search_mode selects between two strategies)
+
+     "spin" (default): rotates in search_step_deg increments (default 45°),
+     pausing between each step to allow the camera to catch a frame. Rotation
+     stops the moment the target gate appears. After a full 360° with no
+     result the counter resets and tries again.
+
+     "serpentine": drives forward in a sweeping zigzag — suited to grass or
+     any surface where the robot cannot spin on the spot. Each leg drives
+     forward at search_speed with a steering bias of search_turn_bias,
+     alternating direction every search_leg_time seconds. The camera sweeps
+     left and right as the robot curves forward, covering a wide field.
 
   3. Straight-line PASSING on a fixed heading
      On entering PASSING the navigator calls yukon.set_bearing(heading) so
@@ -183,9 +190,12 @@ class NavConfig:
     tag_size:              float = 0.15
     pass_distance:         float = 0.6
     pass_time:             float = 0.8
+    search_mode:           str   = "spin"  # "spin" or "serpentine"
     search_speed:          float = 0.25
     search_step_deg:       float = 45.0
     search_step_pause:     float = 0.3
+    search_leg_time:       float = 2.0    # serpentine: seconds per leg before reversing direction
+    search_turn_bias:      float = 0.4    # serpentine: steering fraction (0=straight, 1=max curve)
     fwd_speed:             float = 0.45
     align_fwd_speed:       float = 0.15
     steer_kp:              float = 0.6
@@ -277,6 +287,9 @@ class ArucoNavigator:
         self._search_turned:  float           = 0.0   # cumulative degrees rotated
         self._search_pausing: bool            = False
         self._search_pause_end: float         = 0.0
+        # Serpentine search state
+        self._serp_dir:       int             = 1     # +1 = curving right, -1 = curving left
+        self._serp_leg_start: float           = 0.0   # monotonic time when current leg began
 
         # RECOVERING state timer
         self._recover_start: float = 0.0
@@ -312,9 +325,12 @@ class ArucoNavigator:
             tag_size              = _f("tag_size",              NavConfig.tag_size),
             pass_distance         = _f("pass_distance",         NavConfig.pass_distance),
             pass_time             = _f("pass_time",             NavConfig.pass_time),
+            search_mode           = sec.get("search_mode",       NavConfig.search_mode).strip(),
             search_speed          = _f("search_speed",          NavConfig.search_speed),
             search_step_deg       = _f("search_step_deg",       NavConfig.search_step_deg),
             search_step_pause     = _f("search_step_pause",     NavConfig.search_step_pause),
+            search_leg_time       = _f("search_leg_time",       NavConfig.search_leg_time),
+            search_turn_bias      = _f("search_turn_bias",      NavConfig.search_turn_bias),
             fwd_speed             = _f("fwd_speed",             NavConfig.fwd_speed),
             align_fwd_speed       = _f("align_fwd_speed",       NavConfig.align_fwd_speed),
             steer_kp              = _f("steer_kp",              NavConfig.steer_kp),
@@ -636,9 +652,17 @@ class ArucoNavigator:
               else self.cfg.fwd_speed
         return self._apply_ramp(_clamp(fwd - steer), _clamp(fwd + steer), dt)
 
-    # ── Search rotation ───────────────────────────────────────────────────────
+    # ── Search ────────────────────────────────────────────────────────────────
 
     def _search_step(
+        self, heading: Optional[float], dt: float, now: float
+    ) -> Tuple[float, float]:
+        """Dispatch to the configured search strategy."""
+        if self.cfg.search_mode == "serpentine":
+            return self._search_serpentine(dt, now)
+        return self._search_spin(heading, dt, now)
+
+    def _search_spin(
         self, heading: Optional[float], dt: float, now: float
     ) -> Tuple[float, float]:
         """Rotate in steps to find the target gate."""
@@ -678,10 +702,32 @@ class ArucoNavigator:
             -self.cfg.search_speed, self.cfg.search_speed, dt
         )
 
+    def _search_serpentine(self, dt: float, now: float) -> Tuple[float, float]:
+        """Drive forward in a zigzag to sweep the camera across the field.
+
+        Each leg drives at search_speed with a search_turn_bias steering
+        offset, alternating direction every search_leg_time seconds.
+        Used on grass or other surfaces where the robot cannot spin in place.
+        """
+        if self._serp_leg_start == 0.0:
+            self._serp_leg_start = now
+
+        if (now - self._serp_leg_start) >= self.cfg.search_leg_time:
+            self._serp_dir       = -self._serp_dir
+            self._serp_leg_start = now
+            log.debug("Serpentine search: switching direction (dir=%+d)", self._serp_dir)
+
+        steer = self.cfg.search_turn_bias * self._serp_dir
+        left  = _clamp(self.cfg.search_speed - steer)
+        right = _clamp(self.cfg.search_speed + steer)
+        return self._apply_ramp(left, right, dt)
+
     def _reset_search(self):
         self._search_origin   = None
         self._search_turned   = 0.0
         self._search_pausing  = False
+        self._serp_dir        = 1
+        self._serp_leg_start  = 0.0
 
     # ── PASSING helpers ───────────────────────────────────────────────────────
 
@@ -852,9 +898,12 @@ class ArucoNavigator:
 # tag_size              = 0.15
 # pass_distance         = 0.6
 # pass_time             = 0.8
+# search_mode           = spin         # "spin" or "serpentine" (use serpentine on grass)
 # search_speed          = 0.25
-# search_step_deg       = 45.0
-# search_step_pause     = 0.3
+# search_step_deg       = 45.0        # spin mode only: degrees per IMU-controlled step
+# search_step_pause     = 0.3         # spin mode only: pause between steps (seconds)
+# search_leg_time       = 2.0         # serpentine mode only: seconds per leg
+# search_turn_bias      = 0.4         # serpentine mode only: steering fraction (0=straight, 1=max)
 # fwd_speed             = 0.45
 # align_fwd_speed       = 0.15
 # steer_kp              = 0.6
