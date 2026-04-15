@@ -252,16 +252,17 @@ def _serialise(state, cam_rotation=0, aruco_enabled=None,
             'right': round(d.right, 3),
         },
         'telemetry': {
-            'voltage':     round(t.voltage,    2),
-            'current':     round(t.current,    3),
-            'board_temp':  round(t.board_temp, 1),
-            'left_temp':   round(t.left_temp,  1),
-            'right_temp':  round(t.right_temp, 1),
-            'left_fault':  t.left_fault,
-            'right_fault': t.right_fault,
+            'voltage':          round(t.voltage,    2),
+            'current':          round(t.current,    3),
+            'board_temp':       round(t.board_temp, 1),
+            'left_temp':        round(t.left_temp,  1),
+            'right_temp':       round(t.right_temp, 1),
+            'left_fault':       t.left_fault,
+            'right_fault':      t.right_fault,
             'heading': round(t.heading, 1) if t.heading is not None else None,
             'pitch':   round(t.pitch,   1) if t.pitch   is not None else None,
             'roll':    round(t.roll,    1) if t.roll    is not None else None,
+            'firmware_version': t.firmware_version,
         },
         'gps': {
             'latitude':         g.latitude,
@@ -584,9 +585,10 @@ button:active{background:#2a2a42}
     <div class="mob-page" id="mob-telem">
       <div class="mob-section">
         <div class="mob-title">Telemetry</div>
-        <div class="tgrid">
+        <div class="tgrid three">
           <div class="field"><label>Voltage</label><span id="mob-volt">--</span></div>
           <div class="field"><label>Current</label><span id="mob-curr">--</span></div>
+          <div class="field"><label>FW</label><span id="mob-fwver">--</span></div>
         </div>
         <div class="tgrid three">
           <div class="field"><label>Board</label><span id="mob-board">--</span></div>
@@ -767,9 +769,10 @@ function htmlMotor(i) {
 }
 function htmlTelemetry(i) {
   return `
-    <div class="tgrid">
+    <div class="tgrid three">
       <div class="field"><label>Voltage</label><span id="q${i}-volt">--</span></div>
       <div class="field"><label>Current</label><span id="q${i}-curr">--</span></div>
+      <div class="field"><label>FW</label><span id="q${i}-fwver">--</span></div>
     </div>
     <div class="tgrid three" style="padding-top:0">
       <div class="field"><label>Board</label><span id="q${i}-board">--</span></div>
@@ -1090,6 +1093,7 @@ function updateTelemPanel(i, s) {
   const se = (id, v, c) => { const e=el(id); if(!e)return; e.textContent=v; if(c)e.style.color=c; };
   se(`q${i}-volt`,  fmt(t.voltage,1,' V'));
   se(`q${i}-curr`,  fmt(t.current,2,' A'));
+  se(`q${i}-fwver`, t.firmware_version!=null ? 'v'+t.firmware_version : '--', t.firmware_version!=null ? C.cyan : C.gray);
   se(`q${i}-board`, fmt(t.board_temp,0,'°C'));
   se(`q${i}-ltmp`,  fmt(t.left_temp,0,'°C'));
   se(`q${i}-rtmp`,  fmt(t.right_temp,0,'°C'));
@@ -1844,6 +1848,7 @@ function updateMobile(s) {
   // Telem tab
   se('mob-volt',  fmt(t.voltage,1,' V'));
   se('mob-curr',  fmt(t.current,2,' A'));
+  se('mob-fwver', t.firmware_version!=null ? 'v'+t.firmware_version : '--', t.firmware_version!=null ? C.cyan : C.gray);
   se('mob-board', fmt(t.board_temp,0,'°C'));
   se('mob-ltmp',  fmt(t.left_temp,0,'°C'));
   se('mob-rtmp',  fmt(t.right_temp,0,'°C'));

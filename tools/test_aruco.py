@@ -160,32 +160,33 @@ def test_detector_detection():
     check("ids 1+3: 2 tags found", len(state.tags), 2)
     check("ids 1+3: no gate (not consecutive pair)", len(state.gates), 0)
 
-    # Gate pair: markers 1 (left) and 2 (right) → gate 0, correct_dir=True
-    frame = _frame_with_markers({1: (100, 200), 2: (420, 200)})
+    # Gate pair: tag 0 (outside, even base) right + tag 1 (inside, odd base) left → gate 0
+    # correct_dir=True because both IDs are front tags (< 100)
+    frame = _frame_with_markers({1: (100, 200), 0: (420, 200)})
     state = det.detect(frame)
     check("gate 0: 2 tags found", len(state.tags), 2)
     check("gate 0: gate 0 present", 0 in state.gates, True)
     if 0 in state.gates:
         g = state.gates[0]
-        check("gate 0: odd_tag=1",  g.odd_tag,  1)
-        check("gate 0: even_tag=2", g.even_tag, 2)
-        check("gate 0: correct_dir=True (1 left of 2)", g.correct_dir, True)
-        # Gate centre should be between the two markers
+        check("gate 0: inside_tag=1",   g.inside_tag,  1)
+        check("gate 0: outside_tag=0",  g.outside_tag, 0)
+        check("gate 0: correct_dir=True (front tags)", g.correct_dir, True)
+        # Gate centre should be midpoint between the two posts
+        t0 = state.tags[0]
         t1 = state.tags[1]
-        t2 = state.tags[2]
-        expected_cx = (t1.center_x + t2.center_x) // 2
+        expected_cx = (t0.center_x + t1.center_x) // 2
         check("gate 0: centre_x midpoint", g.centre_x, expected_cx)
 
-    # Gate pair with reversed direction: marker 2 left, marker 1 right
-    frame = _frame_with_markers({2: (100, 200), 1: (420, 200)})
+    # Gate pair with reversed direction: rear tags 100 (outside) + 101 (inside)
+    # correct_dir=False because both IDs are rear tags (>= 100)
+    frame = _frame_with_markers({101: (100, 200), 100: (420, 200)})
     state = det.detect(frame)
+    check("gate 0 reversed: gate present", 0 in state.gates, True)
     if 0 in state.gates:
         check("gate 0 reversed: correct_dir=False", state.gates[0].correct_dir, False)
-    else:
-        check("gate 0 reversed: gate present", 0 in state.gates, True)
 
-    # Multiple gates: 1+2 and 3+4
-    frame = _frame_with_markers({1: (50, 100), 2: (170, 100), 3: (350, 100), 4: (470, 100)})
+    # Multiple gates: tags 0+1 (gate 0) and 2+3 (gate 1)
+    frame = _frame_with_markers({1: (50, 100), 0: (170, 100), 3: (350, 100), 2: (470, 100)})
     state = det.detect(frame)
     check("2 gates: 4 tags found", len(state.tags), 4)
     check("2 gates: gate 0 present", 0 in state.gates, True)
@@ -402,13 +403,13 @@ steer_kp  = 0.8
     # ArUcoGate does not have .bearing or .distance fields; this will raise
     # AttributeError unless the dataclass has been extended.
     print("\n  _resolve_target with gate visible (bug check):")
-    gate = ArUcoGate(gate_id=0, odd_tag=1, even_tag=2,
+    gate = ArUcoGate(gate_id=0, outside_tag=2, inside_tag=1,
                      centre_x=320, centre_y=240, correct_dir=True)
     state_with_gate = ArUcoState(tags={}, gates={0: gate})
     nav8 = ArucoNavigator()
     nav8.start()
     try:
-        tx, dist, bearing = nav8._resolve_target(state_with_gate, 320)
+        tx, dist, bearing, _single = nav8._resolve_target(state_with_gate, 320)
         check("  _resolve_target gate: no AttributeError", True, True)
         check("  _resolve_target gate: returns centre_x", tx, 320)
     except AttributeError as e:
@@ -425,7 +426,7 @@ steer_kp  = 0.8
     nav9 = ArucoNavigator()
     nav9.start()
     try:
-        tx, dist, bearing = nav9._resolve_target(state_with_tag, 320)
+        tx, dist, bearing, _single = nav9._resolve_target(state_with_tag, 320)
         check("  _resolve_target single tag: no AttributeError", True, True)
         # Odd tag (id=1) → aim RIGHT of tag, so tx > tag.center_x
         check("  _resolve_target odd tag: aim right of tag", tx > tag.center_x, True)

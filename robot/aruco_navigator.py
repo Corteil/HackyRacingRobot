@@ -195,8 +195,9 @@ class NavConfig:
     search_speed:          float = 0.25
     search_step_deg:       float = 45.0
     search_step_pause:     float = 0.3
-    search_leg_time:       float = 2.0    # serpentine: seconds per leg before reversing direction
-    search_turn_bias:      float = 0.4    # serpentine: steering fraction (0=straight, 1=max curve)
+    search_leg_time:       float = 4.0    # serpentine: max seconds per leg before forcing direction switch
+    search_turn_bias:      float = 0.4    # serpentine fallback (no IMU): steering fraction (0=straight, 1=max curve)
+    search_cone_deg:       float = 90.0   # serpentine: total sweep cone width in degrees (±half each side)
     fwd_speed:             float = 0.45
     align_fwd_speed:       float = 0.15
     steer_kp:              float = 0.6
@@ -289,8 +290,10 @@ class ArucoNavigator:
         self._search_pausing: bool            = False
         self._search_pause_end: float         = 0.0
         # Serpentine search state
-        self._serp_dir:       int             = 1     # +1 = curving right, -1 = curving left
-        self._serp_leg_start: float           = 0.0   # monotonic time when current leg began
+        self._serp_dir:       int             = 1              # +1 = turning right, -1 = turning left
+        self._serp_leg_start: float           = 0.0            # monotonic time when current leg began
+        self._serp_origin:    Optional[float] = None           # IMU heading when SEARCHING began
+        self._serp_target:    Optional[float] = None           # current target heading for this leg
 
         # RECOVERING state timer
         self._recover_start: float = 0.0
@@ -336,6 +339,7 @@ class ArucoNavigator:
             search_step_pause     = _f("search_step_pause",     NavConfig.search_step_pause),
             search_leg_time       = _f("search_leg_time",       NavConfig.search_leg_time),
             search_turn_bias      = _f("search_turn_bias",      NavConfig.search_turn_bias),
+            search_cone_deg       = _f("search_cone_deg",       NavConfig.search_cone_deg),
             fwd_speed             = _f("fwd_speed",             NavConfig.fwd_speed),
             align_fwd_speed       = _f("align_fwd_speed",       NavConfig.align_fwd_speed),
             steer_kp              = _f("steer_kp",              NavConfig.steer_kp),
@@ -670,7 +674,7 @@ class ArucoNavigator:
         # ── Motor mixing ──────────────────────────────────────────────────────
         fwd = self.cfg.align_fwd_speed if self._state == NavState.ALIGNING \
               else self.cfg.fwd_speed
-        return self._apply_ramp(_clamp(fwd - steer), _clamp(fwd + steer), dt)
+        return self._apply_ramp(_clamp(fwd + steer), _clamp(fwd - steer), dt)
 
     # ── Search ────────────────────────────────────────────────────────────────
 
@@ -679,7 +683,7 @@ class ArucoNavigator:
     ) -> Tuple[float, float]:
         """Dispatch to the configured search strategy."""
         if self.cfg.search_mode == "serpentine":
-            return self._search_serpentine(dt, now)
+            return self._search_serpentine(heading, dt, now)
         return self._search_spin(heading, dt, now)
 
     def _search_spin(
@@ -722,25 +726,60 @@ class ArucoNavigator:
             -self.cfg.search_speed, self.cfg.search_speed, dt
         )
 
-    def _search_serpentine(self, dt: float, now: float) -> Tuple[float, float]:
-        """Drive forward in a zigzag to sweep the camera across the field.
+    def _search_serpentine(
+        self, heading: Optional[float], dt: float, now: float
+    ) -> Tuple[float, float]:
+        """Drive forward in an IMU-controlled zigzag within a ±cone/2 arc.
 
-        Each leg drives at search_speed with a search_turn_bias steering
-        offset, alternating direction every search_leg_time seconds.
-        Used on grass or other surfaces where the robot cannot spin in place.
+        Records the heading when SEARCHING begins as the centre of the sweep.
+        Steers toward the ±search_cone_deg/2 target using the same proportional
+        controller as APPROACHING, switching direction when within 5° of the
+        target heading or after search_leg_time seconds (safety net).
+        Falls back to time-based steering when the IMU is unavailable.
         """
-        if self._serp_leg_start == 0.0:
-            self._serp_leg_start = now
+        cone_half = self.cfg.search_cone_deg / 2.0
 
-        if (now - self._serp_leg_start) >= self.cfg.search_leg_time:
+        if heading is None:
+            # No IMU — fall back to time-based bias steering
+            if self._serp_leg_start == 0.0:
+                self._serp_leg_start = now
+            if (now - self._serp_leg_start) >= self.cfg.search_leg_time:
+                self._serp_dir       = -self._serp_dir
+                self._serp_leg_start = now
+                log.debug("Serpentine search: switching direction (dir=%+d, no IMU)",
+                          self._serp_dir)
+            steer = self.cfg.search_turn_bias * self._serp_dir
+            return self._apply_ramp(
+                _clamp(self.cfg.search_speed - steer),
+                _clamp(self.cfg.search_speed + steer), dt,
+            )
+
+        # IMU available — initialise origin and first target on first call
+        if self._serp_origin is None:
+            self._serp_origin    = heading
+            self._serp_target    = (heading + cone_half * self._serp_dir) % 360.0
+            self._serp_leg_start = now
+            log.debug("Serpentine search: origin=%.1f° first target=%.1f°",
+                      self._serp_origin, self._serp_target)
+
+        err       = _angle_diff(self._serp_target, heading)
+        at_target = abs(err) < 5.0
+        timed_out = (now - self._serp_leg_start) >= self.cfg.search_leg_time
+
+        if at_target or timed_out:
             self._serp_dir       = -self._serp_dir
+            self._serp_target    = (self._serp_origin + cone_half * self._serp_dir) % 360.0
             self._serp_leg_start = now
-            log.debug("Serpentine search: switching direction (dir=%+d)", self._serp_dir)
+            log.debug("Serpentine search: %s — new target=%.1f° (dir=%+d)",
+                      "at target" if at_target else "timeout",
+                      self._serp_target, self._serp_dir)
+            err = _angle_diff(self._serp_target, heading)
 
-        steer = self.cfg.search_turn_bias * self._serp_dir
-        left  = _clamp(self.cfg.search_speed - steer)
-        right = _clamp(self.cfg.search_speed + steer)
-        return self._apply_ramp(left, right, dt)
+        steer = _clamp(self.cfg.steer_kp * (err / 45.0))
+        return self._apply_ramp(
+            _clamp(self.cfg.search_speed - steer),
+            _clamp(self.cfg.search_speed + steer), dt,
+        )
 
     def _reset_search(self):
         self._search_origin   = None
@@ -748,6 +787,8 @@ class ArucoNavigator:
         self._search_pausing  = False
         self._serp_dir        = 1
         self._serp_leg_start  = 0.0
+        self._serp_origin     = None
+        self._serp_target     = None
 
     # ── PASSING helpers ───────────────────────────────────────────────────────
 
@@ -878,28 +919,30 @@ class ArucoNavigator:
         else:
             return None, None, None, False
 
-        offset = self._single_tag_offset(tag)
-        # Outside post → aim RIGHT (+offset); inside post → aim LEFT (−offset)
-        tx = tag.center_x + (-offset if is_inside else offset)
-
-        if tag.bearing is not None:
-            lateral_norm = (tx - tag.center_x) / max(frame_cx, 1)
-            bearing = tag.bearing + math.degrees(math.atan(lateral_norm))
+        # Outside post: physical right = large x = positive bearing.
+        # Gate opening is to the LEFT of outside post → aim at smaller x (subtract offset).
+        # Inside post: physical left = small x = negative bearing.
+        # Gate opening is to the RIGHT of inside post → aim at larger x (add offset).
+        if tag.bearing is not None and tag.distance is not None \
+                and tag.distance > 0 and self.cfg.tag_offset_k > 0:
+            offset_deg = math.degrees(math.atan(self.cfg.tag_offset_k / tag.distance))
+            # Outside post: gate is to left → subtract bearing offset
+            # Inside post:  gate is to right → add bearing offset
+            bearing = tag.bearing + (offset_deg if is_inside else -offset_deg)
+            tx = tag.center_x  # tx only used for logging; bearing drives steering
         else:
+            offset = self._single_tag_offset(tag)
+            # Outside → aim LEFT (subtract offset); inside → aim RIGHT (add offset)
+            tx = tag.center_x + (offset if is_inside else -offset)
             bearing = _pixel_bearing(tx, frame_cx)
 
         return tx, tag.distance, bearing, True
 
     def _single_tag_offset(self, tag) -> int:
-        """Pixel offset to aim beside a single visible post.
+        """Pixel offset to aim beside a single visible post (fallback when no distance).
 
         Uses the tag's apparent pixel area so the offset scales naturally with
-        distance: larger offset when the tag is far (small area) so the robot
-        aims well past the post toward the gap, converging as it closes in.
-
-        pixel_offset_k is tunable in robot.ini [navigator].  The distance-based
-        formula (tag_offset_k / distance) is intentionally not used: with the
-        default 0.4 it produces 0 pixels at any practical range.
+        distance.  pixel_offset_k is tunable in robot.ini [navigator].
         """
         if tag.area > 0:
             return int(self.cfg.pixel_offset_k / math.sqrt(tag.area))
@@ -935,8 +978,9 @@ class ArucoNavigator:
 # search_speed          = 0.25
 # search_step_deg       = 45.0        # spin mode only: degrees per IMU-controlled step
 # search_step_pause     = 0.3         # spin mode only: pause between steps (seconds)
-# search_leg_time       = 2.0         # serpentine mode only: seconds per leg
-# search_turn_bias      = 0.4         # serpentine mode only: steering fraction (0=straight, 1=max)
+# search_leg_time       = 4.0         # serpentine mode only: max seconds per leg (safety timeout)
+# search_turn_bias      = 0.4         # serpentine mode only (no IMU fallback): steering fraction (0=straight, 1=max)
+# search_cone_deg       = 90.0        # serpentine mode only: total sweep arc (±half each side of entry heading)
 # fwd_speed             = 0.45
 # align_fwd_speed       = 0.15
 # steer_kp              = 0.6

@@ -38,7 +38,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_LEFT`       | 2    | Motor speed byte (see below) — **only applied in AUTO mode** |
 | `CMD_RIGHT`      | 3    | Motor speed byte — **only applied in AUTO mode** |
 | `CMD_KILL`       | 4    | Ignored — zeros both motors and disables bearing hold |
-| `CMD_SENSOR`     | 5    | Ignored — device replies with 12 sensor data packets then ACK |
+| `CMD_SENSOR`     | 5    | Ignored — device replies with 13 sensor data packets then ACK |
 | `CMD_BEARING`    | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
 | `CMD_STRIP`      | 7    | Colour preset index (0=off 1=red 2=green 3=blue 4=orange 5=yellow 6=cyan 7=magenta 8=white) — stops any active pattern |
 | `CMD_PIXEL_SET`  | 8    | High nibble = LED index (0–15), low nibble = colour index (0–15) — stages pixel, no hardware update |
@@ -98,7 +98,7 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 
 ## Sensor response (Device → Host)
 
-`CMD_SENSOR` triggers 12 data packets followed by ACK. Each data packet uses the same 5-byte wire format with `RESP_TYPE` replacing `CMD`:
+`CMD_SENSOR` triggers 13 data packets followed by ACK. Each data packet uses the same 5-byte wire format with `RESP_TYPE` replacing `CMD`:
 
 | ID | Name              | Scale factor / encoding                              | Unit |
 |----|-------------------|------------------------------------------------------|------|
@@ -114,6 +114,7 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 | 9  | IMU roll          | `(roll + 180) × 254 / 360`; 255 = absent. Decode: `raw × 360 / 254 − 180` (~1.4° res) | ° |
 | 10 | PowerBench temp   | raw ÷ 3                                              | °C   |
 | 11 | PowerBench fault  | 0 or 1                                               | —    |
+| 12 | Firmware version  | `FIRMWARE_VERSION` constant from `main.py`; 0 = old firmware (pre-versioning) | — |
 
 `RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x39`).
 

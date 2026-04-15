@@ -128,6 +128,7 @@ class Telemetry:
     heading:     Optional[float] = None   # IMU heading in degrees (None = IMU absent)
     pitch:       Optional[float] = None   # IMU pitch  in degrees, +ve = nose up
     roll:        Optional[float] = None   # IMU roll   in degrees, +ve = right down
+    firmware_version: Optional[int] = None  # Yukon firmware version (None = old firmware)
     timestamp:   float          = 0.0
 
 
@@ -275,7 +276,7 @@ class _YukonLink:
     CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
     CMD_BENCH    = 13  # value: 0=disable FPV camera output, 1=enable
 
-    RESP_IDS     = range(12)  # 0..11 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault)
+    RESP_IDS     = range(13)  # 0..12 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault, 12=fw_version)
     RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
     # Note: RESP_RC_BASE (8) overlaps RESP_PITCH (8) and RESP_ROLL (9) by ID number,
     # but they are never mixed in the same response batch. Routing is safe because
@@ -407,20 +408,22 @@ class _YukonLink:
         # Roll: encoded (roll+180)*254/360; 255 = absent
         rol_raw = raw.get(9, 255)
         roll    = None if rol_raw == 255 else round(rol_raw * 360.0 / 254.0 - 180.0, 1)
+        fw_raw = raw.get(12, 0)
         return Telemetry(
-            voltage     = raw.get(0, 0) / 10.0,
-            current     = raw.get(1, 0) / 100.0,
-            board_temp  = raw.get(2, 0) / 3.0,
-            left_temp   = raw.get(3, 0) / 3.0,
-            right_temp  = raw.get(4, 0) / 3.0,
-            left_fault  = bool(raw.get(5, 0)),
-            right_fault = bool(raw.get(6, 0)),
-            bench_temp  = raw.get(10, 0) / 3.0,
-            bench_fault = bool(raw.get(11, 0)),
-            heading     = heading,
-            pitch       = pitch,
-            roll        = roll,
-            timestamp   = time.monotonic(),
+            voltage          = raw.get(0, 0) / 10.0,
+            current          = raw.get(1, 0) / 100.0,
+            board_temp       = raw.get(2, 0) / 3.0,
+            left_temp        = raw.get(3, 0) / 3.0,
+            right_temp       = raw.get(4, 0) / 3.0,
+            left_fault       = bool(raw.get(5, 0)),
+            right_fault      = bool(raw.get(6, 0)),
+            bench_temp       = raw.get(10, 0) / 3.0,
+            bench_fault      = bool(raw.get(11, 0)),
+            heading          = heading,
+            pitch            = pitch,
+            roll             = roll,
+            firmware_version = fw_raw if fw_raw else None,
+            timestamp        = time.monotonic(),
         )
 
     # ── protocol helpers ─────────────────────────────────────────────────────

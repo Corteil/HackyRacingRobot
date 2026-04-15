@@ -25,6 +25,7 @@ def _pio_uart_rx():
 # Hardware constants
 LED_A = 'A'
 LED_B = 'B'
+FIRMWARE_VERSION = 2   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
 UPDATES      = 50
 CURRENT_LIMIT = 2
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
@@ -91,6 +92,7 @@ RESP_ROLL        = 9   # IMU roll   (side tilt),   encoded (roll+180)*254/360, 2
                        # Decode: roll  = value * 360/254 - 180 (-180deg..+180deg, ~1.4deg res)
 RESP_BENCH_TEMP  = 10  # Dual Output module temp x 3 (e.g. 22.5 degC -> 67)
 RESP_BENCH_FAULT = 11  # Dual Output power-good fault (0 or 1)
+RESP_FW_VERSION  = 12  # Firmware version (FIRMWARE_VERSION constant; 0 = unknown)
 
 # ── Shared state (protected by _lock) ────────────────────────────────────────
 
@@ -689,6 +691,7 @@ try:
                             _send_data(RESP_HEADING, 255)
                             _send_data(RESP_PITCH,   255)
                             _send_data(RESP_ROLL,    255)
+                        _send_data(RESP_FW_VERSION, FIRMWARE_VERSION)
 
                     elif cmd_code == CMD_BEARING:
                         if value == 255:

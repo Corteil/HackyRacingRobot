@@ -154,7 +154,7 @@ Each record contains a complete snapshot of all sensor inputs and motor outputs:
 | `mode`, `auto_type`, `speed_scale` | Robot operating state |
 | `rc_channels` | All 14 raw RC µs values |
 | `drive` | `left` / `right` motor outputs — the training labels |
-| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, fault flags |
+| `telemetry` | Voltage, current, temperatures, IMU heading / pitch / roll, fault flags, firmware version |
 | `gps` | Lat, lon, alt, speed, fix quality, satellites, HDOP, h_error |
 | `lidar` | Full angle and distance arrays |
 | `aruco` | All detected tags and gates with bearings and distances |
@@ -477,11 +477,16 @@ Pose estimation requires a calibration file (`camera_cal.npz`) produced by
 `tools/calibrate_camera.py` at the same resolution the camera runs at.
 
 ```python
-from robot.aruco_detector import ArucoDetector
+from robot.aruco_detector import ArucoDetector, merge_aruco_states
 det   = ArucoDetector(calib_file='camera_cal_640x480.npz', tag_size=0.15)
 state = det.detect(frame)   # annotates frame in-place; returns ArUcoState
 for gate in state.gates.values():
     print(gate.gate_id, gate.distance, gate.bearing)
+
+# Merge detections from two cameras into one ArUcoState (no frame drawing).
+# Tags are deduplicated by preferring pose-estimated distance over pixel area.
+# Gates are re-derived from the merged tag set.
+merged = merge_aruco_states(state_left, state_right)
 ```
 
 ---
@@ -495,10 +500,12 @@ with `RECOVERING` when a gate is lost mid-approach.
 - `SEARCHING` — rotates in IMU-controlled steps to find the next gate
 - `ALIGNING` — steers toward the gate centre bearing
 - `APPROACHING` — drives forward while holding alignment; LiDAR obstacle-stop active
-- `PASSING` — straight-line burst through the gate at locked IMU heading (`pass_distance` trigger); LiDAR obstacle-stop active
+- `PASSING` — straight-line burst through the gate at locked IMU heading; exits when the gate's tag IDs clear the frame (or `pass_timeout` safety net); `pass_time` is a minimum floor before tag-clear is checked; single-tag fallback uses the track gate `width_m` as pass distance instead of the global `pass_distance` setting; LiDAR obstacle-stop active
 - `RECOVERING` — gate lost while approaching; reverses briefly then returns to SEARCHING
 
 When only one post of a gate is visible, the navigator aims offset left/right of the visible tag (see gate numbering convention above). The aim offset scales with apparent tag pixel area so it stays consistent as the robot approaches.
+
+The control loop merges ArUco detections from both front cameras (`front_left` + `front_right`) before passing to the navigator, widening the effective field of view. `aruco_ok` in `RobotState` reflects either front camera having ArUco active.
 
 Diagnostic attributes (readable on the navigator instance):
 
