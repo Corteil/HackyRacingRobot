@@ -190,6 +190,7 @@ class NavConfig:
     tag_size:              float = 0.15
     pass_distance:         float = 0.6
     pass_time:             float = 0.8
+    pass_timeout:          float = 4.0   # safety net: advance after this even if tags still visible
     search_mode:           str   = "spin"  # "spin" or "serpentine"
     search_speed:          float = 0.25
     search_step_deg:       float = 45.0
@@ -294,6 +295,9 @@ class ArucoNavigator:
         # RECOVERING state timer
         self._recover_start: float = 0.0
 
+        # Tag IDs being watched during PASSING — advance once none are visible
+        self._pass_tag_ids: set = set()
+
         # Ramped motor outputs
         self._cur_left  = 0.0
         self._cur_right = 0.0
@@ -325,6 +329,7 @@ class ArucoNavigator:
             tag_size              = _f("tag_size",              NavConfig.tag_size),
             pass_distance         = _f("pass_distance",         NavConfig.pass_distance),
             pass_time             = _f("pass_time",             NavConfig.pass_time),
+            pass_timeout          = _f("pass_timeout",          NavConfig.pass_timeout),
             search_mode           = sec.get("search_mode",       NavConfig.search_mode).strip(),
             search_speed          = _f("search_speed",          NavConfig.search_speed),
             search_step_deg       = _f("search_step_deg",       NavConfig.search_step_deg),
@@ -578,16 +583,25 @@ class ArucoNavigator:
             return self._apply_ramp(0.0, 0.0, dt)
 
         # ── PASSING ───────────────────────────────────────────────────────────
-        # Yukon's onboard bearing PID keeps us straight while we drive forward.
-        # Exit after pass_time regardless (prevents stall if next gate is close).
+        # Drive straight until the gate tags leave the frame (robot has cleared
+        # the post), with pass_time as a minimum floor and pass_timeout as a
+        # safety net in case tags stay visible longer than expected.
         if self._state == NavState.PASSING:
-            if (now - self._pass_start) >= self.cfg.pass_time:
+            elapsed    = now - self._pass_start
+            min_done   = elapsed >= self.cfg.pass_time
+            timed_out  = elapsed >= self.cfg.pass_timeout
+            gate_clear = not any(tid in aruco_state.tags
+                                 for tid in self._pass_tag_ids)
+            if timed_out or (min_done and gate_clear):
+                if timed_out and not gate_clear:
+                    log.warning("Gate %d pass timeout (%.1fs) — advancing anyway",
+                                self._gate_id, elapsed)
                 self._exit_passing(yukon)
                 self._advance_gate()
             return self._apply_ramp(self.cfg.fwd_speed, self.cfg.fwd_speed, dt)
 
         # ── Resolve aim point ─────────────────────────────────────────────────
-        target_x, dist, cam_bearing = self._resolve_target(aruco_state, frame_cx)
+        target_x, dist, cam_bearing, is_single_tag = self._resolve_target(aruco_state, frame_cx)
 
         self.target_x       = target_x
         self.tag_dist       = dist
@@ -640,10 +654,16 @@ class ArucoNavigator:
             self._set_state(NavState.APPROACHING)
 
         if self._state == NavState.APPROACHING:
-            if dist is not None and dist <= self.cfg.pass_distance:
-                log.info("Gate %d PASSING (dist=%.2fm heading=%s)",
+            tg = self._current_track_gate()
+            if is_single_tag and tg is not None:
+                pass_dist = tg.width_m
+            else:
+                pass_dist = self.cfg.pass_distance
+            if dist is not None and dist <= pass_dist:
+                log.info("Gate %d PASSING (dist=%.2fm heading=%s%s)",
                          self._gate_id, dist,
-                         f"{heading:.1f}°" if heading is not None else "N/A")
+                         f"{heading:.1f}°" if heading is not None else "N/A",
+                         " [single-tag]" if is_single_tag else "")
                 self._enter_passing(heading, yukon, now)
                 return self._apply_ramp(self.cfg.fwd_speed, self.cfg.fwd_speed, dt)
 
@@ -735,6 +755,15 @@ class ArucoNavigator:
         self._pass_start   = now
         self._pass_heading = heading
         self._set_state(NavState.PASSING)
+        # Record tag IDs so PASSING can wait until they leave the frame
+        tg = self._current_track_gate()
+        if tg:
+            self._pass_tag_ids = {tg.outside_front, tg.outside_rear,
+                                   tg.inside_front,  tg.inside_rear}
+        else:
+            gid = self._gate_id
+            self._pass_tag_ids = {gid * 2, gid * 2 + 1,
+                                   100 + gid * 2, 100 + gid * 2 + 1}
         if heading is not None and yukon is not None:
             try:
                 yukon.set_bearing(heading)
@@ -795,11 +824,14 @@ class ArucoNavigator:
         self,
         state: ArUcoState,
         frame_cx: int,
-    ) -> Tuple[Optional[int], Optional[float], Optional[float]]:
+    ) -> Tuple[Optional[int], Optional[float], Optional[float], bool]:
         """
         Work out where to aim this frame.
 
-        Returns (target_x_pixels, distance_m, camera_bearing_degrees).
+        Returns (target_x_pixels, distance_m, camera_bearing_degrees, is_single_tag).
+
+        is_single_tag is True when only one post is visible (single-tag fallback),
+        False when the full gate pair is resolved.
 
         When a track is loaded, tag IDs and outside/inside roles come from the
         TrackGate definition.  Without a track the original even/odd formula is
@@ -829,7 +861,7 @@ class ArucoNavigator:
                 log.warning("Gate %d: correct_dir=False (approaching from rear)", gate_id)
             bearing = gate.bearing if gate.bearing is not None \
                       else _pixel_bearing(gate.centre_x, frame_cx)
-            return gate.centre_x, gate.distance, bearing
+            return gate.centre_x, gate.distance, bearing, False
 
         # ── Single-tag fallback ───────────────────────────────────────────────
         # Accept both front and rear variants of each post (base_id = tag_id % 100)
@@ -844,7 +876,7 @@ class ArucoNavigator:
         elif inside_tag is not None:
             tag, is_inside = inside_tag, True
         else:
-            return None, None, None
+            return None, None, None, False
 
         offset = self._single_tag_offset(tag)
         # Outside post → aim RIGHT (+offset); inside post → aim LEFT (−offset)
@@ -856,7 +888,7 @@ class ArucoNavigator:
         else:
             bearing = _pixel_bearing(tx, frame_cx)
 
-        return tx, tag.distance, bearing
+        return tx, tag.distance, bearing, True
 
     def _single_tag_offset(self, tag) -> int:
         """Pixel offset to aim beside a single visible post.
@@ -898,6 +930,7 @@ class ArucoNavigator:
 # tag_size              = 0.15
 # pass_distance         = 0.6
 # pass_time             = 0.8
+# pass_timeout          = 4.0
 # search_mode           = spin         # "spin" or "serpentine" (use serpentine on grass)
 # search_speed          = 0.25
 # search_step_deg       = 45.0        # spin mode only: degrees per IMU-controlled step
