@@ -241,7 +241,7 @@ def _draw_right_panel(surf, rect: pygame.Rect,
     """Draw the fixed right-hand info panel.
 
     *scroll* is a pixel offset applied only to the scrollable body
-    (tag list + gates).  The header and frozen badge stay fixed.
+    (tag list).  The header and frozen badge stay fixed.
     """
     pygame.draw.rect(surf, C_PANEL,  rect, border_radius=6)
     pygame.draw.rect(surf, C_BORDER, rect, 1, border_radius=6)
@@ -298,24 +298,6 @@ def _draw_right_panel(surf, rect: pygame.Rect,
     else:
         surf.blit(font_tiny.render("  (none)", True, C_GRAY), (px, py))
         py += row_h
-
-    if state.gates:
-        py += 4
-        surf.blit(font_sm.render("Gates", True, C_CYAN), (px, py))
-        py += row_h + 2
-        pygame.draw.line(surf, C_BORDER,
-                         (rect.x + 4, py), (rect.right - 4, py), 1)
-        py += 6
-        for gate in sorted(state.gates.values(), key=lambda g: g.gate_id):
-            dir_txt   = "correct"  if gate.correct_dir else "reversed"
-            dir_color = C_GREEN    if gate.correct_dir else C_RED
-            surf.blit(font_tiny.render(
-                f"  G{gate.gate_id}  {gate.odd_tag}+{gate.even_tag}",
-                True, C_WHITE), (px, py))
-            py += row_h - 4
-            surf.blit(font_tiny.render(
-                f"  {dir_txt}", True, dir_color), (px, py))
-            py += row_h
 
     # Scroll indicators
     if scroll > 0:
@@ -596,9 +578,7 @@ def run():
                    else f"{EXP_STEPS[exp_idx] / 1000:.1f} ms"
                    if source_idx < 2 else "n/a")
 
-        aruco_str = (f"{len(aruco_state.tags)} tags"
-                     + (f"  {len(aruco_state.gates)} gates" if aruco_state.gates else "")
-                     if show_aruco else "OFF")
+        aruco_str = (f"{len(aruco_state.tags)} tags" if show_aruco else "OFF")
 
         calib_str = ("ON" if use_calib else "OFF") if _calib.available else "none"
         src_short = VIDEO_SOURCES[source_idx].replace("Picamera2 ", "Pi2 ")

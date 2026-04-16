@@ -86,8 +86,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _try_import_robot():
     try:
         from robot_daemon import Robot, RobotMode   # noqa: F401
-        from robot.aruco_detector import ArUcoState, ArUcoTag, ArUcoGate
-        from robot.aruco_navigator import ArucoNavigator, NavConfig, NavState
+        from robot.aruco_detector import ArUcoState, ArUcoTag
+        from robot.aruco_navigator import ArucoNavigator, NavConfig, NavState, ArUcoGate
         return True
     except ImportError:
         return False
@@ -185,9 +185,9 @@ class VisFrame:
         default_factory=dict)
     # tag_id → (world_x, world_y, distance_m, bearing_deg)
 
-    gates:         Dict[int, Tuple[float, float, bool]] = field(
+    gates:         Dict[int, Tuple[float, float]] = field(
         default_factory=dict)
-    # gate_id → (world_x, world_y, correct_dir)
+    # gate_id → (world_x, world_y)
 
     aim_bearing:   Optional[float] = None   # camera bearing to aim point
     cam_fov_deg:   float = 62.0             # horizontal FOV
@@ -325,9 +325,9 @@ def _draw_gates(surf: pygame.Surface, tx: ViewTransform,
                 frame: VisFrame, show_gates: bool):
     if not show_gates:
         return
-    for gid, (wx, wy, correct) in frame.gates.items():
+    for gid, (wx, wy) in frame.gates.items():
         sx, sy = tx.w2s(wx, wy)
-        colour = C_GATE_OK if correct else C_GATE_WRONG
+        colour = C_GATE_OK
 
         # Cross marker at gate centre
         cs = max(8, int(tx.ppm * 0.12))
@@ -466,10 +466,8 @@ def _draw_panel(surf: pygame.Surface, frame: VisFrame, fps: float):
     # Gates visible
     txt("GATES VISIBLE", C_GRAY, FONT_MD)
     if frame.gates:
-        for gid, (wx, wy, ok) in sorted(frame.gates.items()):
-            col = C_GATE_OK if ok else C_GATE_WRONG
-            dir_str = "OK" if ok else "WRONG DIR"
-            txt(f"  G{gid}  {dir_str}", col)
+        for gid, (wx, wy) in sorted(frame.gates.items()):
+            txt(f"  G{gid}", C_GATE_OK)
     else:
         txt("  (none)", C_GRAY)
     sep()
@@ -554,12 +552,11 @@ class Simulator:
 
     def __init__(self, num_gates: int = 4):
         from robot.aruco_navigator import ArucoNavigator, NavConfig, NavState
-        from robot.aruco_detector  import ArUcoState, ArUcoTag, ArUcoGate
+        from robot.aruco_detector  import ArUcoState, ArUcoTag
 
-        self._NavState  = NavState
+        self._NavState   = NavState
         self._ArUcoState = ArUcoState
-        self._ArUcoTag  = ArUcoTag
-        self._ArUcoGate = ArUcoGate
+        self._ArUcoTag   = ArUcoTag
 
         self.num_gates  = num_gates
         self.cfg        = NavConfig(
@@ -630,18 +627,16 @@ class Simulator:
         """
         gate_id = self.nav.gate_id
         tags:  Dict = {}
-        gates: Dict = {}
 
         if gate_id >= self.num_gates:
-            return self._ArUcoState(tags=tags, gates=gates,
-                                    fps=50.0, timestamp=time.monotonic())
+            return self._ArUcoState(tags=tags, fps=50.0, timestamp=time.monotonic())
 
         cx, cy, hw = self.gate_layouts[gate_id]
 
-        odd_wx  = cx - hw    # left post (odd tag)
-        odd_wy  = cy
-        even_wx = cx + hw    # right post (even tag)
-        even_wy = cy
+        outside_wx = cx - hw    # left post (outside/even tag, gate_id*2)
+        outside_wy = cy
+        inside_wx  = cx + hw    # right post (inside/odd tag, gate_id*2+1)
+        inside_wy  = cy
 
         # Transform posts into robot-relative polar
         def _to_robot(wx, wy):
@@ -652,49 +647,36 @@ class Simulator:
             bearing   = (world_ang - self.hdg + 180) % 360 - 180
             return dist, bearing
 
-        odd_dist,  odd_bear  = _to_robot(odd_wx,  odd_wy)
-        even_dist, even_bear = _to_robot(even_wx, even_wy)
+        outside_dist, outside_bear = _to_robot(outside_wx, outside_wy)
+        inside_dist,  inside_bear  = _to_robot(inside_wx,  inside_wy)
 
-        FOV = 60.0  # ±30° visible
-        odd_id  = gate_id * 2 + 1
-        even_id = gate_id * 2 + 2
+        FOV         = 60.0  # ±30° visible
+        outside_id  = gate_id * 2
+        inside_id   = gate_id * 2 + 1
 
-        if abs(odd_bear) <= FOV / 2 and odd_dist < 5.0:
-            tags[odd_id] = self._ArUcoTag(
-                id=odd_id,
-                center_x=int(320 + odd_bear / FOV * 640),
+        if abs(outside_bear) <= FOV / 2 and outside_dist < 5.0:
+            tags[outside_id] = self._ArUcoTag(
+                id=outside_id,
+                center_x=int(320 + outside_bear / FOV * 640),
                 center_y=240,
-                area=int(4000 / max(0.1, odd_dist ** 2)),
+                area=int(4000 / max(0.1, outside_dist ** 2)),
                 top_left=(300, 220), top_right=(340, 220),
                 bottom_right=(340, 260), bottom_left=(300, 260),
-                distance=odd_dist, bearing=odd_bear,
+                distance=outside_dist, bearing=outside_bear,
             )
 
-        if abs(even_bear) <= FOV / 2 and even_dist < 5.0:
-            tags[even_id] = self._ArUcoTag(
-                id=even_id,
-                center_x=int(320 + even_bear / FOV * 640),
+        if abs(inside_bear) <= FOV / 2 and inside_dist < 5.0:
+            tags[inside_id] = self._ArUcoTag(
+                id=inside_id,
+                center_x=int(320 + inside_bear / FOV * 640),
                 center_y=240,
-                area=int(4000 / max(0.1, even_dist ** 2)),
+                area=int(4000 / max(0.1, inside_dist ** 2)),
                 top_left=(380, 220), top_right=(420, 220),
                 bottom_right=(420, 260), bottom_left=(380, 260),
-                distance=even_dist, bearing=even_bear,
+                distance=inside_dist, bearing=inside_bear,
             )
 
-        if odd_id in tags and even_id in tags:
-            gate_dist   = (odd_dist + even_dist) / 2
-            gate_bear   = (odd_bear + even_bear) / 2
-            gate_cx_px  = (tags[odd_id].center_x + tags[even_id].center_x) // 2
-            correct_dir = tags[odd_id].center_x < tags[even_id].center_x
-            gates[gate_id] = self._ArUcoGate(
-                gate_id=gate_id, odd_tag=odd_id, even_tag=even_id,
-                centre_x=gate_cx_px, centre_y=240,
-                correct_dir=correct_dir,
-                distance=gate_dist, bearing=gate_bear,
-            )
-
-        return self._ArUcoState(tags=tags, gates=gates,
-                                fps=50.0, timestamp=time.monotonic())
+        return self._ArUcoState(tags=tags, fps=50.0, timestamp=time.monotonic())
 
     def _integrate(self, left: float, right: float, dt: float):
         v_l = left  * self.VEL_SCALE
@@ -718,14 +700,14 @@ class Simulator:
                 wy  = self.ry + math.cos(rad) * tag.distance
                 vis_tags[tid] = (wx, wy, tag.distance, tag.bearing)
 
-        vis_gates: Dict[int, Tuple[float, float, bool]] = {}
-        for gid, gate in aruco_state.gates.items():
-            if gate.distance is not None and gate.bearing is not None:
-                world_ang = (self.hdg + gate.bearing) % 360
-                rad = math.radians(world_ang)
-                wx  = self.rx + math.sin(rad) * gate.distance
-                wy  = self.ry + math.cos(rad) * gate.distance
-                vis_gates[gid] = (wx, wy, gate.correct_dir)
+        vis_gates: Dict[int, Tuple[float, float]] = {}
+        gate = self.nav.find_gate(aruco_state, self.nav.gate_id)
+        if gate is not None and gate.distance is not None and gate.bearing is not None:
+            world_ang = (self.hdg + gate.bearing) % 360
+            rad = math.radians(world_ang)
+            wx  = self.rx + math.sin(rad) * gate.distance
+            wy  = self.ry + math.cos(rad) * gate.distance
+            vis_gates[self.nav.gate_id] = (wx, wy)
 
         aim_bear = None
         if hasattr(self.nav, 'bearing_err') and self.nav.bearing_err is not None:
@@ -868,18 +850,6 @@ class HttpSource:
                 wx  = self._rx + math.sin(rad) * dist
                 wy  = self._ry + math.cos(rad) * dist
                 vis_tags[tid] = (wx, wy, dist, bear)
-
-        for gate in d.get("aruco", {}).get("gates", []):
-            gid  = gate.get("gate_id")
-            dist = gate.get("distance")
-            bear = gate.get("bearing")
-            ok   = gate.get("correct_dir", True)
-            if gid is not None and dist is not None and bear is not None:
-                world_ang = (self._hdg + bear) % 360
-                rad = math.radians(world_ang)
-                wx  = self._rx + math.sin(rad) * dist
-                wy  = self._ry + math.cos(rad) * dist
-                vis_gates[gid] = (wx, wy, ok)
 
         nav_state   = d.get("nav_state",     "IDLE") or "IDLE"
         gate_id     = d.get("nav_gate",      0)

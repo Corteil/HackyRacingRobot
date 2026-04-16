@@ -1553,12 +1553,7 @@ class _DataLogger:
                            'bearing': tg.bearing,
                            'distance': tg.distance}
                           for tg in aruco.tags.values()],
-                'gates': [{'gate_id': ga.gate_id,
-                           'cx': ga.centre_x, 'cy': ga.centre_y,
-                           'bearing': ga.bearing,
-                           'distance': ga.distance,
-                           'correct_dir': ga.correct_dir}
-                          for ga in aruco.gates.values()],
+                'gates': [],
             }
 
         return {

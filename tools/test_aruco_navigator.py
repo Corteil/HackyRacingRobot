@@ -43,9 +43,9 @@ from typing import Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from robot.aruco_navigator import (
-    ArucoNavigator, NavConfig, NavState, _angle_diff, _clamp, _ramp,
+    ArucoNavigator, NavConfig, NavState, ArUcoGate, _angle_diff, _clamp, _ramp,
 )
-from robot.aruco_detector import ArUcoState, ArUcoTag, ArUcoGate
+from robot.aruco_detector import ArUcoState, ArUcoTag
 
 # ── Harness ───────────────────────────────────────────────────────────────────
 
@@ -87,27 +87,19 @@ def _tag(tid: int, cx: int = 320, cy: int = 240,
     )
 
 
-def _gate(gate_id: int, cx: int = 320, dist: float = 1.0,
-          bearing: float = 0.0, correct_dir: bool = True) -> ArUcoGate:
-    odd_id  = gate_id * 2 + 1
-    even_id = gate_id * 2 + 2
-    return ArUcoGate(
-        gate_id=gate_id, odd_tag=odd_id, even_tag=even_id,
-        centre_x=cx, centre_y=240, correct_dir=correct_dir,
-        distance=dist, bearing=bearing,
-    )
-
-
 def _state_with_gate(gate_id: int, cx: int = 320, dist: float = 1.0,
                      bearing: float = 0.0) -> ArUcoState:
-    odd_id  = gate_id * 2 + 1
-    even_id = gate_id * 2 + 2
-    g = _gate(gate_id, cx=cx, dist=dist, bearing=bearing)
-    t_odd  = _tag(odd_id,  cx=cx - 80, dist=dist, bearing=bearing - 5.0)
-    t_even = _tag(even_id, cx=cx + 80, dist=dist, bearing=bearing + 5.0)
+    """Build an ArUcoState with both posts of gate_id visible.
+
+    Gate N uses outside tag 2N (even) and inside tag 2N+1 (odd).
+    Tags are placed symmetrically around cx.
+    """
+    outside_id = gate_id * 2
+    inside_id  = gate_id * 2 + 1
+    t_outside = _tag(outside_id, cx=cx + 80, dist=dist, bearing=bearing + 5.0)
+    t_inside  = _tag(inside_id,  cx=cx - 80, dist=dist, bearing=bearing - 5.0)
     return ArUcoState(
-        tags={odd_id: t_odd, even_id: t_even},
-        gates={gate_id: g},
+        tags={outside_id: t_outside, inside_id: t_inside},
         fps=30.0, timestamp=time.monotonic(),
     )
 
@@ -248,6 +240,9 @@ def test_approaching_to_recovering():
     state = _state_with_gate(0, dist=1.0, bearing=0.0)
     nav.update(state, FRAME_W)
 
+    # Simulate elapsed time so the ramp can produce non-zero output
+    nav._last_update -= 0.2
+
     # Now gate is gone
     l, r = nav.update(_empty_state(), FRAME_W)
     _check("state RECOVERING",  nav.state == NavState.RECOVERING,
@@ -313,6 +308,7 @@ def test_obstacle_stop():
     nav2 = ArucoNavigator(cfg)
     nav2.start()
     nav2._set_state(NavState.APPROACHING)
+    nav2._last_update -= 0.2   # simulate elapsed time so ramp can produce output
     l2, r2 = nav2.update(state, FRAME_W, lidar=lidar_side)
     _check("no halt when obstacle outside cone",
            abs(l2) > 0.01 or abs(r2) > 0.01,
@@ -324,7 +320,7 @@ def test_angle_diff():
     cases = [
         (10,  350,  20.0),    # small positive crossing 0
         (350, 10,  -20.0),    # small negative crossing 0
-        (180, 0,   180.0),    # exactly half-circle (positive)
+        (180, 0,  -180.0),    # exactly half-circle — formula gives -180 (both signs valid)
         (0,   0,     0.0),    # no difference
         (90,  270, -180.0),   # exactly half-circle (negative)
         (1,   359,   2.0),    # 2° clockwise
@@ -370,26 +366,37 @@ def test_single_tag_fallback():
     nav = ArucoNavigator()
     nav.start()
 
-    # Only odd tag (left post) visible — should aim to the RIGHT of the tag
-    odd_tag = _tag(1, cx=280, dist=1.5, bearing=-5.0)
-    state   = ArUcoState(tags={1: odd_tag}, gates={}, fps=30.0,
-                         timestamp=time.monotonic())
-    tx, dist, bear = nav._resolve_target(state, FRAME_W // 2)
+    # Tags without bearing/distance → pixel-offset path (tx is modified directly).
+    # Gate 0: outside post = tag 0 (even), inside post = tag 1 (odd).
+
+    # Only outside tag visible (tag 0) — gate is to the RIGHT → aim right (tx > cx)
+    outside_tag = ArUcoTag(
+        id=0, center_x=280, center_y=240, area=4000,
+        top_left=(240, 200), top_right=(320, 200),
+        bottom_right=(320, 280), bottom_left=(240, 280),
+        distance=None, bearing=None,
+    )
+    state = ArUcoState(tags={0: outside_tag}, fps=30.0, timestamp=time.monotonic())
+    tx, dist, bear, _ = nav._resolve_target(state, FRAME_W // 2)
 
     _check("target_x returned",      tx is not None)
-    _check("target_x > tag centre_x (aim right of left post)",
-           tx is not None and tx > odd_tag.center_x,
-           f"tx={tx}, tag.cx={odd_tag.center_x}")
+    _check("target_x > tag centre_x (aim right of outside post)",
+           tx is not None and tx > outside_tag.center_x,
+           f"tx={tx}, tag.cx={outside_tag.center_x}")
 
-    # Only even tag (right post) visible — should aim to the LEFT of the tag
-    even_tag = _tag(2, cx=360, dist=1.5, bearing=5.0)
-    state2   = ArUcoState(tags={2: even_tag}, gates={}, fps=30.0,
-                          timestamp=time.monotonic())
-    tx2, _, _ = nav._resolve_target(state2, FRAME_W // 2)
+    # Only inside tag visible (tag 1) — gate is to the LEFT → aim left (tx < cx)
+    inside_tag = ArUcoTag(
+        id=1, center_x=360, center_y=240, area=4000,
+        top_left=(320, 200), top_right=(400, 200),
+        bottom_right=(400, 280), bottom_left=(320, 280),
+        distance=None, bearing=None,
+    )
+    state2 = ArUcoState(tags={1: inside_tag}, fps=30.0, timestamp=time.monotonic())
+    tx2, _, _, _ = nav._resolve_target(state2, FRAME_W // 2)
 
-    _check("target_x < tag centre_x (aim left of right post)",
-           tx2 is not None and tx2 < even_tag.center_x,
-           f"tx={tx2}, tag.cx={even_tag.center_x}")
+    _check("target_x < tag centre_x (aim left of inside post)",
+           tx2 is not None and tx2 < inside_tag.center_x,
+           f"tx={tx2}, tag.cx={inside_tag.center_x}")
 
 
 def test_imu_search_step():

@@ -30,9 +30,7 @@ Tests
     4.2  Tag detected when held in front of camera
     4.3  Distance estimate reasonable (within 20% of measured)
     4.4  Bearing is near zero when tag centred in frame
-    4.5  Gate pair detected when tags 1+2 both visible
-    4.6  correct_dir=True when tag 1 is left of tag 2
-    4.7  correct_dir=False when tag 2 is left of tag 1
+    4.5  Both gate posts detected when tags 0+1 both visible
 
 Usage
 -----
@@ -503,31 +501,14 @@ def test_aruco(calib_file: str | None, tag_size: float, expected_dist: float):
         print("  SKIP  4.4  Bearing — calibration not loaded or no tag")
         _skipped += 1
 
-    # ── 4.5  Gate pair ───────────────────────────────────────────────────────
-    print("\n  Now hold Tag 1 (left post) and Tag 2 (right post) side by side,")
-    print("  both facing the camera. Tag 1 should be on YOUR LEFT.")
+    # ── 4.5  Both gate posts detected ────────────────────────────────────────
+    print("\n  Now hold Tag 0 (outside post) and Tag 1 (inside post) side by side,")
+    print("  both facing the camera.")
     input("  Press ENTER when ready... ")
-    state3 = _show_live(6.0, "Gate pair: T1 left, T2 right")
-    _check("4.5  Gate pair detected (tags 1+2)",
-           state3 is not None and 0 in state3.gates,
-           f"gates: {list(state3.gates) if state3 else []}")
-
-    if state3 and 0 in state3.gates:
-        _check("4.6  correct_dir=True (tag 1 is left of tag 2)",
-               state3.gates[0].correct_dir is True,
-               f"correct_dir={state3.gates[0].correct_dir}")
-
-    # ── 4.7  Reversed gate ───────────────────────────────────────────────────
-    print("\n  Now SWAP: hold Tag 2 on YOUR LEFT, Tag 1 on YOUR RIGHT (reversed gate).")
-    input("  Press ENTER when ready... ")
-    state4 = _show_live(6.0, "Gate pair: T2 left, T1 right (REVERSED)")
-    if state4 and 0 in state4.gates:
-        _check("4.7  correct_dir=False (tag 2 is left of tag 1)",
-               state4.gates[0].correct_dir is False,
-               f"correct_dir={state4.gates[0].correct_dir}")
-    else:
-        _check("4.7  Gate detected for reversed test", False,
-               f"gates: {list(state4.gates) if state4 else []}")
+    state3 = _show_live(6.0, "Gate posts: T0 + T1")
+    _check("4.5  Both gate posts detected (tags 0+1)",
+           state3 is not None and 0 in state3.tags and 1 in state3.tags,
+           f"tags: {list(state3.tags) if state3 else []}")
 
     cv2.destroyAllWindows()
     if cam:

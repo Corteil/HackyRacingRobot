@@ -28,9 +28,9 @@ import configparser
 import cv2
 import numpy as np
 
-from robot.aruco_detector import ArucoDetector, ArUcoTag, ArUcoGate, ArUcoState, ARUCO_DICT
+from robot.aruco_detector import ArucoDetector, ArUcoTag, ArUcoState, ARUCO_DICT
 from robot.aruco_navigator import (
-    ArucoNavigator, NavConfig, NavState,
+    ArucoNavigator, NavConfig, NavState, ArUcoGate,
     _clamp, _ramp, _angle_diff, _pixel_bearing,
 )
 
@@ -142,55 +142,53 @@ def test_detector_detection():
 
     det = ArucoDetector(dict_name=_DICT_NAME, draw=False, show_fps=False)
 
-    # Blank frame → no tags, no gates
+    # Blank frame → no tags
     state = det.detect(_blank_frame())
-    check("blank frame: no tags",  len(state.tags),  0)
-    check("blank frame: no gates", len(state.gates), 0)
+    check("blank frame: no tags", len(state.tags), 0)
 
     # Single marker (id=1) placed centre-left
     frame = _frame_with_markers({1: (100, 200)})
     state = det.detect(frame)
-    check("single marker: 1 tag found", len(state.tags), 1)
+    check("single marker: 1 tag found",     len(state.tags), 1)
     check("single marker: tag id=1 present", 1 in state.tags, True)
-    check("single marker: no gates", len(state.gates), 0)
 
-    # Two unrelated markers (ids 1 and 3 — not consecutive even pair)
-    frame = _frame_with_markers({1: (100, 200), 3: (400, 200)})
-    state = det.detect(frame)
-    check("ids 1+3: 2 tags found", len(state.tags), 2)
-    check("ids 1+3: no gate (not consecutive pair)", len(state.gates), 0)
-
-    # Gate pair: tag 0 (outside, even base) right + tag 1 (inside, odd base) left → gate 0
-    # correct_dir=True because both IDs are front tags (< 100)
+    # Two tags present — gate pairing is the navigator's responsibility
     frame = _frame_with_markers({1: (100, 200), 0: (420, 200)})
     state = det.detect(frame)
-    check("gate 0: 2 tags found", len(state.tags), 2)
-    check("gate 0: gate 0 present", 0 in state.gates, True)
-    if 0 in state.gates:
-        g = state.gates[0]
-        check("gate 0: inside_tag=1",   g.inside_tag,  1)
-        check("gate 0: outside_tag=0",  g.outside_tag, 0)
-        check("gate 0: correct_dir=True (front tags)", g.correct_dir, True)
-        # Gate centre should be midpoint between the two posts
-        t0 = state.tags[0]
-        t1 = state.tags[1]
-        expected_cx = (t0.center_x + t1.center_x) // 2
-        check("gate 0: centre_x midpoint", g.centre_x, expected_cx)
+    check("gate 0 tags: 2 tags found",    len(state.tags), 2)
+    check("gate 0 tags: tag 0 present",   0 in state.tags, True)
+    check("gate 0 tags: tag 1 present",   1 in state.tags, True)
 
-    # Gate pair with reversed direction: rear tags 100 (outside) + 101 (inside)
-    # correct_dir=False because both IDs are rear tags (>= 100)
+    # Navigator pairs those tags into gate 0
+    nav = ArucoNavigator()
+    nav.start()
+    gate = nav._pair_tags(state, 0)
+    check("navigator pairs gate 0",        gate is not None, True)
+    if gate is not None:
+        check("gate 0: outside_tag=0",     gate.outside_tag, 0)
+        check("gate 0: inside_tag=1",      gate.inside_tag,  1)
+        t0, t1 = state.tags[0], state.tags[1]
+        expected_cx = (t0.center_x + t1.center_x) // 2
+        check("gate 0: centre_x midpoint", gate.centre_x, expected_cx)
+
+    # Rear tags 100 + 101 — detector still reports both tags
     frame = _frame_with_markers({101: (100, 200), 100: (420, 200)})
     state = det.detect(frame)
-    check("gate 0 reversed: gate present", 0 in state.gates, True)
-    if 0 in state.gates:
-        check("gate 0 reversed: correct_dir=False", state.gates[0].correct_dir, False)
+    check("rear tags: 2 tags found",       len(state.tags), 2)
+    check("rear tags: tag 100 present",    100 in state.tags, True)
+    check("rear tags: tag 101 present",    101 in state.tags, True)
+    gate_rear = nav._pair_tags(state, 0)
+    check("navigator pairs rear gate 0",   gate_rear is not None, True)
+    if gate_rear is not None:
+        check("rear gate: outside_tag=100", gate_rear.outside_tag, 100)
+        check("rear gate: inside_tag=101",  gate_rear.inside_tag,  101)
 
-    # Multiple gates: tags 0+1 (gate 0) and 2+3 (gate 1)
+    # Multiple tag pairs present
     frame = _frame_with_markers({1: (50, 100), 0: (170, 100), 3: (350, 100), 2: (470, 100)})
     state = det.detect(frame)
     check("2 gates: 4 tags found", len(state.tags), 4)
-    check("2 gates: gate 0 present", 0 in state.gates, True)
-    check("2 gates: gate 1 present", 1 in state.gates, True)
+    check("2 gates: navigator pairs gate 0", nav._pair_tags(state, 0) is not None, True)
+    check("2 gates: navigator pairs gate 1", nav._pair_tags(state, 1) is not None, True)
 
     # FPS is populated on second call
     det2 = ArucoDetector(draw=False, show_fps=False)
@@ -399,37 +397,40 @@ steer_kp  = 0.8
     nav7._advance_gate()
     check("advance gate 2 → COMPLETE (max_gates=3)", nav7.state, NavState.COMPLETE)
 
-    # _resolve_target with visible gate: checks for AttributeError bug
-    # ArUcoGate does not have .bearing or .distance fields; this will raise
-    # AttributeError unless the dataclass has been extended.
-    print("\n  _resolve_target with gate visible (bug check):")
-    gate = ArUcoGate(gate_id=0, outside_tag=2, inside_tag=1,
-                     centre_x=320, centre_y=240, correct_dir=True)
-    state_with_gate = ArUcoState(tags={}, gates={0: gate})
+    # _resolve_target with both posts visible — navigator pairs them into a gate
+    print("\n  _resolve_target with gate visible (both posts):")
+    t_outside = ArUcoTag(id=0, center_x=360, center_y=240, area=6400,
+                         top_left=(320, 200), top_right=(400, 200),
+                         bottom_right=(400, 280), bottom_left=(320, 280),
+                         distance=1.5, bearing=5.0)
+    t_inside  = ArUcoTag(id=1, center_x=280, center_y=240, area=6400,
+                         top_left=(240, 200), top_right=(320, 200),
+                         bottom_right=(320, 280), bottom_left=(240, 280),
+                         distance=1.5, bearing=-5.0)
+    state_with_gate = ArUcoState(tags={0: t_outside, 1: t_inside})
     nav8 = ArucoNavigator()
     nav8.start()
     try:
         tx, dist, bearing, _single = nav8._resolve_target(state_with_gate, 320)
         check("  _resolve_target gate: no AttributeError", True, True)
-        check("  _resolve_target gate: returns centre_x", tx, 320)
+        check("  _resolve_target gate: returns gate centre", tx, 320)
     except AttributeError as e:
-        # ArUcoGate is missing .bearing / .distance fields
         print(f"  FAIL  _resolve_target gate: AttributeError — {e}")
-        print("        ArUcoGate in aruco_detector.py is missing .bearing and .distance fields")
         failed += 1
 
     # _resolve_target with single tag visible: same check for ArUcoTag
     tag = ArUcoTag(id=1, center_x=200, center_y=240, area=6400,
                    top_left=(160, 200), top_right=(240, 200),
                    bottom_right=(240, 280), bottom_left=(160, 280))
-    state_with_tag = ArUcoState(tags={1: tag}, gates={})
+    state_with_tag = ArUcoState(tags={1: tag})
     nav9 = ArucoNavigator()
     nav9.start()
     try:
         tx, dist, bearing, _single = nav9._resolve_target(state_with_tag, 320)
         check("  _resolve_target single tag: no AttributeError", True, True)
-        # Odd tag (id=1) → aim RIGHT of tag, so tx > tag.center_x
-        check("  _resolve_target odd tag: aim right of tag", tx > tag.center_x, True)
+        # Odd tag (id=1) = inside post (right side, clockwise course)
+        # Gate opening is to the LEFT → aim left of tag → tx < tag.center_x
+        check("  _resolve_target inside tag: aim left of tag", tx < tag.center_x, True)
     except AttributeError as e:
         print(f"  FAIL  _resolve_target single tag: AttributeError — {e}")
         print("        ArUcoTag in aruco_detector.py is missing .bearing and .distance fields")
@@ -468,8 +469,7 @@ def live_camera(camera_index: int = 0):
             # Print detections to terminal
             if state.tags:
                 tag_ids = sorted(state.tags)
-                gates   = [(g.gate_id, g.correct_dir) for g in state.gates.values()]
-                print(f"\r  tags={tag_ids}  gates={gates}  fps={state.fps:.1f}    ",
+                print(f"\r  tags={tag_ids}  fps={state.fps:.1f}    ",
                       end='', flush=True)
             else:
                 print(f"\r  no tags  fps={state.fps:.1f}    ", end='', flush=True)

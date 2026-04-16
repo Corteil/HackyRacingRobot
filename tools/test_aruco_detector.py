@@ -8,18 +8,17 @@ Sections
 --------
   1. Blank frame              — no tags detected
   2. Single tag detection     — correct id, centre, area, geometry
-  3. Gate pair formation      — correct_dir=True (odd left of even)
-  4. Wrong-direction gate     — correct_dir=False (even left of odd)
-  5. Gate centre calculation  — centre_x midpoint between posts
-  6. Multiple gates           — tags 1+2 and 3+4 both detected
-  7. Non-consecutive tags     — no gate formed (tags 1 and 4)
-  8. FPS and timestamp fields — populated after detect()
-  9. Distance / bearing (calibrated) — solvePnP values within tolerance
- 10. draw=False               — frame not modified
+  3. Gate pair formation      — even+odd base IDs pair into a gate
+  4. Gate centre calculation  — centre_x midpoint between posts
+  5. Multiple gates           — tags 0+1 and 2+3 both detected
+  6. Non-consecutive tags     — no gate formed (tags 1 and 4)
+  7. FPS and timestamp fields — populated after detect()
+  8. Distance / bearing (calibrated) — solvePnP values within tolerance
+  9. draw=False               — frame not modified
 
 Usage
 -----
-  python3 tests/test_aruco_detector.py
+  python3 tools/test_aruco_detector.py
 """
 
 import math
@@ -99,13 +98,15 @@ def _frame_with_gate(odd_id: int, even_id: int,
 # ── Minimal camera calibration matrix for pose tests ─────────────────────────
 
 def _fake_calib(tmp_dir: str) -> str:
-    """Write a plausible camera_cal.npz and return its path."""
+    """Write a plausible camera_cal.npz (with remap arrays) and return its path."""
     fx = fy = 600.0
     cx, cy = FRAME_W / 2, FRAME_H / 2
     mtx  = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
     dist = np.zeros((5, 1), dtype=np.float64)
+    map1, map2 = cv2.initUndistortRectifyMap(
+        mtx, dist, None, mtx, (FRAME_W, FRAME_H), cv2.CV_32FC1)
     path = os.path.join(tmp_dir, "camera_cal.npz")
-    np.savez(path, camera_matrix=mtx, dist_coeffs=dist)
+    np.savez(path, camera_matrix=mtx, dist_coeffs=dist, map1=map1, map2=map2)
     return path
 
 
@@ -115,8 +116,7 @@ def test_blank_frame():
     print("\nSection 1: Blank frame — no tags detected")
     det = ArucoDetector(draw=False, show_fps=False)
     state = det.detect(_blank_frame())
-    _check("tags dict is empty",  len(state.tags)  == 0)
-    _check("gates dict is empty", len(state.gates) == 0)
+    _check("tags dict is empty", len(state.tags) == 0)
 
 
 def test_single_tag():
@@ -142,89 +142,36 @@ def test_single_tag():
     _check("bearing is None (no calib)",  tag.bearing  is None)
 
 
-def test_gate_correct_dir():
-    print("\nSection 3: Gate pair — correct_dir=True (odd left of even)")
+def test_two_tags():
+    print("\nSection 3: Two tags — both detected, no gate pairing (pairing is navigator's job)")
     det   = ArucoDetector(draw=False, show_fps=False)
     frame = _frame_with_gate(odd_id=1, even_id=2, odd_x=120, even_x=400)
     state = det.detect(frame)
 
-    _check("gate 0 present",      0 in state.gates, str(list(state.gates)))
-    if 0 not in state.gates:
-        return
-
-    gate = state.gates[0]
-    _check("gate_id == 0",        gate.gate_id == 0)
-    _check("correct_dir == True", gate.correct_dir is True,
-           f"odd_x={state.tags.get(1) and state.tags[1].center_x}, "
-           f"even_x={state.tags.get(2) and state.tags[2].center_x}")
+    _check("2 tags detected",    len(state.tags) == 2, f"got {len(state.tags)}")
+    _check("tag id=1 present",   1 in state.tags)
+    _check("tag id=2 present",   2 in state.tags)
 
 
-def test_gate_wrong_dir():
-    print("\nSection 4: Gate pair — correct_dir=False (even left of odd)")
-    det   = ArucoDetector(draw=False, show_fps=False)
-    # Swap: even tag on the left, odd tag on the right
-    frame = _frame_with_gate(odd_id=1, even_id=2, odd_x=400, even_x=120)
-    state = det.detect(frame)
-
-    _check("gate 0 present",       0 in state.gates, str(list(state.tags)))
-    if 0 not in state.gates:
-        return
-    _check("correct_dir == False", state.gates[0].correct_dir is False)
-
-
-def test_gate_centre():
-    print("\nSection 5: Gate centre_x midpoint between posts")
-    det   = ArucoDetector(draw=False, show_fps=False)
-    side  = 80
-    odd_x, even_x = 100, 420
-    frame = _frame_with_gate(odd_id=3, even_id=4, odd_x=odd_x, even_x=even_x,
-                              y=180, side=side)
-    state = det.detect(frame)
-
-    _check("gate 1 present", 1 in state.gates, str(list(state.gates)))
-    if 1 not in state.gates:
-        return
-
-    gate  = state.gates[1]
-    tag3  = state.tags.get(3)
-    tag4  = state.tags.get(4)
-    if tag3 and tag4:
-        expected_cx = (tag3.center_x + tag4.center_x) // 2
-        _check("centre_x ≈ midpoint of posts (±10 px)",
-               abs(gate.centre_x - expected_cx) <= 10,
-               f"gate.centre_x={gate.centre_x}, expected≈{expected_cx}")
-
-
-def test_multiple_gates():
-    print("\nSection 6: Multiple gates (1+2 and 3+4)")
+def test_multiple_tags():
+    print("\nSection 4: Multiple tags — all detected")
     det   = ArucoDetector(draw=False, show_fps=False)
     frame = _blank_frame()
-    _render_tag(frame, 1, (50,  100), 70)
-    _render_tag(frame, 2, (250, 100), 70)
-    _render_tag(frame, 3, (350, 100), 70)
-    _render_tag(frame, 4, (520, 100), 70)
+    _render_tag(frame, 0, (50,  100), 70)
+    _render_tag(frame, 1, (250, 100), 70)
+    _render_tag(frame, 2, (350, 100), 70)
+    _render_tag(frame, 3, (520, 100), 70)
     state = det.detect(frame)
 
-    _check("4 tags detected",  len(state.tags)  == 4, f"got {len(state.tags)}")
-    _check("gate 0 detected",  0 in state.gates)
-    _check("gate 1 detected",  1 in state.gates)
-
-
-def test_non_consecutive_tags():
-    print("\nSection 7: Non-consecutive tags — no gate formed (tags 1 & 4)")
-    det   = ArucoDetector(draw=False, show_fps=False)
-    frame = _blank_frame()
-    _render_tag(frame, 1, (100, 180), 80)
-    _render_tag(frame, 4, (400, 180), 80)
-    state = det.detect(frame)
-
-    _check("2 tags detected",  len(state.tags)  == 2)
-    _check("no gates formed",  len(state.gates) == 0,
-           f"gates: {list(state.gates)}")
+    _check("4 tags detected",  len(state.tags) == 4, f"got {len(state.tags)}")
+    _check("tag 0 present",    0 in state.tags)
+    _check("tag 1 present",    1 in state.tags)
+    _check("tag 2 present",    2 in state.tags)
+    _check("tag 3 present",    3 in state.tags)
 
 
 def test_fps_and_timestamp():
-    print("\nSection 8: FPS and timestamp populated after detect()")
+    print("\nSection 7: FPS and timestamp populated after detect()")
     det = ArucoDetector(draw=False, show_fps=False)
     t0  = time.monotonic()
     state = det.detect(_blank_frame())
@@ -235,7 +182,7 @@ def test_fps_and_timestamp():
 
 
 def test_pose_estimation(tmp_path: str):
-    print("\nSection 9: Distance / bearing (calibrated frame)")
+    print("\nSection 8: Distance / bearing (calibrated frame)")
     calib = _fake_calib(tmp_path)
     TAG_SIZE = 0.15   # metres (must match detector)
     det = ArucoDetector(draw=False, show_fps=False,
@@ -262,7 +209,7 @@ def test_pose_estimation(tmp_path: str):
 
 
 def test_draw_false():
-    print("\nSection 10: draw=False — frame pixels unchanged")
+    print("\nSection 9: draw=False — frame pixels unchanged")
     det   = ArucoDetector(draw=False, show_fps=False)
     frame = _frame_with_tag(marker_id=1, x=200, y=180, side=80)
     ref   = frame.copy()
@@ -281,11 +228,8 @@ def main():
 
     test_blank_frame()
     test_single_tag()
-    test_gate_correct_dir()
-    test_gate_wrong_dir()
-    test_gate_centre()
-    test_multiple_gates()
-    test_non_consecutive_tags()
+    test_two_tags()
+    test_multiple_tags()
     test_fps_and_timestamp()
 
     with tempfile.TemporaryDirectory() as tmp:

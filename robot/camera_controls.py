@@ -76,13 +76,12 @@ def make_cam(width: int, height: int, camera_num: int = 0) -> Picamera2:
 
 _ACO_GREEN = (  0, 220,  80)
 _ACO_RED   = (220,  40,  40)
-_ACO_BLUE  = ( 40, 120, 220)
 _ACO_WHITE = (230, 230, 240)
 _ACO_FONT  = cv2.FONT_HERSHEY_SIMPLEX
 
 
 def draw_aruco_on_frame(frame: np.ndarray, state: ArUcoState) -> None:
-    """Draw ArUco tag boxes and gate lines onto an RGB numpy frame (in-place)."""
+    """Draw ArUco tag bounding boxes onto an RGB numpy frame (in-place)."""
     for tag in state.tags.values():
         tl, tr = tag.top_left,     tag.top_right
         br, bl = tag.bottom_right, tag.bottom_left
@@ -93,16 +92,6 @@ def draw_aruco_on_frame(frame: np.ndarray, state: ArUcoState) -> None:
         cv2.circle(frame, (tag.center_x, tag.center_y), 4, _ACO_RED, -1)
         cv2.putText(frame, str(tag.id),
                     (tl[0], tl[1] - 10), _ACO_FONT, 0.6, _ACO_WHITE, 2)
-
-    for gate in state.gates.values():
-        colour = _ACO_BLUE if gate.correct_dir else _ACO_RED
-        cv2.line(frame,
-                 (gate.centre_x, gate.centre_y - 50),
-                 (gate.centre_x, gate.centre_y),
-                 colour, 4)
-        cv2.putText(frame, f"G{gate.gate_id}",
-                    (gate.centre_x + 6, gate.centre_y - 52),
-                    _ACO_FONT, 0.6, colour, 2)
 
 
 # ── Calibration ────────────────────────────────────────────────────────────────

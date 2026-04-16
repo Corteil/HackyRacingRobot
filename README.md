@@ -77,6 +77,7 @@ tools/
   build_gs_html.py          Generate ground_station.html from robot_dashboard.py
   upload.py                 MicroPython uploader (handles Yukon USB reset)
   calibrate_camera.py       Lens calibration tool (outputs camera_cal.npz)
+  calibrate_aruco_distance.py  Interactive area_k calibration for ArUco distance fallback
   derive_calibrations.py    Scale master calibration to all target resolutions
   generate_aruco_tags.py    Generate ArUco tag PDFs
   ibus_sim.py               Interactive iBUS RC receiver simulator (PTY)

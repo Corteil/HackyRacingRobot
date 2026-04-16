@@ -52,10 +52,10 @@ an obstacle).
 
 Gate sequencing
 ---------------
-  - Gates are 0-based: gate 0 = tags 1+2, gate 1 = tags 3+4, etc.
+  - Gates are 0-based: gate 0 = tags 0+1, gate 1 = tags 2+3, etc.
   - The robot only advances to gate N+1 after passing gate N and once gate
     N+1's tags have become visible.  This enforces course order naturally.
-  - correct_dir=False is logged as a warning but does not stop navigation.
+  - Both gate tag IDs >= 100 is logged as a warning but does not stop navigation.
 
 Single-tag fallback
 -------------------
@@ -96,6 +96,29 @@ except ImportError:
 from robot.aruco_detector import ArUcoState
 
 log = logging.getLogger(__name__)
+
+
+# ── Gate dataclass (pairing is the navigator's responsibility) ─────────────────
+
+@dataclass
+class ArUcoGate:
+    """
+    A gate formed by an outside post (even base ID) + inside post (odd base ID).
+
+    gate_id      : 0-based gate index
+    outside_tag  : detected tag ID for the outside post (0–99 front, 100–199 rear)
+    inside_tag   : detected tag ID for the inside  post
+    centre_x/y   : pixel midpoint between the two posts
+    distance     : average metres to the two posts (None = unknown)
+    bearing      : average bearing from camera centre in degrees (None = unknown)
+    """
+    gate_id:     int
+    outside_tag: int
+    inside_tag:  int
+    centre_x:    int
+    centre_y:    int
+    distance:    float = None
+    bearing:     float = None
 
 
 # ── Track definition (loaded from track.toml) ─────────────────────────────────
@@ -500,8 +523,6 @@ class ArucoNavigator:
 
         Returns an ArUcoGate if BOTH posts are visible, otherwise None.
         """
-        from robot.aruco_detector import ArUcoGate
-
         outside = (state.tags.get(tg.outside_front) or
                    state.tags.get(tg.outside_rear))
         inside  = (state.tags.get(tg.inside_front)  or
@@ -513,22 +534,18 @@ class ArucoNavigator:
         gcx = (outside.center_x + inside.center_x) // 2
         gcy = (outside.center_y + inside.center_y) // 2
 
-        both_front = outside.id < 100 and inside.id < 100
-        both_rear  = outside.id >= 100 and inside.id >= 100
-        correct_dir = both_front if (both_front or both_rear) else outside.id < 100
-
         dists = [t.distance for t in (outside, inside) if t.distance is not None]
         bears = [t.bearing  for t in (outside, inside) if t.bearing  is not None]
 
+        # outside_tag = outside (even-base ID), inside_tag = inside (odd-base ID)
         return ArUcoGate(
-            gate_id     = tg.id,
+            gate_id  = tg.id,
             outside_tag = outside.id,
             inside_tag  = inside.id,
-            centre_x    = gcx,
-            centre_y    = gcy,
-            correct_dir = correct_dir,
-            distance    = sum(dists) / len(dists) if dists else None,
-            bearing     = sum(bears) / len(bears) if bears else None,
+            centre_x = gcx,
+            centre_y = gcy,
+            distance = sum(dists) / len(dists) if dists else None,
+            bearing  = sum(bears) / len(bears) if bears else None,
         )
 
     # ── main update ──────────────────────────────────────────────────────────
@@ -861,6 +878,50 @@ class ArucoNavigator:
 
     # ── Target resolution ─────────────────────────────────────────────────────
 
+    def find_gate(self, state: ArUcoState, gate_id: int) -> Optional[ArUcoGate]:
+        """Return an ArUcoGate for *gate_id* from *state*, or None if not visible.
+
+        Uses the track file's tag-ID assignments when a track is loaded;
+        falls back to the even/odd formula (gate N → tags 2N / 2N+1) otherwise.
+        """
+        if self._track:
+            tg = self._track.gates.get(gate_id)
+            if tg:
+                return self._find_gate_in_state(state, tg)
+        return self._pair_tags(state, gate_id)
+
+    def _pair_tags(self, state: ArUcoState, gate_id: int) -> Optional[ArUcoGate]:
+        """Pair even/odd base-ID tags from *state* into an ArUcoGate for *gate_id*.
+
+        Used when no track.toml is loaded (formula-based tag IDs).
+        Gate N uses front tags 2N (outside) and 2N+1 (inside); rear variants
+        100+2N and 101+2N are also accepted.
+        Returns None if both posts are not visible.
+        """
+        front_outside = gate_id * 2
+        front_inside  = gate_id * 2 + 1
+        rear_outside  = 100 + front_outside
+        rear_inside   = 100 + front_inside
+
+        outside = state.tags.get(front_outside) or state.tags.get(rear_outside)
+        inside  = state.tags.get(front_inside)  or state.tags.get(rear_inside)
+        if outside is None or inside is None:
+            return None
+
+        gcx   = (outside.center_x + inside.center_x) // 2
+        gcy   = (outside.center_y + inside.center_y) // 2
+        dists = [t.distance for t in (outside, inside) if t.distance is not None]
+        bears = [t.bearing  for t in (outside, inside) if t.bearing  is not None]
+        return ArUcoGate(
+            gate_id    = gate_id,
+            outside_tag = outside.id,
+            inside_tag  = inside.id,
+            centre_x   = gcx,
+            centre_y   = gcy,
+            distance   = sum(dists) / len(dists) if dists else None,
+            bearing    = sum(bears) / len(bears) if bears else None,
+        )
+
     def _resolve_target(
         self,
         state: ArUcoState,
@@ -896,10 +957,11 @@ class ArucoNavigator:
 
         # ── Full gate (both posts) ────────────────────────────────────────────
         gate = (self._find_gate_in_state(state, tg)
-                if tg else state.gates.get(gate_id))
+                if tg else self._pair_tags(state, gate_id))
         if gate is not None:
-            if not gate.correct_dir:
-                log.warning("Gate %d: correct_dir=False (approaching from rear)", gate_id)
+            if gate.outside_tag >= 100 and gate.inside_tag >= 100:
+                log.warning("Gate %d: high-ID tags visible (IDs %d/%d) — may be approaching from behind",
+                            gate_id, gate.outside_tag, gate.inside_tag)
             bearing = gate.bearing if gate.bearing is not None \
                       else _pixel_bearing(gate.centre_x, frame_cx)
             return gate.centre_x, gate.distance, bearing, False
@@ -919,21 +981,20 @@ class ArucoNavigator:
         else:
             return None, None, None, False
 
-        # Outside post: physical right = large x = positive bearing.
-        # Gate opening is to the LEFT of outside post → aim at smaller x (subtract offset).
-        # Inside post: physical left = small x = negative bearing.
-        # Gate opening is to the RIGHT of inside post → aim at larger x (add offset).
+        # Clockwise course: outside post is on the LEFT, inside post on the RIGHT.
+        # Outside post: gate opening is to the RIGHT → aim right (add bearing offset).
+        # Inside post:  gate opening is to the LEFT  → aim left (subtract bearing offset).
         if tag.bearing is not None and tag.distance is not None \
                 and tag.distance > 0 and self.cfg.tag_offset_k > 0:
             offset_deg = math.degrees(math.atan(self.cfg.tag_offset_k / tag.distance))
-            # Outside post: gate is to left → subtract bearing offset
-            # Inside post:  gate is to right → add bearing offset
-            bearing = tag.bearing + (offset_deg if is_inside else -offset_deg)
+            # Outside post: gate is to right → add offset
+            # Inside post:  gate is to left  → subtract offset
+            bearing = tag.bearing + (-offset_deg if is_inside else offset_deg)
             tx = tag.center_x  # tx only used for logging; bearing drives steering
         else:
             offset = self._single_tag_offset(tag)
-            # Outside → aim LEFT (subtract offset); inside → aim RIGHT (add offset)
-            tx = tag.center_x + (offset if is_inside else -offset)
+            # Outside → aim RIGHT (add offset); inside → aim LEFT (subtract offset)
+            tx = tag.center_x + (-offset if is_inside else offset)
             bearing = _pixel_bearing(tx, frame_cx)
 
         return tx, tag.distance, bearing, True

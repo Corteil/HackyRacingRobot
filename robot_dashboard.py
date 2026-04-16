@@ -105,18 +105,17 @@ def _nav_aim_bearing(aruco_state, outside_tag_id: int, inside_tag_id: int, cap_w
         return ((px - frame_cx) / max(frame_cx, 1)) * 31.0  # ±31° for 62° HFOV
 
     # Full gate: both posts visible — aim at gate centre
-    # Accept front or rear face variants (base_id = tag_id % 100)
-    out_base = outside_tag_id % 100
-    ins_base = inside_tag_id  % 100
-    for gate in aruco_state.gates.values():
-        if (gate.outside_tag % 100 in (out_base, ins_base) or
-                gate.inside_tag % 100 in (out_base, ins_base)):
-            return gate.bearing if gate.bearing is not None else _pixel_bear(gate.centre_x)
+    tag_map   = aruco_state.tags
+    out_base  = outside_tag_id % 100
+    ins_base  = inside_tag_id  % 100
+    outside   = tag_map.get(outside_tag_id) or tag_map.get(outside_tag_id + 100)
+    inside    = tag_map.get(inside_tag_id)  or tag_map.get(inside_tag_id  + 100)
+    if outside is not None and inside is not None:
+        gcx    = (outside.center_x + inside.center_x) // 2
+        bears  = [t.bearing for t in (outside, inside) if t.bearing is not None]
+        return sum(bears) / len(bears) if bears else _pixel_bear(gcx)
 
     # Single tag — front face only (0–99; rear ≥100 means already passed)
-    tag_map = aruco_state.tags
-    outside = tag_map.get(outside_tag_id) or tag_map.get(outside_tag_id + 100)
-    inside  = tag_map.get(inside_tag_id)  or tag_map.get(inside_tag_id  + 100)
     if outside is not None:
         tag, is_inside = outside, False
     elif inside is not None:
@@ -141,11 +140,10 @@ def _aruco_info(aruco_state, cap_w=0, cap_h=0):
     Included so the JS can scale corners from capture space to display space.
     """
     return {
-        'tag_count':  len(aruco_state.tags),
-        'gate_count': len(aruco_state.gates),
-        'fps':        aruco_state.fps,
-        'cap_w':      cap_w,
-        'cap_h':      cap_h,
+        'tag_count': len(aruco_state.tags),
+        'fps':       aruco_state.fps,
+        'cap_w':     cap_w,
+        'cap_h':     cap_h,
         'tags': [
             {'id': t2.id, 'cx': t2.center_x, 'cy': t2.center_y,
              'area': t2.area, 'bearing': t2.bearing, 'distance': t2.distance,
@@ -153,13 +151,7 @@ def _aruco_info(aruco_state, cap_w=0, cap_h=0):
                          list(t2.bottom_right), list(t2.bottom_left)]}
             for t2 in aruco_state.tags.values()
         ],
-        'gates': [
-            {'gate_id': gx.gate_id, 'centre_x': gx.centre_x,
-             'centre_y': gx.centre_y, 'bearing': gx.bearing,
-             'distance': gx.distance, 'correct_dir': gx.correct_dir,
-             'outside_tag': gx.outside_tag, 'inside_tag': gx.inside_tag}
-            for gx in aruco_state.gates.values()
-        ],
+        'gates': [],
     }
 
 

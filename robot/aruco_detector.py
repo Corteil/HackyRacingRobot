@@ -1,31 +1,17 @@
 #!/usr/bin/env python3
 """
-aruco_detector.py — ArUco marker detection and gate identification.
+aruco_detector.py — ArUco marker detection: tag IDs, positions, distances, bearings.
 
-Detects ArUco markers in a camera frame, draws bounding boxes / centres,
-and identifies gate pairs.
+Detects ArUco markers in a camera frame and reports each tag's pixel geometry
+plus, when calibration is available, its metric distance and bearing.
 
-Gate / tag numbering convention
---------------------------------
-Each physical gate post carries two ArUco markers — one on the front face and
-one on the rear face:
+Tag ID convention
+-----------------
+  Tag ID 0–99   : front face
+  Tag ID 100–199: rear face   (ID = front_id + 100)
 
-  Tag ID 0–99   : front face  (robot approaching from correct direction)
-  Tag ID 100–199: rear face   (robot approaching from behind; ID = front_id + 100)
-
-Post roles within a gate:
-  Even base IDs (0, 2, 4 …): OUTSIDE post (right-hand side on correct approach)
-  Odd  base IDs (1, 3, 5 …): INSIDE  post (left-hand  side on correct approach)
-
-Gate N consists of outside post (base ID 2N) and inside post (base ID 2N+1):
-  Gate 0 → tags 0/100 (outside) + 1/101 (inside)
-  Gate 1 → tags 2/102 (outside) + 3/103 (inside)
-
-correct_dir
------------
-  True  → front tags visible (0–99),  outside on the right — correct approach
-  False → rear  tags visible (100–199), outside on the left — approaching backwards
-  If only one tag type is visible the pixel positions are used as a fallback.
+Gate pairing, post-role decisions (inside/outside), and navigation are the
+responsibility of the consuming module (aruco_navigator.py).
 
 Frames are expected in **RGB** format (as produced by robot.py's camera).
 
@@ -34,9 +20,9 @@ Usage::
 
     detector = ArucoDetector()
     state = detector.detect(frame)   # annotates frame in-place; returns ArUcoState
-    for gate in state.gates.values():
-        print(f"Gate {gate.gate_id}: centre ({gate.centre_x}, {gate.centre_y}), "
-              f"correct={gate.correct_dir}")
+    for tag in state.tags.values():
+        print(f"Tag {tag.id}: centre ({tag.center_x}, {tag.center_y}), "
+              f"dist={tag.distance}, bearing={tag.bearing}")
 """
 
 import math
@@ -72,7 +58,6 @@ ARUCO_DICT: Dict[str, int] = {
 # ── Colours (RGB order — robot.py frames are RGB888) ──────────────────────────
 
 _RED   = (255, 0,   0)
-_BLUE  = (0,   0,   255)
 _GREEN = (0,   255, 0)
 _WHITE = (255, 255, 255)
 
@@ -80,9 +65,6 @@ _WHITE = (255, 255, 255)
 
 _MARKER_BOX_THICKNESS  = 2
 _MARKER_CENTER_RADIUS  = 4
-_GATE_LINE_THICKNESS   = 5
-_GATE_LINE_HALF_HEIGHT = 50
-_GATE_LABEL_OFFSET     = 55
 _FONT                  = cv2.FONT_HERSHEY_SIMPLEX
 _MARKER_FONT_SCALE     = 0.5
 _MARKER_FONT_THICKNESS = 2
@@ -109,43 +91,18 @@ class ArUcoTag:
 
 
 @dataclass
-class ArUcoGate:
-    """
-    A gate formed by an outside (even base ID) + inside (odd base ID) post pair.
-
-    gate_id      : 0-based index  (base IDs 0+1 → gate 0, 2+3 → gate 1, …)
-    outside_tag  : detected tag ID of the outside post (even base; may be 100+ for rear)
-    inside_tag   : detected tag ID of the inside  post (odd  base; may be 100+ for rear)
-    centre_x/y   : pixel centre between the two posts
-    correct_dir  : True  → front tags visible (0–99), outside on the RIGHT — BLUE
-                   False → rear  tags visible (100–199) or outside on LEFT  — RED
-    distance     : metres to gate centre (None = unknown)
-    bearing      : degrees from camera centre (None = unknown, use pixel fallback)
-    """
-    gate_id:     int
-    outside_tag: int
-    inside_tag:  int
-    centre_x:    int
-    centre_y:    int
-    correct_dir: bool
-    distance:    float = None
-    bearing:     float = None
-
-
-@dataclass
 class ArUcoState:
     """Snapshot of one detection pass."""
-    tags:      Dict[int, ArUcoTag]  = field(default_factory=dict)
-    gates:     Dict[int, ArUcoGate] = field(default_factory=dict)
-    fps:       float                = 0.0
-    timestamp: float                = 0.0
+    tags:      Dict[int, ArUcoTag] = field(default_factory=dict)
+    fps:       float               = 0.0
+    timestamp: float               = 0.0
 
 
 def merge_aruco_states(
     state_a: Optional[ArUcoState],
     state_b: Optional[ArUcoState],
 ) -> Optional[ArUcoState]:
-    """Merge ArUco detection results from two cameras into one ArUcoState.
+    """Merge ArUco tag detections from two cameras into one ArUcoState.
 
     Intended for combining front-left and front-right camera detections so the
     navigator sees tags from both fields of view simultaneously.
@@ -155,8 +112,7 @@ def merge_aruco_states(
     the one with the larger bounding-box area wins (assumed closer / more
     centred in frame).
 
-    Gates are re-derived from the merged tag set using the same even/odd
-    base-ID pairing logic as ArucoDetector._find_gates, without frame drawing.
+    Gate pairing is left to the consumer (aruco_navigator.py).
 
     Returns None if both inputs are None; returns the non-None input if only
     one is provided.
@@ -182,48 +138,8 @@ def merge_aruco_states(
             elif not b_has_dist and not a_has_dist and tag_b.area > tag_a.area:
                 merged_tags[tag_id] = tag_b
 
-    # Re-derive gates from merged tags (same pairing logic, no drawing).
-    merged_gates: Dict[int, ArUcoGate] = {}
-    base_map: Dict[int, ArUcoTag] = {}
-    for tag_id, tag in merged_tags.items():
-        base = tag_id % 100
-        if base not in base_map or tag_id < base_map[base].id:
-            base_map[base] = tag
-
-    for base_even in sorted(base_map):
-        if base_even % 2 != 0:
-            continue
-        base_odd = base_even + 1
-        if base_odd not in base_map:
-            continue
-
-        gate_id = base_even // 2
-        outside = base_map[base_even]
-        inside  = base_map[base_odd]
-
-        gcx = (outside.center_x + inside.center_x) // 2
-        gcy = (outside.center_y + inside.center_y) // 2
-
-        both_front = outside.id < 100 and inside.id < 100
-        both_rear  = outside.id >= 100 and inside.id >= 100
-        if both_front or both_rear:
-            correct_dir = both_front
-        else:
-            correct_dir = inside.center_x < outside.center_x
-
-        dists = [t.distance for t in (outside, inside) if t.distance is not None]
-        bears = [t.bearing  for t in (outside, inside) if t.bearing  is not None]
-
-        merged_gates[gate_id] = ArUcoGate(
-            gate_id=gate_id, outside_tag=outside.id, inside_tag=inside.id,
-            centre_x=gcx, centre_y=gcy, correct_dir=correct_dir,
-            distance=sum(dists) / len(dists) if dists else None,
-            bearing=sum(bears)  / len(bears) if bears else None,
-        )
-
     return ArUcoState(
         tags=merged_tags,
-        gates=merged_gates,
         fps=(state_a.fps + state_b.fps) / 2.0,
         timestamp=max(state_a.timestamp, state_b.timestamp),
     )
@@ -354,22 +270,18 @@ class ArucoDetector:
         grey = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         corners, ids, _ = self._detector.detectMarkers(grey)
 
-        tags:  Dict[int, ArUcoTag]  = {}
-        gates: Dict[int, ArUcoGate] = {}
+        tags: Dict[int, ArUcoTag] = {}
 
         if ids is not None and len(ids) > 0:
             for marker_corner, marker_id in zip(corners, ids.flatten()):
                 tag = self._process_marker(frame, marker_corner, int(marker_id), pose_ok)
                 tags[tag.id] = tag
 
-        if len(tags) >= 2:
-            gates = self._find_gates(frame, tags)
-
         if self._draw and self._show_fps:
             cv2.putText(frame, f"FPS:{fps:.1f}", _FPS_POSITION,
                         _FONT, _FPS_FONT_SCALE, _WHITE, _FPS_FONT_THICKNESS)
 
-        return ArUcoState(tags=tags, gates=gates, fps=round(fps, 1), timestamp=now)
+        return ArUcoState(tags=tags, fps=round(fps, 1), timestamp=now)
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -432,70 +344,3 @@ class ArucoDetector:
                         top_left=tl, top_right=tr, bottom_right=br, bottom_left=bl,
                         distance=distance, bearing=bearing)
 
-    def _find_gates(self, frame, tags: Dict[int, ArUcoTag]) -> Dict[int, ArUcoGate]:
-        """
-        Pair outside (even base ID) and inside (odd base ID) posts into gates.
-
-        Each post has a front tag (ID 0–99) and a rear tag (ID 100–199).
-        base_id = tag_id % 100 strips the front/rear distinction for pairing.
-        Gate N is formed by base IDs 2N (outside) and 2N+1 (inside).
-        We prefer the front-face tag if both faces are visible for the same post.
-        """
-        gates: Dict[int, ArUcoGate] = {}
-
-        # Build a map: base_id → best tag (prefer front face, i.e. lower ID)
-        base_map: Dict[int, ArUcoTag] = {}
-        for tag_id, tag in tags.items():
-            base = tag_id % 100
-            if base not in base_map or tag_id < base_map[base].id:
-                base_map[base] = tag
-
-        # Find pairs: even base (outside) + odd base (inside)
-        for base_even in sorted(base_map):
-            if base_even % 2 != 0:
-                continue
-            base_odd = base_even + 1
-            if base_odd not in base_map:
-                continue
-
-            gate_id = base_even // 2
-            outside = base_map[base_even]
-            inside  = base_map[base_odd]
-
-            gcx = (outside.center_x + inside.center_x) // 2
-            gcy = (outside.center_y + inside.center_y) // 2
-
-            # correct_dir: True when approaching from the front.
-            # Primary indicator: front tags (ID < 100) are visible.
-            # Fallback: outside post should be to the RIGHT on correct approach.
-            both_front = outside.id < 100 and inside.id < 100
-            both_rear  = outside.id >= 100 and inside.id >= 100
-            if both_front or both_rear:
-                correct_dir = both_front
-            else:
-                # Mixed front/rear — use pixel position as heuristic
-                correct_dir = inside.center_x < outside.center_x
-
-            colour = _BLUE if correct_dir else _RED
-
-            if self._draw:
-                cv2.line(frame,
-                         (gcx, gcy - _GATE_LINE_HALF_HEIGHT),
-                         (gcx, gcy),
-                         colour, _GATE_LINE_THICKNESS)
-                cv2.putText(frame, str(gate_id),
-                            (gcx, gcy - _GATE_LABEL_OFFSET),
-                            _FONT, _MARKER_FONT_SCALE, colour, _MARKER_FONT_THICKNESS)
-
-            # Gate distance/bearing: average of the two post values
-            dists = [t.distance for t in (outside, inside) if t.distance is not None]
-            bears = [t.bearing  for t in (outside, inside) if t.bearing  is not None]
-            gate_dist: Optional[float] = sum(dists) / len(dists) if dists else None
-            gate_bear: Optional[float] = sum(bears) / len(bears) if bears else None
-
-            gates[gate_id] = ArUcoGate(
-                gate_id=gate_id, outside_tag=outside.id, inside_tag=inside.id,
-                centre_x=gcx, centre_y=gcy, correct_dir=correct_dir,
-                distance=gate_dist, bearing=gate_bear,
-            )
-        return gates

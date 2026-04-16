@@ -286,7 +286,7 @@ Unit tests for `robot/aruco_detector.py` using synthetic OpenCV-generated frames
 python3 tools/test_aruco_detector.py
 ```
 
-Tests: blank frame, single tag, gate pair formation, wrong-direction gate, gate centre calculation, multiple gates, non-consecutive tags, FPS/timestamp fields, calibrated distance/bearing, `draw=False`.
+Tests: blank frame, single tag, gate pair formation (even+odd base IDs), gate centre calculation, multiple gates, non-consecutive tags, FPS/timestamp fields, calibrated distance/bearing, `draw=False`.
 
 ---
 
@@ -460,6 +460,44 @@ python3 tools/derive_calibrations.py camera_cal_1456x1088.npz 640x480 1280x720
 
 Output files are written alongside the master (e.g. `camera_cal_640x480.npz`).
 `robot_daemon.py` selects the right file automatically using the `{width}x{height}` template in `[aruco] calib_file`.
+
+---
+
+### calibrate_aruco_distance.py
+
+Interactive tool to calibrate the `area_k` distance fallback for ArUco detection.
+Place two tags `--gate-width` metres apart and position the robot `--setup-dist`
+metres from the gate centre.  The tool detects the tags and computes:
+
+```
+area_k = D × sqrt(A)
+```
+
+where D is the known distance to each post and A is the detected pixel area.
+Multiple captures are averaged.  If a `camera_cal.npz` is present,
+`solvePnP` distances are also shown for comparison.
+
+```bash
+python3 tools/calibrate_aruco_distance.py
+python3 tools/calibrate_aruco_distance.py --setup-dist 2.0 --gate-width 1.0
+python3 tools/calibrate_aruco_distance.py --camera 1   # right front camera
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--setup-dist M` | `2.0` | Distance from robot to gate centre in metres |
+| `--gate-width M` | `1.0` | Distance between the two posts in metres |
+| `--camera N` | `0` | Camera index (0 = front-left) |
+| `--ini PATH` | `../robot.ini` | Config file |
+
+**Keys**
+
+| Key | Action |
+|-----|--------|
+| `Space` | Capture current frame and add to average |
+| `C` | Clear all captures |
+| `S` | Save recommended `area_k` to `robot.ini [aruco]` |
+| `Q` / `Esc` | Quit |
 
 ---
 
@@ -897,6 +935,25 @@ python3 tools/yukon_battery_monitor.py --port /dev/ttyACM0 --interval 0.5
 | `--interval N` | `1.0` | Sensor poll interval in seconds |
 
 Press `Esc` or close the window to quit.
+
+---
+
+### monitor_power.py
+
+Reads Raspberry Pi 5 input voltage and current from the onboard PMIC via the
+kernel `hwmon` interface.  On Pi 4 and earlier, falls back to `vcgencmd` for
+core voltage only.
+
+```bash
+python3 tools/monitor_power.py              # single reading
+python3 tools/monitor_power.py --watch      # live updating display
+python3 tools/monitor_power.py --watch --interval 0.5
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--watch` | off | Continuously overwrite display |
+| `--interval N` | `1.0` | Refresh interval in seconds (`--watch` only) |
 
 ---
 
