@@ -555,19 +555,21 @@ class ArucoNavigator:
         aruco_state: ArUcoState,
         frame_width: int,
         heading: Optional[float] = None,
-        yukon=None,
         lidar=None,
-    ) -> Tuple[float, float]:
+    ) -> Tuple[Optional[float], float, float]:
         """
-        Process one camera frame, return (left, right) motor speeds −1..+1.
+        Process one camera frame, return (target_bearing, left, right).
+
+        When target_bearing is not None, left == right == forward_speed and the
+        caller should send CMD_BEARING(target_bearing) to the Yukon so its onboard
+        PID handles differential steering.  When target_bearing is None the caller
+        receives differential left/right values directly (no-IMU fallback).
 
         Parameters
         ----------
         aruco_state : latest ArUcoState from ArucoDetector.detect()
         frame_width : camera frame width in pixels
         heading     : current IMU heading in degrees (None = no IMU)
-        yukon       : _YukonLink instance for set_bearing/clear_bearing,
-                      or None to skip onboard bearing hold
         lidar       : LidarScan snapshot for obstacle avoidance, or None
         """
         now = time.monotonic()
@@ -577,7 +579,7 @@ class ArucoNavigator:
         self.tags_visible = len(aruco_state.tags)  # always reflect current frame
 
         if self._state in (NavState.IDLE, NavState.COMPLETE, NavState.ERROR):
-            return 0.0, 0.0
+            return None, 0.0, 0.0
 
         frame_cx = frame_width // 2
 
@@ -588,10 +590,11 @@ class ArucoNavigator:
             if (now - self._recover_start) >= self.cfg.recover_reverse_time:
                 self._reset_search()
                 self._set_state(NavState.SEARCHING)
-            return self._apply_ramp(
+            l, r = self._apply_ramp(
                 -self.cfg.recover_reverse_speed,
                 -self.cfg.recover_reverse_speed, dt,
             )
+            return None, l, r
 
         # ── LiDAR obstacle check ──────────────────────────────────────────────
         # Only applied when moving forward; skipped during search rotation.
@@ -601,7 +604,8 @@ class ArucoNavigator:
                                  self.cfg.obstacle_cone_deg / 2.0,
                                  self.cfg.obstacle_stop_dist)):
             log.warning("Obstacle in forward cone — halting (gate %d)", self._gate_id)
-            return self._apply_ramp(0.0, 0.0, dt)
+            l, r = self._apply_ramp(0.0, 0.0, dt)
+            return self._imu_target, l, r
 
         # ── PASSING ───────────────────────────────────────────────────────────
         # Drive straight until the gate tags leave the frame (robot has cleared
@@ -617,9 +621,10 @@ class ArucoNavigator:
                 if timed_out and not gate_clear:
                     log.warning("Gate %d pass timeout (%.1fs) — advancing anyway",
                                 self._gate_id, elapsed)
-                self._exit_passing(yukon)
+                self._exit_passing()
                 self._advance_gate()
-            return self._apply_ramp(self.cfg.fwd_speed, self.cfg.fwd_speed, dt)
+            l, r = self._apply_ramp(self.cfg.fwd_speed, self.cfg.fwd_speed, dt)
+            return self._pass_heading, l, r
 
         # ── Resolve aim point ─────────────────────────────────────────────────
         target_x, dist, cam_bearing, is_single_tag = self._resolve_target(aruco_state, frame_cx)
@@ -638,10 +643,11 @@ class ArucoNavigator:
                 self._imu_target    = None
                 self._recover_start = now
                 self._set_state(NavState.RECOVERING)
-                return self._apply_ramp(
+                l, r = self._apply_ramp(
                     -self.cfg.recover_reverse_speed,
                     -self.cfg.recover_reverse_speed, dt,
                 )
+                return None, l, r
             if self._state != NavState.SEARCHING:
                 log.debug("Gate %d lost — searching", self._gate_id)
                 self._imu_target = None
@@ -685,19 +691,27 @@ class ArucoNavigator:
                          self._gate_id, dist,
                          f"{heading:.1f}°" if heading is not None else "N/A",
                          " [single-tag]" if is_single_tag else "")
-                self._enter_passing(heading, yukon, now)
-                return self._apply_ramp(self.cfg.fwd_speed, self.cfg.fwd_speed, dt)
+                self._enter_passing(heading, now)
+                l, r = self._apply_ramp(self.cfg.fwd_speed, self.cfg.fwd_speed, dt)
+                return self._pass_heading, l, r
 
-        # ── Motor mixing ──────────────────────────────────────────────────────
+        # ── Drive ─────────────────────────────────────────────────────────────
         fwd = self.cfg.align_fwd_speed if self._state == NavState.ALIGNING \
               else self.cfg.fwd_speed
-        return self._apply_ramp(_clamp(fwd + steer), _clamp(fwd - steer), dt)
+        if heading is not None and self._imu_target is not None:
+            # IMU available: return target bearing; Yukon PID handles differential
+            l, r = self._apply_ramp(fwd, fwd, dt)
+            return self._imu_target, l, r
+        else:
+            # No IMU: Pi computes differential steering from camera bearing
+            l, r = self._apply_ramp(_clamp(fwd + steer), _clamp(fwd - steer), dt)
+            return None, l, r
 
     # ── Search ────────────────────────────────────────────────────────────────
 
     def _search_step(
         self, heading: Optional[float], dt: float, now: float
-    ) -> Tuple[float, float]:
+    ) -> Tuple[Optional[float], float, float]:
         """Dispatch to the configured search strategy."""
         if self.cfg.search_mode == "serpentine":
             return self._search_serpentine(heading, dt, now)
@@ -705,19 +719,19 @@ class ArucoNavigator:
 
     def _search_spin(
         self, heading: Optional[float], dt: float, now: float
-    ) -> Tuple[float, float]:
+    ) -> Tuple[Optional[float], float, float]:
         """Rotate in steps to find the target gate."""
 
         if heading is None:
-            # No IMU — continuous rotation
-            return self._apply_ramp(
-                -self.cfg.search_speed, self.cfg.search_speed, dt
-            )
+            # No IMU — differential spin as fallback
+            l, r = self._apply_ramp(-self.cfg.search_speed, self.cfg.search_speed, dt)
+            return None, l, r
 
-        # During pause between steps — hold still
+        # During pause between steps — hold current heading
         if self._search_pausing:
             if now < self._search_pause_end:
-                return self._apply_ramp(0.0, 0.0, dt)
+                l, r = self._apply_ramp(0.0, 0.0, dt)
+                return heading, l, r
             self._search_pausing = False
             self._search_origin  = heading
 
@@ -728,7 +742,7 @@ class ArucoNavigator:
         step_turned = abs(_angle_diff(heading, self._search_origin))
 
         if step_turned >= self.cfg.search_step_deg:
-            # Step complete — begin pause
+            # Step complete — begin pause, hold current heading
             self._search_turned  += step_turned
             self._search_pausing  = True
             self._search_pause_end = now + self.cfg.search_step_pause
@@ -737,27 +751,28 @@ class ArucoNavigator:
                 log.warning("Gate %d: full 360° without tags, retrying",
                             self._gate_id)
                 self._search_turned = 0.0
-            return self._apply_ramp(0.0, 0.0, dt)
+            l, r = self._apply_ramp(0.0, 0.0, dt)
+            return heading, l, r
 
-        return self._apply_ramp(
-            -self.cfg.search_speed, self.cfg.search_speed, dt
-        )
+        # Still rotating: Yukon PID spins toward search_target at speed=0
+        search_target = (self._search_origin + self.cfg.search_step_deg) % 360.0
+        l, r = self._apply_ramp(0.0, 0.0, dt)
+        return search_target, l, r
 
     def _search_serpentine(
         self, heading: Optional[float], dt: float, now: float
-    ) -> Tuple[float, float]:
+    ) -> Tuple[Optional[float], float, float]:
         """Drive forward in an IMU-controlled zigzag within a ±cone/2 arc.
 
         Records the heading when SEARCHING begins as the centre of the sweep.
-        Steers toward the ±search_cone_deg/2 target using the same proportional
-        controller as APPROACHING, switching direction when within 5° of the
-        target heading or after search_leg_time seconds (safety net).
-        Falls back to time-based steering when the IMU is unavailable.
+        Steers toward the ±search_cone_deg/2 target using bearing hold; switching
+        direction when within 5° of the target or after search_leg_time seconds.
+        Falls back to time-based differential steering when IMU is unavailable.
         """
         cone_half = self.cfg.search_cone_deg / 2.0
 
         if heading is None:
-            # No IMU — fall back to time-based bias steering
+            # No IMU — fall back to time-based bias steering (differential)
             if self._serp_leg_start == 0.0:
                 self._serp_leg_start = now
             if (now - self._serp_leg_start) >= self.cfg.search_leg_time:
@@ -766,10 +781,11 @@ class ArucoNavigator:
                 log.debug("Serpentine search: switching direction (dir=%+d, no IMU)",
                           self._serp_dir)
             steer = self.cfg.search_turn_bias * self._serp_dir
-            return self._apply_ramp(
+            l, r = self._apply_ramp(
                 _clamp(self.cfg.search_speed - steer),
                 _clamp(self.cfg.search_speed + steer), dt,
             )
+            return None, l, r
 
         # IMU available — initialise origin and first target on first call
         if self._serp_origin is None:
@@ -790,13 +806,10 @@ class ArucoNavigator:
             log.debug("Serpentine search: %s — new target=%.1f° (dir=%+d)",
                       "at target" if at_target else "timeout",
                       self._serp_target, self._serp_dir)
-            err = _angle_diff(self._serp_target, heading)
 
-        steer = _clamp(self.cfg.steer_kp * (err / 45.0))
-        return self._apply_ramp(
-            _clamp(self.cfg.search_speed - steer),
-            _clamp(self.cfg.search_speed + steer), dt,
-        )
+        # Bearing mode: Yukon PID steers to serp_target while driving forward
+        l, r = self._apply_ramp(self.cfg.search_speed, self.cfg.search_speed, dt)
+        return self._serp_target, l, r
 
     def _reset_search(self):
         self._search_origin   = None
@@ -809,7 +822,7 @@ class ArucoNavigator:
 
     # ── PASSING helpers ───────────────────────────────────────────────────────
 
-    def _enter_passing(self, heading: Optional[float], yukon, now: float):
+    def _enter_passing(self, heading: Optional[float], now: float):
         self._pass_start   = now
         self._pass_heading = heading
         self._set_state(NavState.PASSING)
@@ -822,20 +835,10 @@ class ArucoNavigator:
             gid = self._gate_id
             self._pass_tag_ids = {gid * 2, gid * 2 + 1,
                                    100 + gid * 2, 100 + gid * 2 + 1}
-        if heading is not None and yukon is not None:
-            try:
-                yukon.set_bearing(heading)
-                log.debug("Bearing hold ON at %.1f°", heading)
-            except Exception as e:
-                log.warning("set_bearing failed: %s", e)
+        if heading is not None:
+            log.debug("PASSING: bearing locked at %.1f°", heading)
 
-    def _exit_passing(self, yukon):
-        if yukon is not None:
-            try:
-                yukon.clear_bearing()
-                log.debug("Bearing hold OFF")
-            except Exception as e:
-                log.warning("clear_bearing failed: %s", e)
+    def _exit_passing(self):
         self._pass_heading = None
         self._imu_target   = None
 

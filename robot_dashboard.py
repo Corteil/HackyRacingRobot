@@ -2228,18 +2228,25 @@ function drawBearingOverlay(canvas, aruco, navGate, heading, showBearingInfo=fal
   // canvas element while preserving aspect ratio, leaving letterbox/pillarbox
   // bars.  Compute where the rendered image actually sits so we can align the
   // canvas overlay exactly on top of it.
-  const natW = aruco.cap_w > 0 ? aruco.cap_w : camNatW;
-  const natH = aruco.cap_h > 0 ? aruco.cap_h : camNatH;
-  const fitScale = Math.min(W / natW, H / natH);
-  const rW = natW * fitScale;   // rendered image width in canvas pixels
-  const rH = natH * fitScale;   // rendered image height in canvas pixels
-  const ox = (W - rW) / 2;     // left offset (pillarbox) in canvas pixels
-  const oy = (H - rH) / 2;     // top  offset (letterbox) in canvas pixels
+  //
+  // dispW/dispH = actual JPEG stream resolution (e.g. 640×480) — governs where
+  //   the browser renders the image inside the canvas element.
+  // capW/capH   = ArUco detection resolution (e.g. 1456×1088) — governs the
+  //   coordinate space of the corner/centre values in aruco.tags.
+  const dispW = camNatW;           // img.naturalWidth  (JPEG pixel size)
+  const dispH = camNatH;           // img.naturalHeight
+  const capW  = aruco.cap_w > 0 ? aruco.cap_w : dispW;
+  const capH  = aruco.cap_h > 0 ? aruco.cap_h : dispH;
+  const fitScale = Math.min(W / dispW, H / dispH);
+  const rW = dispW * fitScale;   // rendered image width in canvas pixels
+  const rH = dispH * fitScale;   // rendered image height in canvas pixels
+  const ox = (W - rW) / 2;      // left offset (pillarbox) in canvas pixels
+  const oy = (H - rH) / 2;      // top  offset (letterbox) in canvas pixels
 
-  // ArUco coords are in capture space (natW × natH after rotation).
+  // ArUco coords are in capture space (capW × capH after rotation).
   // Scale them to the rendered image area inside the canvas.
-  const csx = rW / natW;
-  const csy = rH / natH;
+  const csx = rW / capW;
+  const csy = rH / capH;
   // Camera boresight = centre of the rendered image
   const fcx = ox + rW / 2;
   const fcy = oy + rH / 2;

@@ -135,9 +135,10 @@ def test_initial_state():
 
 
 def test_idle_returns_zero():
-    print("\nSection 2: IDLE returns (0, 0)")
-    nav  = ArucoNavigator()
-    l, r = nav.update(_empty_state(), FRAME_W)
+    print("\nSection 2: IDLE returns (None, 0, 0)")
+    nav            = ArucoNavigator()
+    bearing, l, r  = nav.update(_empty_state(), FRAME_W)
+    _check("bearing=None", bearing is None)
     _check("left=0",  _approx(l, 0.0))
     _check("right=0", _approx(r, 0.0))
 
@@ -159,11 +160,12 @@ def test_stop_idle():
 
 
 def test_searching_rotates():
-    print("\nSection 5: SEARCHING rotates (no IMU)")
-    nav = ArucoNavigator()
+    print("\nSection 5: SEARCHING rotates (no IMU — differential fallback)")
+    nav            = ArucoNavigator()
     nav.start()
     time.sleep(0.05)   # allow dt > 0 so ramp produces non-zero output
-    l, r = nav.update(_empty_state(), FRAME_W)
+    bearing, l, r  = nav.update(_empty_state(), FRAME_W)
+    _check("bearing=None (no IMU)",     bearing is None, f"bearing={bearing}")
     _check("outputs differ (rotation)", l != r, f"l={l:.3f} r={r:.3f}")
     _check("rotation is non-zero",      abs(l) > 0 or abs(r) > 0)
 
@@ -174,7 +176,7 @@ def test_searching_to_aligning():
     nav.start()
     # Gate 0 visible, centred, bearing=0
     state = _state_with_gate(0, bearing=10.0)  # outside deadband
-    nav.update(state, FRAME_W)
+    _bearing, _l, _r = nav.update(state, FRAME_W)
     _check("transitioned to ALIGNING or APPROACHING",
            nav.state in (NavState.ALIGNING, NavState.APPROACHING),
            f"got {nav.state}")
@@ -189,7 +191,7 @@ def test_aligning_to_approaching():
 
     # Bearing error well within deadband
     state = _state_with_gate(0, bearing=0.0)
-    nav.update(state, FRAME_W)
+    _bearing, _l, _r = nav.update(state, FRAME_W)
     _check("state APPROACHING",
            nav.state == NavState.APPROACHING, f"got {nav.state}")
 
@@ -203,7 +205,7 @@ def test_approaching_to_passing():
 
     # Distance exactly at threshold
     state = _state_with_gate(0, dist=0.55, bearing=0.0)
-    nav.update(state, FRAME_W)
+    _bearing, _l, _r = nav.update(state, FRAME_W)
     _check("state PASSING", nav.state == NavState.PASSING, f"got {nav.state}")
 
 
@@ -216,14 +218,14 @@ def test_passing_to_next_gate():
 
     # Trigger PASSING
     state = _state_with_gate(0, dist=0.5, bearing=0.0)
-    nav.update(state, FRAME_W)
+    _bearing, _l, _r = nav.update(state, FRAME_W)
     _check("entered PASSING", nav.state == NavState.PASSING, f"got {nav.state}")
 
     # Force pass_time elapsed
     nav._pass_start = time.monotonic() - 10.0
     # Inject gate 1 so the navigator can confirm it's visible
     state1 = _state_with_gate(1, dist=2.0, bearing=5.0)
-    nav.update(state1, FRAME_W)
+    _bearing, _l, _r = nav.update(state1, FRAME_W)
     _check("gate_id advanced to 1",   nav.gate_id == 1, f"got {nav.gate_id}")
     _check("state back to SEARCHING", nav.state == NavState.SEARCHING,
            f"got {nav.state}")
@@ -238,15 +240,16 @@ def test_approaching_to_recovering():
 
     # Gate visible once to set up the state properly
     state = _state_with_gate(0, dist=1.0, bearing=0.0)
-    nav.update(state, FRAME_W)
+    _bearing, _l, _r = nav.update(state, FRAME_W)
 
     # Simulate elapsed time so the ramp can produce non-zero output
     nav._last_update -= 0.2
 
     # Now gate is gone
-    l, r = nav.update(_empty_state(), FRAME_W)
+    bearing, l, r = nav.update(_empty_state(), FRAME_W)
     _check("state RECOVERING",  nav.state == NavState.RECOVERING,
            f"got {nav.state}")
+    _check("bearing=None (no hold during reverse)", bearing is None, f"bearing={bearing}")
     _check("reversing (both negative)", l < 0 and r < 0,
            f"l={l:.3f} r={r:.3f}")
 
@@ -259,7 +262,7 @@ def test_recovering_to_searching():
     nav._set_state(NavState.RECOVERING)
     nav._recover_start = time.monotonic() - 1.0   # expired
 
-    nav.update(_empty_state(), FRAME_W)
+    _bearing, _l, _r = nav.update(_empty_state(), FRAME_W)
     _check("state SEARCHING after recovery", nav.state == NavState.SEARCHING,
            f"got {nav.state}")
 
@@ -272,19 +275,20 @@ def test_complete_after_last_gate():
     nav._set_state(NavState.APPROACHING)
 
     state = _state_with_gate(0, dist=0.8, bearing=0.0)
-    nav.update(state, FRAME_W)           # → PASSING
+    _bearing, _l, _r = nav.update(state, FRAME_W)           # → PASSING
 
     nav._pass_start = time.monotonic() - 10.0
-    nav.update(_empty_state(), FRAME_W)  # → COMPLETE (only 1 gate)
+    _bearing, _l, _r = nav.update(_empty_state(), FRAME_W)  # → COMPLETE (only 1 gate)
     _check("state COMPLETE", nav.state == NavState.COMPLETE,
            f"got {nav.state}")
 
 
 def test_complete_returns_zero():
-    print("\nSection 13: COMPLETE returns (0, 0)")
-    nav = ArucoNavigator()
-    nav._state = NavState.COMPLETE
-    l, r = nav.update(_empty_state(), FRAME_W)
+    print("\nSection 13: COMPLETE returns (None, 0, 0)")
+    nav            = ArucoNavigator()
+    nav._state     = NavState.COMPLETE
+    bearing, l, r  = nav.update(_empty_state(), FRAME_W)
+    _check("bearing=None", bearing is None)
     _check("left=0",  _approx(l, 0.0))
     _check("right=0", _approx(r, 0.0))
 
@@ -296,9 +300,9 @@ def test_obstacle_stop():
     nav.start()
     nav._set_state(NavState.APPROACHING)
 
-    state   = _state_with_gate(0, dist=2.0, bearing=0.0)
-    lidar   = _lidar_obstacle(0.3, angle_deg=0.0)   # obstacle at 0.3 m, dead ahead
-    l, r    = nav.update(state, FRAME_W, lidar=lidar)
+    state           = _state_with_gate(0, dist=2.0, bearing=0.0)
+    lidar           = _lidar_obstacle(0.3, angle_deg=0.0)   # obstacle at 0.3 m, dead ahead
+    _b, l, r        = nav.update(state, FRAME_W, lidar=lidar)
     _check("motors halted (obstacle)", _approx(l, 0.0, tol=0.05)
            and _approx(r, 0.0, tol=0.05),
            f"l={l:.3f} r={r:.3f}")
@@ -309,7 +313,7 @@ def test_obstacle_stop():
     nav2.start()
     nav2._set_state(NavState.APPROACHING)
     nav2._last_update -= 0.2   # simulate elapsed time so ramp can produce output
-    l2, r2 = nav2.update(state, FRAME_W, lidar=lidar_side)
+    _b2, l2, r2 = nav2.update(state, FRAME_W, lidar=lidar_side)
     _check("no halt when obstacle outside cone",
            abs(l2) > 0.01 or abs(r2) > 0.01,
            f"l={l2:.3f} r={r2:.3f}")
@@ -404,17 +408,22 @@ def test_imu_search_step():
     cfg = NavConfig(search_step_deg=45.0, search_step_pause=0.0)
     nav = ArucoNavigator(cfg)
     nav.start()
-    # Simulate heading before step complete
+    # Simulate heading before step complete (10° turned of 45° step)
     nav._search_origin = 10.0
     time.sleep(0.02)
-    l, r = nav.update(_empty_state(), FRAME_W, heading=20.0)
-    _check("still rotating (10° < 45° step)", l != r, f"l={l:.3f} r={r:.3f}")
+    bearing, l, r = nav.update(_empty_state(), FRAME_W, heading=20.0)
+    _check("bearing target set (spinning to step target)",
+           bearing is not None, f"bearing={bearing}")
+    _check("equal speeds (Yukon PID steers)", _approx(l, r, tol=0.001),
+           f"l={l:.3f} r={r:.3f}")
 
     # Simulate step complete — heading has moved 45°
     nav._search_origin = 10.0
     time.sleep(0.02)
-    l2, r2 = nav.update(_empty_state(), FRAME_W, heading=56.0)  # 46° turned
-    _check("pausing after step complete (outputs near zero)",
+    bearing2, l2, r2 = nav.update(_empty_state(), FRAME_W, heading=56.0)  # 46° turned
+    _check("bearing holds current heading during pause",
+           bearing2 is not None, f"bearing2={bearing2}")
+    _check("pausing after step complete (speeds near zero)",
            _approx(abs(l2), 0.0, tol=0.3) and _approx(abs(r2), 0.0, tol=0.3),
            f"l={l2:.3f} r={r2:.3f}")
 
@@ -427,7 +436,7 @@ def test_bearing_err_attribute():
     nav._set_state(NavState.ALIGNING)
 
     state = _state_with_gate(0, bearing=12.0)
-    nav.update(state, FRAME_W)
+    _bearing, _l, _r = nav.update(state, FRAME_W)
     _check("bearing_err attribute set",
            hasattr(nav, 'bearing_err') and nav.bearing_err is not None)
     _check("bearing_err ≈ 12° (±5° tolerance)",

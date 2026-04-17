@@ -310,8 +310,8 @@ def test_navigator_state_machine():
     check("initial state IDLE", nav.state, NavState.IDLE)
     check("initial gate_id=0",  nav.gate_id, 0)
 
-    # IDLE returns (0, 0)
-    l, r = nav.update(empty_state, 640)
+    # IDLE returns (None, 0, 0)
+    _b, l, r = nav.update(empty_state, 640)
     check_approx("IDLE update returns 0,0 (left)",  l, 0.0)
     check_approx("IDLE update returns 0,0 (right)", r, 0.0)
 
@@ -320,38 +320,37 @@ def test_navigator_state_machine():
     check("after start(): SEARCHING", nav.state, NavState.SEARCHING)
     check("after start(): gate_id=0",  nav.gate_id, 0)
 
-    # SEARCHING with no tags → rotate (non-zero outputs)
+    # SEARCHING with no tags → differential rotation (no IMU)
     time.sleep(0.05)   # allow dt > 0 so ramp produces non-zero
-    l, r = nav.update(empty_state, 640)
+    _b, l, r = nav.update(empty_state, 640)
     check("searching no tags: outputs differ (rotation)", l != r, True)
 
     # stop() → IDLE
     nav.stop()
     check("after stop(): IDLE", nav.state, NavState.IDLE)
 
-    # COMPLETE returns (0, 0)
+    # COMPLETE returns (None, 0, 0)
     nav2 = ArucoNavigator(NavConfig(max_gates=1))
     nav2._state = NavState.COMPLETE
-    l, r = nav2.update(empty_state, 640)
+    _b, l, r = nav2.update(empty_state, 640)
     check_approx("COMPLETE returns 0,0 (left)",  l, 0.0)
     check_approx("COMPLETE returns 0,0 (right)", r, 0.0)
 
-    # ERROR returns (0, 0)
+    # ERROR returns (None, 0, 0)
     nav3 = ArucoNavigator()
     nav3._state = NavState.ERROR
-    l, r = nav3.update(empty_state, 640)
+    _b, l, r = nav3.update(empty_state, 640)
     check_approx("ERROR returns 0,0 (left)",  l, 0.0)
     check_approx("ERROR returns 0,0 (right)", r, 0.0)
 
-    # SEARCHING with IMU heading: step-based search
+    # SEARCHING with IMU heading: bearing-mode spin (equal speeds, bearing set)
     nav4 = ArucoNavigator(NavConfig(search_step_deg=45.0, search_step_pause=0.0))
     nav4.start()
-    # Simulate one step's worth of rotation
     nav4._search_origin = 10.0
     time.sleep(0.02)
-    # Before step complete, should still rotate
-    l, r = nav4.update(empty_state, 640, heading=20.0)
-    check("IMU search (10° turned): rotation output", l != r, True)
+    # Before step complete — bearing target set, equal speeds
+    b4, l, r = nav4.update(empty_state, 640, heading=20.0)
+    check("IMU search (10° turned): bearing target set", b4 is not None, True)
 
     # from_ini() — write a temp ini and parse it
     cfg_data = """

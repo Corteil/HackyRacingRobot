@@ -2790,6 +2790,7 @@ class Robot:
         last_fault_list    : list  = []
         fault_rotation_idx : int   = 0
         last_fault_tick    : float = 0.0
+        _nav_bearing_active: bool  = False   # True while Yukon bearing hold is set
         last_strip_mode    = None   # tracks which mode preset is on the strip
         rc_query_counter   = 0      # query RC every 5 ticks (10 Hz at 50 Hz loop)
 
@@ -2999,6 +3000,7 @@ class Robot:
                         self._navigator.stop()
                     if self._gps_navigator:
                         self._gps_navigator.stop()
+                    _nav_bearing_active = False  # yukon.kill() already cleared bearing
                     last_mode = RobotMode.ESTOP
                 # Skip normal drive() call
                 elapsed = time.monotonic() - t0
@@ -3042,11 +3044,21 @@ class Robot:
                     with self._mode_lock:
                         heading = self._telemetry.heading
                     if aruco_state is not None:
-                        nav_left, nav_right = self._navigator.update(
+                        nav_bearing, nav_left, nav_right = self._navigator.update(
                             aruco_state, getattr(_nav_cam, '_capture_w', self._cam_width),
-                            heading   = heading,
-                            yukon     = self._yukon,
+                            heading = heading,
                         )
+                        if self._yukon:
+                            try:
+                                if nav_bearing is not None:
+                                    self._yukon.set_bearing(nav_bearing)
+                                    _nav_bearing_active = True
+                                elif _nav_bearing_active:
+                                    self._yukon.clear_bearing()
+                                    _nav_bearing_active = False
+                            except (_serial.SerialException, OSError, TypeError):
+                                self._reconnect_yukon()
+                                _nav_bearing_active = False
                         self.drive(nav_left, nav_right)
                     left, right = self._auto_left, self._auto_right
 
@@ -3076,6 +3088,7 @@ class Robot:
                         self._navigator.stop()
                     if self._gps_navigator:
                         self._gps_navigator.stop()
+                    _nav_bearing_active = False
                     log.warning("RC signal lost in AUTO — ESTOP")
                     continue
                 # RC override: switch back to manual
@@ -3084,6 +3097,12 @@ class Robot:
                         self._navigator.stop()
                     if self._gps_navigator:
                         self._gps_navigator.stop()
+                    if _nav_bearing_active and self._yukon:
+                        try:
+                            self._yukon.clear_bearing()
+                        except (_serial.SerialException, OSError, TypeError):
+                            pass
+                    _nav_bearing_active = False
                     with self._mode_lock:
                         self._mode = RobotMode.MANUAL
                     log.info("RC → MANUAL")

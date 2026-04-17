@@ -207,20 +207,30 @@ class ArucoDetector:
             [-half, -half, 0.0],
         ], dtype=np.float32)
 
-        # Lens undistortion + pose estimation (both optional, need calib_file)
-        self._map1        = None
-        self._map2        = None
-        self._cam_mtx     = None   # camera intrinsic matrix (loaded from calib)
-        self._dist_zero   = np.zeros((4, 1), dtype=np.float32)  # zero after remap
-        self._calib_size  = None   # (height, width) the maps were built for
+        # Pose estimation (optional, needs calib_file).
+        # Corners are detected on the distorted frame so they match the display JPEG.
+        # Only the 4 corner *points* are undistorted (via cv2.undistortPoints) before
+        # solvePnP — no whole-frame remap needed.
+        self._cam_mtx    = None   # camera intrinsic matrix
+        self._dist_coeffs = None  # distortion coefficients for undistortPoints
+        self._calib_size  = None  # (height, width) from calibration frame_size
         self._calib_warned = False
+        # Keep map1/map2 for back-compat with anything that reads them externally.
+        self._map1 = None
+        self._map2 = None
+        self._dist_zero = np.zeros((4, 1), dtype=np.float32)
         if calib_file is not None:
             try:
                 cal = np.load(calib_file)
-                self._map1       = cal['map1']
-                self._map2       = cal['map2']
-                self._cam_mtx    = cal['camera_matrix'].astype(np.float32)
-                self._calib_size = (self._map1.shape[0], self._map1.shape[1])
+                self._cam_mtx     = cal['camera_matrix'].astype(np.float32)
+                self._dist_coeffs = cal['dist_coeffs'].astype(np.float32)
+                if 'frame_size' in cal:
+                    fs = cal['frame_size']          # (W, H) as saved by calibrate_camera.py
+                    self._calib_size = (int(fs[1]), int(fs[0]))   # store as (H, W)
+                elif 'map1' in cal:
+                    self._calib_size = (cal['map1'].shape[0], cal['map1'].shape[1])
+                    self._map1 = cal['map1']
+                    self._map2 = cal['map2']
             except Exception as e:
                 raise ValueError(f"Cannot load calibration file {calib_file!r}: {e}") from e
 
@@ -243,25 +253,20 @@ class ArucoDetector:
         fps  = 1.0 / dt if dt > 0 else 0.0
         self._t_prev = now
 
-        # Undistort frame before detection if calibration was loaded.
-        # remap() operates on the raw frame (RGB) and writes back in-place so
-        # that any draw annotations also appear on the corrected image.
-        # Skip undistortion if the frame size doesn't match the calibration maps
-        # (e.g. camera configured at a different resolution than calibration).
-        # pose_ok is True only when undistortion was applied — that's when the
-        # camera_matrix is valid for solvePnP (no residual lens distortion).
+        # Corners are detected on the raw (distorted) frame so they match the
+        # pixel positions visible in the JPEG stream.  Undistortion is applied
+        # only to the 4 corner *points* (via cv2.undistortPoints) inside
+        # _process_marker before solvePnP — no whole-frame remap required.
         pose_ok = False
-        if self._map1 is not None:
+        if self._cam_mtx is not None and self._dist_coeffs is not None:
             fh, fw = frame.shape[:2]
-            if (fh, fw) == self._calib_size:
-                undistorted = cv2.remap(frame, self._map1, self._map2, cv2.INTER_LINEAR)
-                frame[:] = undistorted
+            if self._calib_size is None or (fh, fw) == self._calib_size:
                 pose_ok = True
             elif not self._calib_warned:
                 import warnings
                 warnings.warn(
-                    f"ArucoDetector: calibration maps are {self._calib_size[1]}×{self._calib_size[0]} "
-                    f"but frame is {fw}×{fh} — undistortion skipped. "
+                    f"ArucoDetector: calibration is {self._calib_size[1]}×{self._calib_size[0]} "
+                    f"but frame is {fw}×{fh} — pose estimation skipped. "
                     f"Re-calibrate at {fw}×{fh} or update calib_file.",
                     UserWarning, stacklevel=2,
                 )
@@ -296,17 +301,22 @@ class ArucoDetector:
         cy  = (tl[1] + br[1]) // 2
         area = abs(tl[0] - br[0]) * abs(tl[1] - br[1])
 
-        # Pose estimation — only valid after undistortion (pose_ok=True).
+        # Pose estimation — undistort the 4 corner points before solvePnP so the
+        # camera matrix (calibrated for undistorted coordinates) is valid, while
+        # the ArUcoTag stores the original distorted positions that match the JPEG.
         # solvePnP returns the translation vector in camera coordinates:
         #   t[0] = right, t[1] = down, t[2] = forward (optical axis).
         # distance = Euclidean distance to marker centre.
         # bearing  = horizontal angle (positive = right of boresight).
         distance: Optional[float] = None
         bearing:  Optional[float] = None
-        if pose_ok and self._cam_mtx is not None:
-            img_pts = pts.astype(np.float32)
+        if pose_ok and self._cam_mtx is not None and self._dist_coeffs is not None:
+            img_pts_dist = pts.astype(np.float32).reshape(1, 4, 2)
+            img_pts_undist = cv2.undistortPoints(
+                img_pts_dist, self._cam_mtx, self._dist_coeffs, P=self._cam_mtx,
+            ).reshape(4, 2)
             ok, rvec, tvec = cv2.solvePnP(
-                self._obj_pts, img_pts,
+                self._obj_pts, img_pts_undist,
                 self._cam_mtx, self._dist_zero,
                 flags=cv2.SOLVEPNP_IPPE_SQUARE,
             )
