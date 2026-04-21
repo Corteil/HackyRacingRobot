@@ -5,9 +5,12 @@
 | Component     | Detail |
 |---------------|--------|
 | Pimoroni Yukon | RP2040-based motor controller board |
-| Dual Output   | `DualOutputModule` in SLOT4 — output 0 = FPV camera power |
-| Left motors   | `DualMotorModule` in SLOT2 |
-| Right motors  | `DualMotorModule` in SLOT5 |
+| Rear-right motor  | `BigMotorModule` in SLOT1 |
+| Front-right motor | `BigMotorModule` in SLOT2 |
+| Front-left motor  | `BigMotorModule` in SLOT3 |
+| Rear-left motor   | `BigMotorModule` in SLOT4 |
+| LED strip     | `LEDStripModule` in SLOT5 |
+| Dual power switch | `DualOutputModule` in SLOT6 — output 0 = FPV camera power (on by default) |
 | RC receiver   | FlySky iBUS → Yukon GP26 (PIO UART, decoded by Yukon firmware) |
 | Host ↔ Yukon  | USB serial `/dev/ttyACM0` at 115200 baud |
 | Camera FL     | IMX296 global shutter, CSI CAM0 (`/base/.../i2c@80000`) via Picamera2 |

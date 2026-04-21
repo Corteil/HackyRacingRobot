@@ -76,7 +76,7 @@ robot.start_cam_recording(cam='all') # cam: 'all' | 'front_left' | 'front_right'
 robot.stop_cam_recording(cam='all') # returns list of saved file paths
 robot.is_cam_recording(cam='any')   # cam='any' returns True if any camera is recording
 
-# FPV camera power (DualOutputModule output 0 in SLOT4)
+# FPV camera power (DualOutputModule output 0 in SLOT6; on by default at startup)
 robot.set_bench(on: bool)           # enable / disable FPV camera power output
 
 # No-motors mode (runtime toggle — also set by --no-motors at startup)
@@ -114,7 +114,7 @@ robot.stop()                        # shutdown all subsystems cleanly
 # SH CH12 — momentary:          rising edge in ESTOP → reset_estop()
 #                                rising edge in MANUAL/AUTO → GPS bookmark  (gps_bookmark_ch in [rc])
 
-# LED strip (NeoPixel, 8 LEDs on Yukon SLOT3)
+# LED strip (NeoPixel, 8 LEDs on Yukon SLOT5)
 robot.yukon.set_strip(preset)           # fill all 8 LEDs with a colour preset
                                         # preset: STRIP_OFF(0) … STRIP_WHITE(8)
 robot.yukon.set_pixel(index, colour)    # stage one pixel (0-indexed); call show_pixels() to commit
@@ -507,11 +507,18 @@ When only one post of a gate is visible, the navigator aims offset left/right of
 
 The control loop merges ArUco detections from both front cameras (`front_left` + `front_right`) before passing to the navigator, widening the effective field of view. `aruco_ok` in `RobotState` reflects either front camera having ArUco active.
 
+**`update(merged_state, heading, speed) → (target_bearing, left, right)`**
+
+Returns a 3-tuple each control tick:
+
+- When `target_bearing is not None`: `left == right == speed`; the caller sends `CMD_BEARING(target_bearing)` to the Yukon and its onboard PID handles differential steering. The control thread tracks this with a `_nav_bearing_active` flag and clears the bearing hold when `target_bearing` returns `None`.
+- When `target_bearing is None`: `left` / `right` are differential drive values; the caller sends them directly via `CMD_LEFT` / `CMD_RIGHT`.
+
 Diagnostic attributes (readable on the navigator instance):
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `target_bearing` | `float \| None` | Camera-relative bearing to the aim point (degrees) |
+| `target_bearing` | `float \| None` | Camera-relative aim bearing (degrees, with left/right offset applied) |
 | `tag_dist` | `float \| None` | Estimated metric distance to the target tag |
 | `tags_visible` | `int` | Number of ArUco tags visible in the current frame |
 | `bearing_err` | `float \| None` | Signed bearing error (positive = target right of centre) |

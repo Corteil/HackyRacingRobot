@@ -4,8 +4,8 @@ import sys
 import select
 import random
 
-from pimoroni_yukon import Yukon, SLOT2, SLOT3, SLOT4, SLOT5
-from pimoroni_yukon.modules import DualOutputModule, DualMotorModule, LEDStripModule
+from pimoroni_yukon import Yukon, SLOT1, SLOT2, SLOT3, SLOT4, SLOT5, SLOT6
+from pimoroni_yukon.modules import BigMotorModule, DualOutputModule, LEDStripModule
 from pimoroni_yukon.errors import (FaultError, OverVoltageError,
                                    OverCurrentError, OverTemperatureError)
 import rp2
@@ -25,9 +25,8 @@ def _pio_uart_rx():
 # Hardware constants
 LED_A = 'A'
 LED_B = 'B'
-FIRMWARE_VERSION = 2   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
+FIRMWARE_VERSION = 3   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
 UPDATES      = 50
-CURRENT_LIMIT = 2
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
 FAULT_COOLDOWN_MS      = 500   # minimum wait between recovery attempts
@@ -73,25 +72,25 @@ CMD_PATTERN    = 10  # value: high nibble = colour index (0=keep current), low n
                      #        patterns: 0=off, 1=larson, 2=random, 3=rainbow, 4=retro_computer, 5=converge
 CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
 CMD_RC_QUERY = 12  # value: ignored — replies with 14 channel packets + validity byte then ACK
-CMD_BENCH    = 13  # value: 0=disable FPV camera output, 1=enable FPV camera output
+CMD_BENCH    = 13  # value: 0=disable dual power switch output, 1=enable
 RESP_RC_BASE = 8   # response IDs 8-21 = channels 0-13; ID 22 = RC validity flag
 
 # CMD_SENSOR response IDs
 RESP_VOLTAGE = 0   # input voltage × 10          (e.g. 11.2 V → 112)
 RESP_CURRENT = 1   # current × 100               (e.g. 1.21 A → 121)
 RESP_TEMP    = 2   # board temp × 3              (e.g. 22.5 °C → 67)
-RESP_TEMP_L  = 3   # left module temp × 3
-RESP_TEMP_R  = 4   # right module temp × 3
-RESP_FAULT_L = 5   # left fault  (0 or 1)
-RESP_FAULT_R = 6   # right fault (0 or 1)
+RESP_TEMP_L  = 3   # left motor max temp × 3     (max of front-left and rear-left)
+RESP_TEMP_R  = 4   # right motor max temp × 3    (max of front-right and rear-right)
+RESP_FAULT_L = 5   # left fault  (0 or 1)        (OR of front-left and rear-left)
+RESP_FAULT_R = 6   # right fault (0 or 1)        (OR of front-right and rear-right)
 RESP_HEADING = 7   # IMU heading, same encoding as CMD_BEARING (value * 254/359)
                    # Value 255 means IMU not available / heading unknown.
 RESP_PITCH       = 8   # IMU pitch  (nose up/down), encoded (pitch+90)*254/180, 255=absent
                        # Decode: pitch = value * 180/254 - 90  (-90deg..+90deg, ~0.7deg res)
 RESP_ROLL        = 9   # IMU roll   (side tilt),   encoded (roll+180)*254/360, 255=absent
                        # Decode: roll  = value * 360/254 - 180 (-180deg..+180deg, ~1.4deg res)
-RESP_BENCH_TEMP  = 10  # Dual Output module temp x 3 (e.g. 22.5 degC -> 67)
-RESP_BENCH_FAULT = 11  # Dual Output power-good fault (0 or 1)
+RESP_BENCH_TEMP  = 10  # Dual power switch module temp x 3 (e.g. 22.5 degC -> 67)
+RESP_BENCH_FAULT = 11  # Dual power switch power-good fault (0 or 1)
 RESP_FW_VERSION  = 12  # Firmware version (FIRMWARE_VERSION constant; 0 = unknown)
 
 # ── Shared state (protected by _lock) ────────────────────────────────────────
@@ -116,7 +115,7 @@ _rc_channels          = [1500] * 14 # last valid iBUS channel values (µs, 1000-
 _rc_ts                = [0]         # [last_packet_ms] — mutable list avoids 'global' from core 1
 _pi_last_cmd_ms       = 0           # ticks_ms() of last CMD_MODE from Pi (0=never)
 _pi_last_rc_query_ms  = 0           # ticks_ms() of last CMD_RC_QUERY from Pi (0=never)
-_bench_enabled        = False       # tracks Pi CMD_BENCH state; False = FPV camera off at startup
+_pwr_enabled          = True        # dual power switch output on at startup
 
 IBUS_FAILSAFE_MS      = 500   # ms without iBUS packet → zero motors in MANUAL
 PI_FAILSAFE_MS        = 500   # ms without CMD_MODE from Pi → ESTOP
@@ -288,8 +287,8 @@ _STRIP_COLOURS = [
 def _set_strip(r, g, b):
     """Set all NeoPixels to (r, g, b) and push to hardware."""
     for i in range(NUM_LEDS):
-        module1.strip.set_rgb(i, r, g, b)
-    module1.strip.update()
+        mod_led.strip.set_rgb(i, r, g, b)
+    mod_led.strip.update()
 
 
 def _hsv_to_rgb(h):
@@ -326,14 +325,14 @@ def _update_pattern():
         for i in range(NUM_LEDS):
             d = abs(i - _pat_pos)
             if d == 0:
-                module1.strip.set_rgb(i, 255, 0, 0)
+                mod_led.strip.set_rgb(i, 255, 0, 0)
             elif d == 1:
-                module1.strip.set_rgb(i, 48, 0, 0)
+                mod_led.strip.set_rgb(i, 48, 0, 0)
             elif d == 2:
-                module1.strip.set_rgb(i, 8, 0, 0)
+                mod_led.strip.set_rgb(i, 8, 0, 0)
             else:
-                module1.strip.set_rgb(i, 0, 0, 0)
-        module1.strip.update()
+                mod_led.strip.set_rgb(i, 0, 0, 0)
+        mod_led.strip.update()
         _pat_pos += _pat_dir
         if _pat_pos >= NUM_LEDS - 1:
             _pat_dir = -1
@@ -347,35 +346,35 @@ def _update_pattern():
                 r, g, b = _STRIP_COLOURS[idx]
             else:
                 r, g, b = 0, 0, 0
-            module1.strip.set_rgb(i, r, g, b)
-        module1.strip.update()
+            mod_led.strip.set_rgb(i, r, g, b)
+        mod_led.strip.update()
 
     elif _pattern == 3:                             # ── Rainbow ──
         for i in range(NUM_LEDS):
             hue = (_pat_pos + i * (360 // NUM_LEDS)) % 360
             r, g, b = _hsv_to_rgb(hue)
-            module1.strip.set_rgb(i, r, g, b)
-        module1.strip.update()
+            mod_led.strip.set_rgb(i, r, g, b)
+        mod_led.strip.update()
         _pat_pos = (_pat_pos + 8) % 360
 
     elif _pattern == 4:                             # ── Retro Computer ──
         r, g, b = _STRIP_COLOURS[_pat_colour_idx]
         for i in range(NUM_LEDS):
             if random.getrandbits(1):
-                module1.strip.set_rgb(i, r, g, b)
+                mod_led.strip.set_rgb(i, r, g, b)
             else:
-                module1.strip.set_rgb(i, 0, 0, 0)
-        module1.strip.update()
+                mod_led.strip.set_rgb(i, 0, 0, 0)
+        mod_led.strip.update()
 
     elif _pattern == 5:                             # ── Converge ──
         r, g, b = _STRIP_COLOURS[_pat_colour_idx]
         fill = _pat_pos
         for i in range(NUM_LEDS):
             if i < fill or i >= NUM_LEDS - fill:
-                module1.strip.set_rgb(i, r, g, b)
+                mod_led.strip.set_rgb(i, r, g, b)
             else:
-                module1.strip.set_rgb(i, 0, 0, 0)
-        module1.strip.update()
+                mod_led.strip.set_rgb(i, 0, 0, 0)
+        mod_led.strip.update()
         _pat_pos += _pat_dir
         if _pat_pos > NUM_LEDS // 2:
             _pat_dir = -1
@@ -389,18 +388,18 @@ def _update_pattern():
         fr, fg, fb = _STRIP_COLOURS[_pat_colour_idx]
         red = (255, 0, 0) if _pat_pos == 0 else (0, 0, 0)
         for i in range(3):
-            module1.strip.set_rgb(i, red[0], red[1], red[2])
-        module1.strip.set_rgb(3, fr, fg, fb)
-        module1.strip.set_rgb(4, fr, fg, fb)
+            mod_led.strip.set_rgb(i, red[0], red[1], red[2])
+        mod_led.strip.set_rgb(3, fr, fg, fb)
+        mod_led.strip.set_rgb(4, fr, fg, fb)
         for i in range(5, NUM_LEDS):
-            module1.strip.set_rgb(i, red[0], red[1], red[2])
-        module1.strip.update()
+            mod_led.strip.set_rgb(i, red[0], red[1], red[2])
+        mod_led.strip.update()
         _pat_pos = 1 - _pat_pos                     # toggle 0/1
 
 
 # ── Core 1: motor drive loop ──────────────────────────────────────────────────
 
-def motor_core(module_left, module_right,
+def motor_core(motors_left, motors_right,
                ibus_sm, ibus_buf, ibus_st,
                lock, motor_sp, rc_channels, rc_ts,
                fn_poll, fn_decode, fn_angle_diff,
@@ -410,6 +409,7 @@ def motor_core(module_left, module_right,
     Runs on core 1.  All required state is passed as arguments — globals assigned
     only at module load are not reliably accessible from Core 1 on this
     MicroPython build, so nothing is looked up via the global dict.
+    motors_left / motors_right are lists of Motor objects (one per BigMotorModule).
     running_ref is a single-element list [True] so Core 1 can observe shutdown.
     """
     from utime import ticks_ms, ticks_diff, ticks_add
@@ -429,9 +429,9 @@ def motor_core(module_left, module_right,
                 left  = max(-1.0, min(1.0, left  + correction))
                 right = max(-1.0, min(1.0, right - correction))
 
-            for motor in module_left.motors:
+            for motor in motors_left:
                 motor.speed(left)
-            for motor in module_right.motors:
+            for motor in motors_right:
                 motor.speed(-right)
 
             t_end = ticks_add(ticks_ms(), 20)
@@ -450,11 +450,24 @@ def motor_core(module_left, module_right,
 
 # ── Hardware setup ────────────────────────────────────────────────────────────
 
-yukon        = Yukon()
-module_dual  = DualOutputModule()             # dual switched output — SLOT4
-module1      = LEDStripModule(LEDStripModule.NEOPIXEL, pio=0, sm=0, num_leds=NUM_LEDS)
-module2      = DualMotorModule()              # left motors  — SLOT2
-module5      = DualMotorModule()              # right motors — SLOT5
+# Slot assignments:
+#   SLOT1 — rear-right motor   (BigMotorModule)
+#   SLOT2 — front-right motor  (BigMotorModule)
+#   SLOT3 — front-left motor   (BigMotorModule)
+#   SLOT4 — rear-left motor    (BigMotorModule)
+#   SLOT5 — LED strip          (LEDStripModule)
+#   SLOT6 — dual power switch  (DualOutputModule)
+#
+# init_encoder=False avoids PIO state machine conflicts:
+#   PIO0 SM0 = LED strip (mod_led), PIO0 SM1 = iBUS receiver.
+
+yukon   = Yukon()
+mod_rr  = BigMotorModule(init_encoder=False)   # rear-right  — SLOT1
+mod_fr  = BigMotorModule(init_encoder=False)   # front-right — SLOT2
+mod_fl  = BigMotorModule(init_encoder=False)   # front-left  — SLOT3
+mod_rl  = BigMotorModule(init_encoder=False)   # rear-left   — SLOT4
+mod_led = LEDStripModule(LEDStripModule.NEOPIXEL, pio=0, sm=0, num_leds=NUM_LEDS)  # SLOT5
+mod_pwr = DualOutputModule()                   # dual power switch — SLOT6
 
 yukon.set_led(LED_A, False)
 yukon.set_led(LED_B, False)
@@ -470,29 +483,26 @@ except Exception as e:
     print("IMU not available:", e)
 
 try:
-    yukon.register_with_slot(module_dual,  SLOT4)
-    yukon.register_with_slot(module1, SLOT3)
-    yukon.register_with_slot(module2, SLOT2)
-    yukon.register_with_slot(module5, SLOT5)
+    yukon.register_with_slot(mod_rr,  SLOT1)
+    yukon.register_with_slot(mod_fr,  SLOT2)
+    yukon.register_with_slot(mod_fl,  SLOT3)
+    yukon.register_with_slot(mod_rl,  SLOT4)
+    yukon.register_with_slot(mod_led, SLOT5)
+    yukon.register_with_slot(mod_pwr, SLOT6)
     yukon.verify_and_initialise()
     yukon.enable_main_output()
     sleep_ms(500)                # allow main supply to stabilise before enabling modules
 
-    module1.enable()
+    mod_led.enable()
     _set_strip(0, 0, 0)   # strip off at startup
 
-    module2.set_current_limit(CURRENT_LIMIT)
-    module2.enable()
-    for motor in module2.motors:
-        motor.enable()
+    for _mod in (mod_rr, mod_fr, mod_fl, mod_rl):
+        _mod.enable()
+        _mod.motor.enable()
 
-    module5.set_current_limit(CURRENT_LIMIT)
-    module5.enable()
-    for motor in module5.motors:
-        motor.enable()
-
-    # Dual output module: both outputs off at startup; Pi enables via CMD_BENCH.
-    module_dual.disable()
+    # Dual power switch: output on at startup
+    mod_pwr.enable(0)
+    mod_pwr.outputs[0].value(True)
 
     sleep(0.1)   # let motor drivers settle before monitoring starts
 
@@ -508,9 +518,14 @@ try:
     _ibus_sm.active(1)
     print("iBUS SM1 active on GP26")
 
+    # Left = front-left (SLOT3) + rear-left (SLOT4)
+    # Right = front-right (SLOT2) + rear-right (SLOT1); negated in motor_core
+    motors_left  = [mod_fl.motor, mod_rl.motor]
+    motors_right = [mod_fr.motor, mod_rr.motor]
+
     # Launch motor control on core 1
     _thread.start_new_thread(motor_core, (
-        module2, module5,
+        motors_left, motors_right,
         _ibus_sm, _ibus_buf, _ibus_st,
         _lock, _motor_sp, _rc_channels, _rc_ts,
         _ibus_poll, _decode_ibus, _angle_diff,
@@ -659,19 +674,25 @@ try:
                             _send_data(RESP_VOLTAGE, yukon.read_input_voltage() * 10)
                             _send_data(RESP_CURRENT, yukon.read_current()       * 100)
                             _send_data(RESP_TEMP,    yukon.read_temperature()   * 3)
-                            _send_data(RESP_TEMP_L,  module2.read_temperature() * 3)
-                            _send_data(RESP_TEMP_R,  module5.read_temperature() * 3)
-                            _send_data(RESP_FAULT_L, int(module2.read_fault()))
-                            _send_data(RESP_FAULT_R, int(module5.read_fault()))
+                            _send_data(RESP_TEMP_L,
+                                       max(mod_fl.read_temperature(),
+                                           mod_rl.read_temperature()) * 3)
+                            _send_data(RESP_TEMP_R,
+                                       max(mod_fr.read_temperature(),
+                                           mod_rr.read_temperature()) * 3)
+                            _send_data(RESP_FAULT_L,
+                                       int(mod_fl.read_fault() or mod_rl.read_fault()))
+                            _send_data(RESP_FAULT_R,
+                                       int(mod_fr.read_fault() or mod_rr.read_fault()))
                         except Exception as se:
                             print("Sensor error:", se)
                             _nak()
                             state = 'SYNC'
                             break   # skip _ack(); exit inner loop
-                        # Dual output module: optional — send 0 if not ready
+                        # Dual power switch module: optional — send 0 if not ready
                         try:
-                            _send_data(RESP_BENCH_TEMP,  module_dual.read_temperature() * 3)
-                            _send_data(RESP_BENCH_FAULT, int(not module_dual.read_power_good1()))
+                            _send_data(RESP_BENCH_TEMP,  mod_pwr.read_temperature() * 3)
+                            _send_data(RESP_BENCH_FAULT, int(not mod_pwr.read_power_good1()))
                         except Exception:
                             _send_data(RESP_BENCH_TEMP,  0)
                             _send_data(RESP_BENCH_FAULT, 0)
@@ -719,14 +740,14 @@ try:
                         colour_idx = value & 0x0F
                         if led_idx < NUM_LEDS and colour_idx < len(_STRIP_COLOURS):
                             r, g, b = _STRIP_COLOURS[colour_idx]
-                            module1.strip.set_rgb(led_idx, r, g, b)
+                            mod_led.strip.set_rgb(led_idx, r, g, b)
                         else:
                             _nak()
                             state = 'SYNC'
                             break   # skip _ack(); exit inner loop
 
                     elif cmd_code == CMD_PIXEL_SHOW:
-                        module1.strip.update()
+                        mod_led.strip.update()
 
                     elif cmd_code == CMD_PATTERN:
                         colour_nibble = (value >> 4) & 0x0F
@@ -778,13 +799,13 @@ try:
 
                     elif cmd_code == CMD_BENCH:
                         if value == 0:
-                            _bench_enabled = False
-                            module_dual.outputs[0].value(False)
-                            module_dual.disable(0)
+                            _pwr_enabled = False
+                            mod_pwr.outputs[0].value(False)
+                            mod_pwr.disable(0)
                         else:
-                            _bench_enabled = True
-                            module_dual.enable(0)
-                            module_dual.outputs[0].value(True)
+                            _pwr_enabled = True
+                            mod_pwr.enable(0)
+                            mod_pwr.outputs[0].value(True)
 
                     _ack()
                 state = 'SYNC'
@@ -807,8 +828,9 @@ try:
             try:
                 print("Last readings: v=%.2f i=%.3f t=%.1f tL=%.1f tR=%.1f"
                       % (yukon.read_input_voltage(), yukon.read_current(),
-                         yukon.read_temperature(), module2.read_temperature(),
-                         module5.read_temperature()))
+                         yukon.read_temperature(),
+                         max(mod_fl.read_temperature(), mod_rl.read_temperature()),
+                         max(mod_fr.read_temperature(), mod_rr.read_temperature())))
             except Exception:
                 pass
             _lock.acquire()
@@ -842,18 +864,15 @@ try:
             try:
                 yukon.enable_main_output()
                 sleep_ms(500)
-                module2.enable()
-                for motor in module2.motors:
-                    motor.enable()
-                module5.enable()
-                for motor in module5.motors:
-                    motor.enable()
-                if _bench_enabled:
-                    module_dual.enable(0)
-                    module_dual.outputs[0].value(True)
+                for _mod in (mod_rr, mod_fr, mod_fl, mod_rl):
+                    _mod.enable()
+                    _mod.motor.enable()
+                if _pwr_enabled:
+                    mod_pwr.enable(0)
+                    mod_pwr.outputs[0].value(True)
                 else:
-                    module_dual.outputs[0].value(False)
-                    module_dual.disable(0)
+                    mod_pwr.outputs[0].value(False)
+                    mod_pwr.disable(0)
                 _pattern = 0
                 _set_strip(0, 0, 0)     # clear fault pattern after successful recovery
             except Exception as e2:
@@ -867,15 +886,15 @@ try:
         if ticks_diff(now, last_sensor) >= SENSOR_PERIOD:
             last_sensor = now
             try:
-                v  = yukon.read_input_voltage()
-                i  = yukon.read_current()
-                t  = yukon.read_temperature()
-                tL  = module2.read_temperature()
-                tR  = module5.read_temperature()
-                tBP = module_dual.read_temperature()
-                fL  = module2.read_fault()
-                fR  = module5.read_fault()
-                fBP = not module_dual.read_power_good1()
+                v   = yukon.read_input_voltage()
+                i   = yukon.read_current()
+                t   = yukon.read_temperature()
+                tL  = max(mod_fl.read_temperature(), mod_rl.read_temperature())
+                tR  = max(mod_fr.read_temperature(), mod_rr.read_temperature())
+                tPW = mod_pwr.read_temperature()
+                fL  = mod_fl.read_fault() or mod_rl.read_fault()
+                fR  = mod_fr.read_fault() or mod_rr.read_fault()
+                fPW = not mod_pwr.read_power_good1()
                 _lock.acquire()
                 hdg = _current_heading
                 pit = _current_pitch
@@ -883,9 +902,9 @@ try:
                 tgt = _bearing_target
                 _lock.release()
                 tgt_str = 'off' if tgt is None else '%.1f' % tgt
-                print("SENS v=%.2f i=%.3f t=%.1f tL=%.1f tR=%.1f tBP=%.1f fL=%d fR=%d fBP=%d "
+                print("SENS v=%.2f i=%.3f t=%.1f tL=%.1f tR=%.1f tPW=%.1f fL=%d fR=%d fPW=%d "
                       "hdg=%.1f pit=%.1f rol=%.1f tgt=%s"
-                      % (v, i, t, tL, tR, tBP, int(fL), int(fR), int(fBP), hdg, pit, rol, tgt_str))
+                      % (v, i, t, tL, tR, tPW, int(fL), int(fR), int(fPW), hdg, pit, rol, tgt_str))
             except Exception as se:
                 print("Sensor error:", se)
 

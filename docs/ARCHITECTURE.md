@@ -23,9 +23,9 @@ FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
           │            │                  │                │
     Yukon RP2040   front_left/right    LD06 LiDAR    TAU1308 RTK
     main.py        rear (OpenCV)       GPIO12 PWM    NTRIP client
-   SLOT4: DualOutputModule (out0=FPV camera)   ArUco detection
-   SLOT2/SLOT5: DualMotorModule
-   SLOT3: LEDStripModule
+   SLOT1-4: BigMotorModule (rear-right, front-right, front-left, rear-left)
+   SLOT5: LEDStripModule
+   SLOT6: DualOutputModule (out0=FPV camera, on by default)
 ```
 
 Consumers of robot state:
@@ -76,10 +76,14 @@ RC receiver ──► Yukon GP26 (PIO UART) ──► main.py iBUS poll (Core 0)
                               _control_thread (50 Hz) — queries RC channels,
                               sends CMD_MODE heartbeat, runs navigator in AUTO
                                      │
-                              _YukonLink.drive(left, right)   [AUTO only]
+                              navigator.update() → (target_bearing, left, right)
+                                     │
+                              if target_bearing → CMD_BEARING (Yukon PID steers)
+                              else              → CMD_LEFT / CMD_RIGHT (differential)
+                              _nav_bearing_active flag tracks Yukon bearing hold state
                                      │
                               5-byte serial packet ──► Yukon RP2040
-                                                        Core1: applies speeds
+                                                        Core1: applies speeds + bearing PID
                                                         Core0: ACK/NAK + sensors
 
 _Camera._run() × 3  (front_left / front_right / rear)

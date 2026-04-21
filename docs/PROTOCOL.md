@@ -46,7 +46,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_PATTERN`    | 10   | High nibble = colour index (0=keep current), low nibble = pattern (0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge 6=estop_flash) |
 | `CMD_MODE`       | 11   | 0 = MANUAL, 1 = AUTO, 2 = ESTOP. Must be sent at ≥2 Hz as a Pi heartbeat; if absent for 500 ms the Yukon triggers ESTOP. |
 | `CMD_RC_QUERY`   | 12   | Ignored — Yukon replies with 15 RC data packets (14 channels + validity) then ACK |
-| `CMD_BENCH`      | 13   | 0 = disable FPV camera power (DualOutputModule output 0), 1 = enable |
+| `CMD_BENCH`      | 13   | 0 = disable FPV camera power (DualOutputModule output 0, SLOT6), 1 = enable. Output is **on by default** at startup. |
 
 ---
 
@@ -105,15 +105,15 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 | 0  | Voltage           | raw ÷ 10                                             | V    |
 | 1  | Current           | raw ÷ 100                                            | A    |
 | 2  | Board temp        | raw ÷ 3                                              | °C   |
-| 3  | Left module temp  | raw ÷ 3                                              | °C   |
-| 4  | Right module temp | raw ÷ 3                                              | °C   |
-| 5  | Left fault        | 0 or 1                                               | —    |
-| 6  | Right fault       | 0 or 1                                               | —    |
+| 3  | Left motor temp   | `max(front-left, rear-left)` ÷ 3                     | °C   |
+| 4  | Right motor temp  | `max(front-right, rear-right)` ÷ 3                   | °C   |
+| 5  | Left fault        | OR of front-left and rear-left fault signals         | —    |
+| 6  | Right fault       | OR of front-right and rear-right fault signals       | —    |
 | 7  | IMU heading       | same as `CMD_BEARING` (0–254 = 0–359°); 255 = absent | °    |
 | 8  | IMU pitch         | `(pitch + 90) × 254 / 180`; 255 = absent. Decode: `raw × 180 / 254 − 90` (~0.7° res) | ° |
 | 9  | IMU roll          | `(roll + 180) × 254 / 360`; 255 = absent. Decode: `raw × 360 / 254 − 180` (~1.4° res) | ° |
-| 10 | PowerBench temp   | raw ÷ 3                                              | °C   |
-| 11 | PowerBench fault  | 0 or 1                                               | —    |
+| 10 | Dual power switch temp  | raw ÷ 3                                        | °C   |
+| 11 | Dual power switch fault | 0 or 1                                         | —    |
 | 12 | Firmware version  | `FIRMWARE_VERSION` constant from `main.py`; 0 = old firmware (pre-versioning) | — |
 
 `RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x39`).
@@ -139,7 +139,7 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 
 ---
 
-## LED strip (NeoPixel module, SLOT3)
+## LED strip (NeoPixel module, SLOT5)
 
 ### Colour palette
 
