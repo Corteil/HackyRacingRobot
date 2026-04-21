@@ -17,33 +17,209 @@
 # =============================================================================
 
 [course]
-name        = "Test Track A"
-description = "5-gate clockwise circuit, outdoor grass"
+name        = "New Track"
+description = ""
 author      = ""
 version     = 1
 loop        = true
 
 [course.sequence]
-gates = [0, 1]
+gates = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
 [[gate]]
 id            = 0
 label         = "Start / Finish"
-outside_front = 1
-outside_rear  = 101
-inside_front  = 2
-inside_rear   = 100
-width_m       = 1.00
+outside_front = 0
+outside_rear  = 100
+inside_front  = 1
+inside_rear   = 101
+width_m       = 4.00
 heading_hint  = -1.0
 notes         = ""
 
 [[gate]]
 id            = 1
 label         = "Gate 1"
-outside_front = 3
-outside_rear  = 103
-inside_front  = 4
-inside_rear   = 102
+outside_front = 2
+outside_rear  = 102
+inside_front  = 3
+inside_rear   = 103
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 2
+label         = "Gate 2"
+outside_front = 4
+outside_rear  = 104
+inside_front  = 5
+inside_rear   = 105
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 3
+label         = "Gate 3"
+outside_front = 6
+outside_rear  = 106
+inside_front  = 7
+inside_rear   = 107
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 4
+label         = "Gate 4"
+outside_front = 8
+outside_rear  = 108
+inside_front  = 9
+inside_rear   = 109
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 5
+label         = "Gate 5"
+outside_front = 10
+outside_rear  = 110
+inside_front  = 11
+inside_rear   = 111
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 6
+label         = "Gate 6"
+outside_front = 12
+outside_rear  = 112
+inside_front  = 13
+inside_rear   = 113
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 7
+label         = "Gate 7"
+outside_front = 14
+outside_rear  = 114
+inside_front  = 15
+inside_rear   = 115
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 8
+label         = "Gate 8"
+outside_front = 16
+outside_rear  = 116
+inside_front  = 17
+inside_rear   = 117
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 9
+label         = "Gate 9"
+outside_front = 18
+outside_rear  = 118
+inside_front  = 19
+inside_rear   = 119
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 10
+label         = "Gate 10"
+outside_front = 20
+outside_rear  = 120
+inside_front  = 21
+inside_rear   = 121
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 11
+label         = "Gate 11"
+outside_front = 22
+outside_rear  = 122
+inside_front  = 23
+inside_rear   = 123
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 12
+label         = "Gate 12"
+outside_front = 24
+outside_rear  = 124
+inside_front  = 25
+inside_rear   = 125
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 13
+label         = "Gate 13"
+outside_front = 26
+outside_rear  = 126
+inside_front  = 27
+inside_rear   = 127
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 14
+label         = "Gate 14"
+outside_front = 28
+outside_rear  = 128
+inside_front  = 29
+inside_rear   = 129
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 15
+label         = "Gate 15"
+outside_front = 30
+outside_rear  = 130
+inside_front  = 31
+inside_rear   = 131
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 16
+label         = "Gate 16"
+outside_front = 32
+outside_rear  = 132
+inside_front  = 33
+inside_rear   = 133
+width_m       = 1.00
+heading_hint  = -1.0
+notes         = ""
+
+[[gate]]
+id            = 17
+label         = "Gate 17"
+outside_front = 34
+outside_rear  = 134
+inside_front  = 35
+inside_rear   = 135
 width_m       = 1.00
 heading_hint  = -1.0
 notes         = ""
