@@ -240,7 +240,7 @@ class RobotState:
     nav_next_inside_tag:    int             = 3     # front-face tag ID for inside  post of next gate
     nav_next_gate_label:    str             = ""    # human label for next gate
     no_motors:          bool            = False  # drive commands suppressed
-    bench_enabled:      bool            = False  # bench power output disabled at startup (matches firmware)
+    bench_enabled:      bool            = True   # bench power output enabled at startup (matches firmware v3+)
     nav_paused:         bool            = False  # navigator paused (drive commands suppressed in AUTO)
 
 
@@ -274,7 +274,7 @@ class _YukonLink:
                          #        patterns: 0=off 1=larson 2=random 3=rainbow 4=retro_computer 5=converge
     CMD_MODE     = 11  # value: 0=MANUAL, 1=AUTO, 2=ESTOP
     CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
-    CMD_BENCH    = 13  # value: 0=disable FPV camera output, 1=enable
+    CMD_BENCH    = 13  # value: 0=disable dual power switch output, 1=enable
 
     RESP_IDS     = range(13)  # 0..12 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault, 12=fw_version)
     RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
@@ -1939,7 +1939,7 @@ class Robot:
         self._control_hz  = control_hz
         self._no_motors   = no_motors
         self._nav_paused  = False
-        self._bench_enabled = False  # firmware starts with bench output disabled
+        self._bench_enabled = True   # firmware v3+ starts with bench output enabled
         # LED strip config — read directly from robot.ini so it's consistent
         # across all frontends without each one needing to pass these values.
         _ini = configparser.ConfigParser(inline_comment_prefixes=('#',))

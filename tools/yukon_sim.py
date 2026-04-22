@@ -92,6 +92,9 @@ RESP_FAULT_R    = 6
 RESP_HEADING    = 7
 RESP_PITCH      = 8
 RESP_ROLL       = 9
+RESP_FW_VERSION = 12
+
+SIM_FW_VERSION  = 3   # matches FIRMWARE_VERSION in main.py
 
 # iBUS constants (match main.py)
 IBUS_CH_THROTTLE = 2
@@ -137,7 +140,7 @@ _state = {
     'last_imu_tick'       : 0.0,
     'fault_l'             : False,
     'fault_r'             : False,
-    'bench_enabled'       : False,
+    'bench_enabled'       : True,
     'bench_fault'         : False,
     'strip_pixels'        : [(0, 0, 0)] * NUM_LEDS,
     'strip_pattern'       : 0,
@@ -497,6 +500,7 @@ def yukon_server(master_fd):
                         _send_sensor_packet(master_fd, RESP_HEADING, 255)
                         _send_sensor_packet(master_fd, RESP_PITCH,   255)
                         _send_sensor_packet(master_fd, RESP_ROLL,    255)
+                    _send_sensor_packet(master_fd, RESP_FW_VERSION, SIM_FW_VERSION)
                     os.write(master_fd, bytes([ACK]))
                     sm = 'SYNC'
                     continue
@@ -640,7 +644,7 @@ def _draw_headless(yukon_path):
         (f'  Pitch    : {imu_pitch:+.1f}°  Roll: {imu_roll:+.1f}°'
          if imu_present else '  Pitch    : ---  Roll: ---'),
         f'  Brg hold : {tgt_str}{err_str}',
-        f'  Keys     : < decrease heading   > increase heading   I toggle IMU',
+        f'  Keys     : < > heading   [ ] pitch (nose dn/up)   ; \' roll (left/right)   I IMU',
         '--- Status ' + '-' * 51,
         f'  LED A: {"ON " if led_a else "OFF"}  LED B: {"ON " if led_b else "OFF"}'
         f'  Cmds rx: {cmds}',
@@ -702,6 +706,26 @@ def run_headless(yukon_path):
                             _state['imu_heading'] = (
                                 _state['imu_heading'] - IMU_HEADING_STEP
                             ) % 360.0
+                elif ch == ']':
+                    with _lock:
+                        if _state['imu_present']:
+                            _state['imu_pitch'] = max(-90.0, min(90.0,
+                                _state['imu_pitch'] + IMU_HEADING_STEP))
+                elif ch == '[':
+                    with _lock:
+                        if _state['imu_present']:
+                            _state['imu_pitch'] = max(-90.0, min(90.0,
+                                _state['imu_pitch'] - IMU_HEADING_STEP))
+                elif ch == "'":
+                    with _lock:
+                        if _state['imu_present']:
+                            _state['imu_roll'] = max(-180.0, min(180.0,
+                                _state['imu_roll'] + IMU_HEADING_STEP))
+                elif ch == ';':
+                    with _lock:
+                        if _state['imu_present']:
+                            _state['imu_roll'] = max(-180.0, min(180.0,
+                                _state['imu_roll'] - IMU_HEADING_STEP))
                 elif ch in ('i', 'I'):
                     with _lock:
                         _state['imu_present'] = not _state['imu_present']
@@ -732,7 +756,7 @@ def run_gui(yukon_path):
     C_ORANGE  = (240, 140,  40)
     C_RED     = (220,  60,  60)
     C_CYAN    = ( 60, 200, 220)
-    W, H      = 900, 650
+    W, H      = 900, 740
 
     def _panel(surf, rect, title=None):
         pygame.draw.rect(surf, C_PANEL,  rect, border_radius=8)
@@ -873,10 +897,14 @@ def run_gui(yukon_path):
     FONT_SM   = pygame.font.SysFont("monospace", 14)
     FONT_TINY = pygame.font.SysFont("monospace", 11)
 
-    volt_slider = Slider((480, 100, 200, 22), 8.0, 15.0, 12.0,
-                         C_YELLOW, "Voltage (V)", "{:.1f} V")
-    curr_slider = Slider((480, 160, 200, 22), 0.0,  5.0,  0.5,
-                         C_ORANGE, "Current (A)", "{:.2f} A")
+    volt_slider  = Slider((0, 0, 100, 22), 8.0,   15.0,  12.0,
+                          C_YELLOW, "Voltage (V)", "{:.1f} V")
+    curr_slider  = Slider((0, 0, 100, 22), 0.0,    5.0,   0.5,
+                          C_ORANGE, "Current (A)", "{:.2f} A")
+    pitch_slider = Slider((0, 0, 100, 22), -90.0,  90.0,  0.0,
+                          C_CYAN,   "Pitch  [ nose down   ] nose up", "{:+.1f}°")
+    roll_slider  = Slider((0, 0, 100, 22), -180.0, 180.0, 0.0,
+                          C_CYAN,   "Roll   ; left   ' right", "{:+.1f}°")
     fault_left  = False
     fault_right = False
     comp_cx, comp_cy, comp_r = 180, 302, 140
@@ -893,6 +921,8 @@ def run_gui(yukon_path):
                 running = False
             volt_slider.handle_event(event)
             curr_slider.handle_event(event)
+            pitch_slider.handle_event(event)
+            roll_slider.handle_event(event)
             if event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_q, pygame.K_ESCAPE):
                     running = False
@@ -911,6 +941,34 @@ def run_gui(yukon_path):
                         if _state['imu_present']:
                             _state['imu_heading'] = (
                                 _state['imu_heading'] - IMU_HEADING_STEP) % 360.0
+                elif event.key == pygame.K_RIGHTBRACKET:
+                    with _lock:
+                        if _state['imu_present']:
+                            new = max(-90.0, min(90.0,
+                                _state['imu_pitch'] + IMU_HEADING_STEP))
+                            _state['imu_pitch'] = new
+                            pitch_slider.value  = new
+                elif event.key == pygame.K_LEFTBRACKET:
+                    with _lock:
+                        if _state['imu_present']:
+                            new = max(-90.0, min(90.0,
+                                _state['imu_pitch'] - IMU_HEADING_STEP))
+                            _state['imu_pitch'] = new
+                            pitch_slider.value  = new
+                elif event.key == pygame.K_QUOTE:
+                    with _lock:
+                        if _state['imu_present']:
+                            new = max(-180.0, min(180.0,
+                                _state['imu_roll'] + IMU_HEADING_STEP))
+                            _state['imu_roll'] = new
+                            roll_slider.value  = new
+                elif event.key == pygame.K_SEMICOLON:
+                    with _lock:
+                        if _state['imu_present']:
+                            new = max(-180.0, min(180.0,
+                                _state['imu_roll'] - IMU_HEADING_STEP))
+                            _state['imu_roll'] = new
+                            roll_slider.value  = new
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 dx, dy = mx - comp_cx, my - comp_cy
@@ -919,15 +977,16 @@ def run_gui(yukon_path):
                     with _lock:
                         if _state['imu_present']:
                             _state['imu_heading'] = angle
-                imu_btn_rect = pygame.Rect(480, 220, 200, 36)
+                # Button rects derived from ctrl_panel = (620, 82, 270, ...)
+                imu_btn_rect = pygame.Rect(632, 237, 246, 36)
                 if imu_btn_rect.collidepoint(mx, my):
                     with _lock:
                         _state['imu_present'] = not _state['imu_present']
                         if not _state['imu_present']:
                             _state['bearing_target'] = None
-                fault_l_rect = pygame.Rect(480, 280,  95, 36)
-                fault_r_rect = pygame.Rect(585, 280,  95, 36)
-                reset_f_rect = pygame.Rect(480, 330, 200, 36)
+                fault_l_rect = pygame.Rect(632, 292, 121, 36)
+                fault_r_rect = pygame.Rect(757, 292, 121, 36)
+                reset_f_rect = pygame.Rect(632, 340, 246, 36)
                 if fault_l_rect.collidepoint(mx, my):
                     fault_left  = not fault_left
                 if fault_r_rect.collidepoint(mx, my):
@@ -939,6 +998,14 @@ def run_gui(yukon_path):
         SIM_VOLTAGE = volt_slider.value
         SIM_CURRENT = curr_slider.value
         with _lock:
+            if _state['imu_present']:
+                _state['imu_pitch'] = max(-90.0,  min(90.0,  pitch_slider.value))
+                _state['imu_roll']  = max(-180.0, min(180.0, roll_slider.value))
+                pitch_slider.value  = _state['imu_pitch']
+                roll_slider.value   = _state['imu_roll']
+            else:
+                pitch_slider.value = 0.0
+                roll_slider.value  = 0.0
             prev_fl = _state.get('fault_l', False)
             prev_fr = _state.get('fault_r', False)
             _state['fault_l'] = fault_left
@@ -980,7 +1047,7 @@ def run_gui(yukon_path):
             nm_t = FONT_SM.render("[NO-MOTORS]", True, C_ORANGE)
             screen.blit(nm_t, (W - nm_t.get_width() - 16, 40))
         hint = FONT_SM.render(
-            "< > = heading   I = IMU toggle   Q = quit   click compass = set heading",
+            "< > heading   [ ] pitch   ; ' roll   I IMU toggle   Q quit   click compass",
             True, C_GRAY)
         screen.blit(hint, (W//2 - hint.get_width()//2, 50))
 
@@ -1034,44 +1101,52 @@ def run_gui(yukon_path):
         bench_str = ('ON' + (' FAULT' if bench_fault else '')) if bench_enabled else 'OFF'
         _label(screen, f"Bench   : {bench_str}", stat_panel.x+12, stat_panel.y+122, bench_col)
 
-        # IMU pitch/roll
-        imu_panel = pygame.Rect(370, 492, 240, 65)
-        _panel(screen, imu_panel, "IMU")
+        # IMU pitch/roll  (y=515 keeps clear of stat_panel which ends at y=507)
+        imu_panel = pygame.Rect(370, 515, 240, 85)
+        _panel(screen, imu_panel, "IMU Orientation")
         imu_col = C_GRAY if not imu_present else C_WHITE
         _label(screen, (f"Pitch: {imu_pitch:+.1f}°" if imu_present else "Pitch: ---"),
                imu_panel.x+12, imu_panel.y+26, imu_col)
         _label(screen, (f"Roll:  {imu_roll:+.1f}°"  if imu_present else "Roll:  ---"),
-               imu_panel.x+12+110, imu_panel.y+26, imu_col)
+               imu_panel.x+12, imu_panel.y+52, imu_col)
 
-        # Controls
-        ctrl_panel = pygame.Rect(620, 82, 270, 400)
+        # Controls  (height=470 to fit pitch/roll sliders)
+        ctrl_panel = pygame.Rect(620, 82, 270, 470)
         _panel(screen, ctrl_panel, "Controls")
-        volt_slider.rect = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+40,  ctrl_panel.width-24, 22)
-        curr_slider.rect = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+100, ctrl_panel.width-24, 22)
+        volt_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+40,  ctrl_panel.width-24, 22)
+        curr_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+100, ctrl_panel.width-24, 22)
         volt_slider.draw(screen)
         curr_slider.draw(screen)
         imu_btn_r = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+155, ctrl_panel.width-24, 36)
         imu_col2  = C_GREEN if imu_present else C_RED
         _button(screen, imu_btn_r, f"IMU: {'PRESENT' if imu_present else 'ABSENT'}",
                 imu_col2, active=imu_present)
-        fault_l_r = pygame.Rect(ctrl_panel.x+12,          ctrl_panel.y+210, (ctrl_panel.width-28)//2, 36)
-        fault_r_r = pygame.Rect(fault_l_r.right+4,        ctrl_panel.y+210, (ctrl_panel.width-28)//2, 36)
-        reset_f_r = pygame.Rect(ctrl_panel.x+12,          ctrl_panel.y+258, ctrl_panel.width-24, 36)
+        fault_l_r = pygame.Rect(ctrl_panel.x+12,   ctrl_panel.y+210, (ctrl_panel.width-28)//2, 36)
+        fault_r_r = pygame.Rect(fault_l_r.right+4, ctrl_panel.y+210, (ctrl_panel.width-28)//2, 36)
+        reset_f_r = pygame.Rect(ctrl_panel.x+12,   ctrl_panel.y+258, ctrl_panel.width-24, 36)
         _button(screen, fault_l_r, "Fault L", C_RED,  active=fault_left)
         _button(screen, fault_r_r, "Fault R", C_RED,  active=fault_right)
         _button(screen, reset_f_r, "Clear Faults", C_GRAY)
-        hl = pygame.Rect(ctrl_panel.x+12,              ctrl_panel.y+310, 80, 36)
-        hr = pygame.Rect(ctrl_panel.right-12-80,       ctrl_panel.y+310, 80, 36)
+        _label(screen, "Heading", ctrl_panel.x+12, ctrl_panel.y+302, C_GRAY)
+        hl = pygame.Rect(ctrl_panel.x+12,        ctrl_panel.y+318, 80, 32)
+        hr = pygame.Rect(ctrl_panel.right-12-80, ctrl_panel.y+318, 80, 32)
         _button(screen, hl, "< -5°", C_CYAN)
         _button(screen, hr, "+5° >", C_CYAN)
+        pitch_slider.rect = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+376, ctrl_panel.width-24, 22)
+        roll_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+430, ctrl_panel.width-24, 22)
+        if not imu_present:
+            pitch_slider.value = 0.0
+            roll_slider.value  = 0.0
+        pitch_slider.draw(screen)
+        roll_slider.draw(screen)
 
-        # LED strip
-        strip_panel = pygame.Rect(10, 492, W - 20, 95)
+        # LED strip  (y=610 keeps clear of imu_panel which ends at y=600)
+        strip_panel = pygame.Rect(10, 610, W - 20, 72)
         _panel(screen, strip_panel, "LED Strip")
-        sq_sz = 80; sq_h = 46
+        sq_sz = 80; sq_h = 40
         gap   = NUM_LEDS * sq_sz + (NUM_LEDS - 1) * 10
         off_x = strip_panel.x + (strip_panel.width - gap) // 2
-        sq_y  = strip_panel.y + 34
+        sq_y  = strip_panel.y + 26
         for i, (pr, pg, pb) in enumerate(strip_pixels):
             sx = off_x + i * (sq_sz + 10)
             sq = pygame.Rect(sx, sq_y, sq_sz, sq_h)
@@ -1085,7 +1160,7 @@ def run_gui(yukon_path):
         # Footer
         pygame.draw.line(screen, C_BORDER, (10, H-42), (W-10, H-42), 1)
         footer = FONT_SM.render(
-            "Click compass to set heading  ·  < >  nudge  ·  I  toggle IMU  ·  Q  quit",
+            "< > heading  ·  [ ] pitch  ·  ; ' roll  ·  I IMU toggle  ·  Q quit",
             True, C_GRAY)
         screen.blit(footer, (W//2 - footer.get_width()//2, H - 30))
 
@@ -1170,6 +1245,24 @@ def _build_web_app():
                 _state['imu_present'] = not _state['imu_present']
                 if not _state['imu_present']:
                     _state['bearing_target'] = None
+        elif cmd == 'set_pitch':
+            with _lock:
+                if _state['imu_present']:
+                    _state['imu_pitch'] = max(-90.0, min(90.0, float(val)))
+        elif cmd == 'nudge_pitch':
+            with _lock:
+                if _state['imu_present']:
+                    _state['imu_pitch'] = max(-90.0, min(90.0,
+                        _state['imu_pitch'] + float(val)))
+        elif cmd == 'set_roll':
+            with _lock:
+                if _state['imu_present']:
+                    _state['imu_roll'] = max(-180.0, min(180.0, float(val)))
+        elif cmd == 'nudge_roll':
+            with _lock:
+                if _state['imu_present']:
+                    _state['imu_roll'] = max(-180.0, min(180.0,
+                        _state['imu_roll'] + float(val)))
         elif cmd == 'set_voltage':
             SIM_VOLTAGE = max(8.0, min(15.0, float(val)))
         elif cmd == 'set_current':
@@ -1383,6 +1476,27 @@ button.active{background:#1a2a1a}
       <button class="btn-cyan" onclick="nudge(+10)">+10&#176;</button>
       <button class="btn-cyan" onclick="nudge(+45)">+45&#176;</button>
     </div>
+    <h2 style="margin-top:8px">Pitch / Roll</h2>
+    <div class="slider-row">
+      <label>Pitch (nose up/down)</label>
+      <input type="range" id="pitch-slider" min="-90" max="90" step="1" value="0"
+             oninput="pitchInput(this.value)">
+      <div class="slider-val" id="pitch-val">+0.0&#176;</div>
+    </div>
+    <div class="slider-row">
+      <label>Roll (side tilt)</label>
+      <input type="range" id="roll-slider" min="-180" max="180" step="1" value="0"
+             oninput="rollInput(this.value)">
+      <div class="slider-val" id="roll-val">+0.0&#176;</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-cyan" onclick="sendVal('nudge_pitch',-15)">Nose -15&#176;</button>
+      <button class="btn-cyan" onclick="sendVal('nudge_pitch',+15)">Nose +15&#176;</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-cyan" onclick="sendVal('nudge_roll',-15)">Roll -15&#176;</button>
+      <button class="btn-cyan" onclick="sendVal('nudge_roll',+15)">Roll +15&#176;</button>
+    </div>
   </div>
 </div>
 <div class="strip-wrap">
@@ -1484,6 +1598,12 @@ function applyState(s) {
     el('volt-slider').value=s.voltage; el('volt-val').textContent=s.voltage.toFixed(1)+' V';}
   if(document.activeElement!==el('curr-slider')){
     el('curr-slider').value=s.current; el('curr-val').textContent=s.current.toFixed(2)+' A';}
+  if(document.activeElement!==el('pitch-slider')){
+    el('pitch-slider').value=s.imu_pitch;
+    el('pitch-val').textContent=(s.imu_pitch>=0?'+':'')+s.imu_pitch.toFixed(1)+'°';}
+  if(document.activeElement!==el('roll-slider')){
+    el('roll-slider').value=s.imu_roll;
+    el('roll-val').textContent=(s.imu_roll>=0?'+':'')+s.imu_roll.toFixed(1)+'°';}
 }
 async function sendCmd(cmd,value){
   const body={cmd};
@@ -1496,6 +1616,8 @@ function nudge(deg){sendCmd('nudge_heading',deg);}
 function toggleImu(){sendCmd('toggle_imu');}
 el('volt-slider').oninput=function(){el('volt-val').textContent=parseFloat(this.value).toFixed(1)+' V';sendVal('set_voltage',this.value);};
 el('curr-slider').oninput=function(){el('curr-val').textContent=parseFloat(this.value).toFixed(2)+' A';sendVal('set_current',this.value);};
+function pitchInput(v){const f=parseFloat(v);el('pitch-val').textContent=(f>=0?'+':'')+f.toFixed(1)+'°';sendVal('set_pitch',v);}
+function rollInput(v){const f=parseFloat(v);el('roll-val').textContent=(f>=0?'+':'')+f.toFixed(1)+'°';sendVal('set_roll',v);}
 let evtSrc=null;
 function connect(){
   if(evtSrc)evtSrc.close();
