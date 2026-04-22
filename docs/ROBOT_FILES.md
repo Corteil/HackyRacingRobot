@@ -76,8 +76,8 @@ robot.start_cam_recording(cam='all') # cam: 'all' | 'front_left' | 'front_right'
 robot.stop_cam_recording(cam='all') # returns list of saved file paths
 robot.is_cam_recording(cam='any')   # cam='any' returns True if any camera is recording
 
-# FPV camera power (DualOutputModule output 0 in SLOT6; on by default at startup)
-robot.set_bench(on: bool)           # enable / disable FPV camera power output
+# Dual power switch output (DualOutputModule output 0 in SLOT6; on by default at startup)
+robot.set_bench(on: bool)           # enable / disable bench/accessory power switch output
 
 # No-motors mode (runtime toggle — also set by --no-motors at startup)
 robot.set_no_motors(on: bool)       # suppress drive commands; Yukon receives CMD_MODE=ESTOP
@@ -227,7 +227,7 @@ The 2×2 panel layout is configurable via `[layout_presets]` in `robot.ini`.  Do
 - No-motors warning banner
 - GPS logging badge
 - Camera recording and ML data logging buttons
-- FPV camera power toggle
+- Bench/accessory power switch toggle
 - Terminal log panel with filter bar and auto-scroll
 - Configurable layout presets (Race / Setup / Nav etc.) via `[layout_presets]` in `robot.ini`
 

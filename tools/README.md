@@ -233,7 +233,7 @@ Tests covered:
 
 ### test_leds.py
 
-Host-side tests for the NeoPixel LED strip module (SLOT3).
+Host-side tests for the NeoPixel LED strip module (SLOT5).
 Tests all colour presets, individual pixel control, `set_pixels()`, and all built-in patterns.
 
 ```
@@ -640,6 +640,14 @@ Creates a virtual serial port (PTY) that emulates `/dev/ttyACM0`:
 - Returns simulated sensor data for `CMD_SENSOR` and RC channel data for `CMD_RC_QUERY`.
 - Tracks `--no-motors` mode (sees `CMD_RC_QUERY` but no `CMD_MODE` heartbeat).
 - Optionally reads live RC channels from `ibus_sim.py` via `--ibus-port`.
+
+Simulated IMU controls (when IMU toggle is enabled):
+
+| GUI keys | Web UI | Effect |
+|----------|--------|--------|
+| `]` / `[` | Pitch slider / ±15° nudge | Pitch nose-up / nose-down (−90°…+90°) |
+| `'` / `;` | Roll slider / ±15° nudge | Roll right / left (−180°…+180°) |
+| Heading slider | Heading slider / ±15° nudge | Compass heading (0°…360°) |
 
 | Flag | Default | Description |
 |------|---------|-------------|

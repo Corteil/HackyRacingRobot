@@ -25,7 +25,7 @@ FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
     main.py        rear (OpenCV)       GPIO12 PWM    NTRIP client
    SLOT1-4: BigMotorModule (rear-right, front-right, front-left, rear-left)
    SLOT5: LEDStripModule
-   SLOT6: DualOutputModule (out0=FPV camera, on by default)
+   SLOT6: DualOutputModule (out0=bench/accessory power switch, on by default)
 ```
 
 Consumers of robot state:
