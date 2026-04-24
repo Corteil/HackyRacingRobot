@@ -3048,7 +3048,7 @@ class Robot:
                             aruco_state, getattr(_nav_cam, '_capture_w', self._cam_width),
                             heading = heading,
                         )
-                        if self._yukon:
+                        if self._yukon and not self._no_motors:
                             try:
                                 if nav_bearing is not None:
                                     self._yukon.set_bearing(nav_bearing)
@@ -3072,7 +3072,7 @@ class Robot:
                     gps_left, gps_right = self._gps_navigator.update(
                         gps_state,
                         imu_heading = heading,
-                        yukon       = self._yukon,
+                        yukon       = None if self._no_motors else self._yukon,
                     )
                     self.drive(gps_left, gps_right)
                     left, right = self._auto_left, self._auto_right

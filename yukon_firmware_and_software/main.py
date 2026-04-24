@@ -721,9 +721,11 @@ try:
                             _bearing_target = None
                             _lock.release()
                         elif _imu_ok:
-                            _lock.acquire()
-                            _bearing_target = _bearing_decode(value)
-                            _lock.release()
+                            if _rc_mode != RC_ESTOP:
+                                _lock.acquire()
+                                _bearing_target = _bearing_decode(value)
+                                _lock.release()
+                            # else: silently ignore in ESTOP, mirror CMD_LEFT/CMD_RIGHT behaviour
                         else:
                             _nak()   # NAK: no IMU fitted
                             state = 'SYNC'
