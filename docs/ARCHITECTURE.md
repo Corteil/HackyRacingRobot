@@ -17,9 +17,10 @@ FlySky TX ──iBUS──► RC Receiver ──► Yukon GP26 (PIO UART)
                     │  │  │  │
           ┌─────────┘  │  │  └──────────────┐
           │            │  │                 │
-    _YukonLink      _Camera ×3          _Lidar           _Gps
-   (USB serial)   (picamera2/OpenCV)  (LD06 UART)    (GNSS UART)
-   /dev/yukon     aruco_detector       /dev/ttyAMA0   /dev/gnss
+    _YukonLink      _Camera ×3               _Lidar           _Gps
+   (USB serial)   (picamera2/OpenCV)       (LD06 UART)    (GNSS UART)
+   /dev/yukon     aruco_detector           /dev/ttyAMA0   /dev/gnss
+                  robot_detector (Hailo)
           │            │                  │                │
     Yukon RP2040   front_left/right    LD06 LiDAR    TAU1308 RTK
     main.py        rear (OpenCV)       GPIO12 PWM    NTRIP client
@@ -39,7 +40,7 @@ Consumers of robot state:
 | File | Role |
 |------|------|
 | `yukon_firmware_and_software/main.py` | MicroPython firmware on the Yukon RP2040. Core 1 drives motors; Core 0 parses serial commands and monitors health |
-| `robot_daemon.py` | Pi-side daemon. Owns all subsystem threads; exposes `get_state()`, `get_frame(cam)`, `get_aruco_state(cam)` |
+| `robot_daemon.py` | Pi-side daemon. Owns all subsystem threads; exposes `get_state()`, `get_frame(cam)`, `get_aruco_state(cam)`, `get_robot_detection(cam)` |
 | `robot_dashboard.py` | Unified Flask web dashboard (port 5000) — 2×2 configurable panel grid on desktop/touchscreen; tab view on mobile |
 | `camera_monitor.py` | Standalone pygame camera tool — resolution cycling, ArUco overlay, sharpness, lens calibration toggle, spacebar capture |
 | `camera_web.py` | Standalone mobile Flask camera tool with MJPEG stream, ArUco toggle, calibration toggle, capture (port 8080) |
@@ -47,6 +48,7 @@ Consumers of robot state:
 | `drivers/ibus.py` | FlySky iBUS reader library (32-byte packets, 14 channels) |
 | `drivers/ld06.py` | LD06 LiDAR driver (47-byte packets, CRC8, `LidarScan` dataclass) |
 | `robot/aruco_detector.py` | OpenCV ArUco wrapper (corners, ID, distance, bearing) |
+| `robot/robot_detector.py` | YOLOv8n robot detector running on the Hailo-10H AI HAT+ 2; returns `RobotDetection` with bounding boxes and confidence scores |
 | `robot/camera_controls.py` | Shared camera constants, helpers, and `CalibrationMaps` class used by `camera_monitor.py` and `camera_web.py` |
 | `robot/aruco_navigator.py` | Autonomous gate navigator — state machine (SEARCHING → ALIGNING → APPROACHING → PASSING → COMPLETE, RECOVERING on gate loss) with IMU heading hold |
 | `robot/gps_navigator.py` | GPS waypoint navigator |
@@ -89,9 +91,10 @@ RC receiver ──► Yukon GP26 (PIO UART) ──► main.py iBUS poll (Core 0)
 _Camera._run() × 3  (front_left / front_right / rear)
     front_left / front_right: picamera2 CSI (IMX296, 180° rotation)
     rear: OpenCV UVC (IMX477, rotation=0, mirror=true)
-    ──► capture_array() ──► BGR→RGB ──► rotate ──► ArUco detect
+    ──► capture_array() ──► BGR→RGB ──► rotate ──► post to ArUco queue
+                                                 ──► post to robot-det queue
     ──► RobotState.cam_front_left_ok / cam_front_right_ok / cam_rear_ok,
-        latest frame and aruco_state per camera
+        latest frame, aruco_state, robot_detection per camera
 
 _Lidar._run() ──► LD06 packets ──► LidarScan(angles, distances)
                ──► RobotState.lidar
@@ -132,6 +135,8 @@ class RobotState:
     cam_rear_recording:        bool
     gate_confirmed:            bool  # rear camera confirmed last gate passage
     current_gate_id:           int
+    robot_det_ok:   bool            # True when robot detector is running
+    robot_count:    int             # number of other robots visible in current frame
     lidar_ok:       bool
     gps_ok:         bool
     gps_logging:    bool
@@ -183,7 +188,9 @@ All subsystem threads are daemon threads (die when the main process exits).
 | Thread name     | Owner              | Frequency   | Responsibility |
 |-----------------|--------------------|-------------|----------------|
 | `yukon_rx`      | `_YukonLink`       | event-driven| Read ACK/NAK/sensor packets from Yukon |
-| `camera`        | `_Camera`          | 30 Hz (cfg) | Capture, rotate, ArUco detect, store latest frame |
+| `camera`        | `_Camera`          | 30 Hz (cfg) | Capture, rotate, store latest frame; post to ArUco and robot-det queues |
+| `aruco`         | `_Camera`          | async       | ArUco detection in dedicated thread; pulls from camera queue (one per camera) |
+| `robot-det`     | `_Camera`          | async       | YOLOv8n robot detection on Hailo-10H; pulls from camera queue (one per enabled camera) |
 | `ld06`          | `LD06`             | packet-driven | Parse LD06 LiDAR packets, update latest scan |
 | `gps`           | `_Gps`             | NMEA rate   | Parse NMEA sentences, inject RTCM |
 | `gps_log`       | `Robot`            | 5 Hz (cfg)  | Write GPS CSV log when enabled |

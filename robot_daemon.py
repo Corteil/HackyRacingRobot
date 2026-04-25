@@ -83,6 +83,13 @@ except ImportError:
     _DEPTH_ESTIMATOR_AVAILABLE = False
     log.debug("depth_estimator not available — hailort may not be installed")
 
+try:
+    from robot.robot_detector import RobotDetector, RobotDetection
+    _ROBOT_DETECTOR_AVAILABLE = True
+except ImportError:
+    _ROBOT_DETECTOR_AVAILABLE = False
+    log.debug("robot_detector not available — hailort may not be installed")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Mode
@@ -255,6 +262,8 @@ class RobotState:
     no_motors:          bool            = False  # drive commands suppressed
     bench_enabled:      bool            = True   # bench power output enabled at startup (matches firmware v3+)
     nav_paused:         bool            = False  # navigator paused (drive commands suppressed in AUTO)
+    robot_det_ok:       bool            = False  # True when robot detector is running
+    robot_count:        int             = 0      # number of other robots visible in current frame
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -790,15 +799,19 @@ class _Camera:
                  fps:             int   = 30,
                  rotation:        int   = 0,
                  mirror:          bool  = False,
-                 enable_aruco:    bool  = False,
-                 aruco_dict:      str   = 'DICT_4X4_1000',
+                 enable_aruco:          bool  = False,
+                 aruco_dict:            str   = 'DICT_4X4_1000',
                  calib_file:      str   = None,
                  tag_size:        float = 0.15,
                  area_k:          float = 0.0,
                  hfov:            float = 0.0,
-                 max_rec_minutes: float = 0.0,
-                 rec_dir:         str   = '',
-                 name:            str   = 'camera'):      # label for log messages
+                 max_rec_minutes:       float = 0.0,
+                 rec_dir:               str   = '',
+                 enable_robot_detector: bool  = False,
+                 robot_det_model:       str   = '',
+                 robot_det_conf:        float = 0.45,
+                 robot_det_iou:         float = 0.45,
+                 name:                  str   = 'camera'):      # label for log messages
         self._driver         = driver.lower()
         self._camera_num     = camera_num
         self._device         = device
@@ -827,6 +840,13 @@ class _Camera:
         self._stop           = threading.Event()
         self._ok             = False
         self._aruco_ok       = False
+        self._robot_det_enabled = enable_robot_detector
+        self._robot_det_model   = robot_det_model
+        self._robot_det_conf    = robot_det_conf
+        self._robot_det_iou     = robot_det_iou
+        self._robot_det_state   = None   # RobotDetection or None
+        self._robot_det_q       = queue.Queue(maxsize=1)
+        self._robot_det_ok      = False
         self._lens_cap        = False  # True when frame mean brightness is near zero
         self._lens_cap_count  = 0     # consecutive black-frame counter (debounce)
         self._lens_clear_count = 0    # consecutive bright-frame counter (debounce)
@@ -854,6 +874,10 @@ class _Camera:
         if self._aruco_enabled:
             t = threading.Thread(target=self._run_aruco, daemon=True,
                                  name=f"aruco-{self._name}")
+            t.start()
+        if self._robot_det_enabled:
+            t = threading.Thread(target=self._run_robot_detector, daemon=True,
+                                 name=f"robot-det-{self._name}")
             t.start()
 
     def _run(self):
@@ -940,6 +964,39 @@ class _Camera:
                 self._aruco_state = aruco_state
                 self._aruco_ok    = aruco_state is not None
 
+    def _run_robot_detector(self):
+        """Dedicated robot detection thread (mirrors _run_aruco pattern).
+
+        Initialises RobotDetector once, then processes frames from
+        _robot_det_q (maxsize=1 — always latest, older dropped).
+        """
+        if not _ROBOT_DETECTOR_AVAILABLE:
+            log.warning(f"{self._name}: robot_detector module unavailable")
+            return
+        det = RobotDetector(
+            model_path = self._robot_det_model,
+            conf       = self._robot_det_conf,
+            iou        = self._robot_det_iou,
+        )
+        if not det.available:
+            log.warning(f"{self._name}: robot detector not available "
+                        f"(HEF missing or Hailo init failed)")
+            return
+        while not self._stop.is_set():
+            try:
+                frame = self._robot_det_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                detection = det.detect(frame)
+            except Exception as e:
+                log.debug(f"{self._name}: robot detector error: {e}")
+                continue
+            with self._lock:
+                self._robot_det_state = detection
+                self._robot_det_ok    = detection is not None
+        det.stop()
+
     def _process_frame(self, frame, cv2):
         """Mirror, rotate, post full-res frame to ArUco thread, then downscale.
 
@@ -981,6 +1038,11 @@ class _Camera:
                 self._aruco_q.put_nowait(frame)
             except queue.Full:
                 pass   # ArUco thread still busy — skip this frame
+        if self._robot_det_enabled:
+            try:
+                self._robot_det_q.put_nowait(frame)
+            except queue.Full:
+                pass   # detector still busy — skip this frame
         if (self._capture_w != self._display_w or
                 self._capture_h != self._display_h):
             display = cv2.resize(frame, (self._display_w, self._display_h),
@@ -1139,6 +1201,15 @@ class _Camera:
         """Return latest :class:`~aruco_detector.ArUcoState` or None."""
         with self._lock:
             return self._aruco_state
+
+    def get_robot_detection(self):
+        """Return latest :class:`~robot_detector.RobotDetection` or None."""
+        with self._lock:
+            return self._robot_det_state
+
+    @property
+    def robot_det_ok(self):
+        return self._robot_det_ok
 
     @property
     def ok(self):
@@ -2046,6 +2117,14 @@ class Robot:
         _ini_cam = configparser.ConfigParser(inline_comment_prefixes=('#',))
         _ini_cam.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ini'))
 
+        _rd_enabled = _ini_cam.getboolean('robot_detector', 'enabled', fallback=False)
+        _rd_model   = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            _ini_cam.get('robot_detector', 'model', fallback='models/robot_detector.hef').strip(),
+        )
+        _rd_conf = _ini_cam.getfloat('robot_detector', 'conf', fallback=0.45)
+        _rd_iou  = _ini_cam.getfloat('robot_detector', 'iou',  fallback=0.45)
+
         def _make_camera(section, name):
             """Build a _Camera from a named [camera_*] ini section."""
             if _ini_cam.getboolean(section, 'disabled', fallback=True):
@@ -2070,6 +2149,12 @@ class Robot:
                 calib_file      = _ini_cam.get(section, 'calib_file', fallback='') or None,
                 max_rec_minutes = self._max_rec_minutes,
                 rec_dir         = self._rec_dir,
+                enable_robot_detector = (
+                    _rd_enabled and
+                    _ini_cam.getboolean(section, 'robot_detector', fallback=False)),
+                robot_det_model = _rd_model,
+                robot_det_conf  = _rd_conf,
+                robot_det_iou   = _rd_iou,
                 name            = name,
             )
 
@@ -2340,6 +2425,21 @@ class Robot:
             no_motors          = self._no_motors,
             bench_enabled      = self._bench_enabled,
             nav_paused         = self._nav_paused,
+            robot_det_ok  = bool(
+                (self._camera         and self._camera.robot_det_ok) or
+                (self._cam_front_left and self._cam_front_left.robot_det_ok) or
+                (self._cam_front_right and self._cam_front_right.robot_det_ok)),
+            robot_count   = max(
+                (self._camera.get_robot_detection().count
+                 if self._camera and self._camera.robot_det_ok
+                    and self._camera.get_robot_detection() else 0),
+                (self._cam_front_left.get_robot_detection().count
+                 if self._cam_front_left and self._cam_front_left.robot_det_ok
+                    and self._cam_front_left.get_robot_detection() else 0),
+                (self._cam_front_right.get_robot_detection().count
+                 if self._cam_front_right and self._cam_front_right.robot_det_ok
+                    and self._cam_front_right.get_robot_detection() else 0),
+            ),
         )
 
     def get_heading(self) -> Optional[float]:
@@ -2515,6 +2615,11 @@ class Robot:
         """Return latest ArUcoState for *cam*, or None."""
         c = self._cam(cam)
         return c.get_aruco_state() if c else None
+
+    def get_robot_detection(self, cam: str = 'front_left'):
+        """Return latest RobotDetection for *cam*, or None."""
+        c = self._cam(cam)
+        return c.get_robot_detection() if c else None
 
     def set_aruco_enabled(self, enabled: bool, cam: str = 'all'):
         """Enable or disable ArUco detection. cam='all' affects every camera."""

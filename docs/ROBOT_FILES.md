@@ -61,7 +61,8 @@ robot.start()                       # connect hardware, launch all threads
 state = robot.get_state()           # RobotState snapshot (thread-safe)
 frame = robot.get_frame(cam='front_left')      # latest camera frame (numpy RGB) or None
                                                # cam: 'front_left' | 'front_right' | 'rear'
-aruco = robot.get_aruco_state(cam='front_left') # latest ArUcoState or None
+aruco = robot.get_aruco_state(cam='front_left')      # latest ArUcoState or None
+det   = robot.get_robot_detection(cam='front_left')  # latest RobotDetection or None
 hdg   = robot.get_heading()         # IMU heading in degrees or None
 
 # Per-camera ArUco control
@@ -491,6 +492,65 @@ merged = merge_aruco_states(state_left, state_right)
 
 ---
 
+#### robot/robot_detector.py
+
+YOLOv8n racing robot detector running on the Hailo-10H AI HAT+ 2.  Detects
+other robots in RGB camera frames using a custom-trained model compiled to HEF
+format.  Follows the same thread and queue pattern as `aruco_detector.py` —
+a dedicated `robot-det` thread per camera pulls full-resolution frames from a
+`queue.Queue(maxsize=1)` and writes results under the camera lock.
+
+The model is trained on race footage and compiled via the pipeline in
+`docs/robot_detector_training.html`.  Place the compiled `.hef` at the path
+configured in `[robot_detector] model` in `robot.ini`, then enable per camera:
+
+```ini
+[robot_detector]
+enabled = true
+model   = models/robot_detector.hef
+conf    = 0.45   # confidence threshold
+iou     = 0.45   # NMS IoU threshold
+
+[camera_front_left]
+robot_detector = true
+```
+
+```python
+from robot.robot_detector import RobotDetector, RobotDetection, DetectedRobot
+
+det = RobotDetector(model_path='models/robot_detector.hef', conf=0.45)
+if det.available:
+    result = det.detect(frame)      # annotates frame in-place; returns RobotDetection
+    print(result.count)             # number of robots detected
+    if result.nearest:
+        r = result.nearest          # DetectedRobot with largest bounding box
+        print(r.center_x, r.center_y, r.confidence)
+det.stop()                          # release Hailo device
+```
+
+**`RobotDetection`** fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `robots` | `List[DetectedRobot]` | All detected robots this frame |
+| `fps` | `float` | Detection rate (Hz) |
+| `timestamp` | `float` | `time.monotonic()` at inference |
+| `count` | `int` (property) | `len(robots)` |
+| `nearest` | `DetectedRobot \| None` (property) | Robot with the largest bounding-box area |
+
+**`DetectedRobot`** fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `center_x`, `center_y` | `int` | Bounding-box centre in display pixels |
+| `x1`, `y1`, `x2`, `y2` | `int` | Bounding-box corners in display pixels |
+| `confidence` | `float` | Model confidence score (0–1) |
+
+Gracefully disabled (`.available = False`, `.detect()` returns `None`) when
+HailoRT is not installed or the HEF file is absent.
+
+---
+
 #### robot/aruco_navigator.py
 
 Autonomous gate navigator.  State machine:
@@ -558,9 +618,10 @@ comment in the file.  Key sections:
 | `[robot]` | Yukon serial port, iBUS port (iBUS port only used by `rc_drive.py`) |
 | `[rc]` | Channel mapping (`throttle_ch`, `steer_ch`, `mode_ch`, `speed_ch`, `auto_type_ch`, `gps_log_ch`, `dlog_ch`, `rec_ch`, `pause_ch`, `gps_bookmark_ch`), deadzone, failsafe, control rate |
 | `[camera]` | Legacy single-camera settings (backward compat fallback) |
-| `[camera_front_left]` | IMX296 CSI CAM0 — resolution, fps, rotation (180°), ArUco, calibration file |
-| `[camera_front_right]` | IMX296 CSI CAM1 — resolution, fps, rotation (180°), ArUco, calibration file |
-| `[camera_rear]` | IMX477 USB/UVC — resolution, fps, rotation (0°), mirror, ArUco, calibration file |
+| `[camera_front_left]` | IMX296 CSI CAM0 — resolution, fps, rotation (180°), ArUco, robot_detector, calibration file |
+| `[camera_front_right]` | IMX296 CSI CAM1 — resolution, fps, rotation (180°), ArUco, robot_detector, calibration file |
+| `[camera_rear]` | IMX477 USB/UVC — resolution, fps, rotation (0°), mirror, ArUco, robot_detector, calibration file |
+| `[robot_detector]` | Hailo-10H YOLOv8n robot detector — enabled, model HEF path, conf, iou |
 | `[stereo]` | Hardware XVS sync GPIO for front stereo pair |
 | `[aruco]` | Detection dict, calibration file template, tag size |
 | `[camera_calibrations]` | Target resolutions for `derive_calibrations.py` |

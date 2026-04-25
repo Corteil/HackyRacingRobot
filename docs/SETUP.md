@@ -83,6 +83,34 @@ sudo apt install -y \
 | `python3-rpi.gpio` | Stereo camera hardware sync pulse (GPIO 24); only needed when `[stereo] enabled = true` |
 | `python3-numpy` | Required by OpenCV and picamera2; apt version avoids build issues |
 
+### Hailo AI HAT+ 2 (optional)
+
+The robot detector (`robot/robot_detector.py`) requires the Hailo-10H AI HAT+ 2 and its software stack. If the HAT is fitted, install the Hailo packages via the Raspberry Pi package repo before running the robot stack:
+
+```bash
+sudo apt install -y hailo-all
+```
+
+This installs `h10-hailort`, `python3-h10-hailort`, `hailo-tappas-core`, `hailo-models`, and `hailo-gen-ai-model-zoo`. Reboot after installation.
+
+To download the trained robot detector model (after completing the training pipeline in `docs/robot_detector_training.html`):
+
+```bash
+mkdir -p models
+scp windows-machine:Downloads/robot_detector.hef models/
+```
+
+Enable in `robot.ini`:
+```ini
+[robot_detector]
+enabled = true
+
+[camera_front_left]
+robot_detector = true
+```
+
+The robot stack runs without the HAT — `robot_detector.py` degrades gracefully when `hailort` is absent.
+
 ---
 
 ## Device tree overlays

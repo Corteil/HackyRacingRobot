@@ -28,6 +28,7 @@ HackyRacingRobot/
 │   ├── camera_controls.py   # Shared camera constants, helpers, CalibrationMaps
 │   ├── aruco_detector.py    # OpenCV ArUco marker detection
 │   ├── aruco_navigator.py   # State-machine gate navigator
+│   ├── robot_detector.py    # YOLOv8n robot detector via Hailo-10H AI HAT+ 2
 │   └── gps_navigator.py     # GPS waypoint navigator
 │
 ├── gnss/                    # Multi-driver GNSS library
@@ -90,6 +91,7 @@ frame  = robot.get_frame()     # Latest RGB numpy array or None
 aruco  = robot.get_aruco_state()
 hdg    = robot.get_heading()   # IMU heading degrees or None
 robot.drive(left, right)       # float -1.0…+1.0 (AUTO mode only)
+robot.get_robot_detection(cam) # RobotDetection or None (cam='front_left'|'front_right'|'rear')
 robot.start_cam_recording()
 robot.start_data_log()
 robot.stop()
@@ -105,6 +107,8 @@ RobotState          # Full snapshot returned by get_state()
   ├── gps           # GpsState: lat/lon, fix, HDOP, h_error
   ├── lidar         # LidarScan: angle/distance arrays
   ├── system        # SystemState: CPU%, temp, mem%, disk%
+  ├── robot_det_ok  # bool: Hailo robot detector running
+  ├── robot_count   # int: other robots visible in current frame
   └── nav           # Navigator target/status string
 ```
 
@@ -158,6 +162,7 @@ Key sections:
 | `[ntrip]` | NTRIP caster host/port/mount/credentials |
 | `[rtcm]` | Serial RTCM correction input (alternative to NTRIP) |
 | `[telemetry_radio]` | SiK radio port (`/dev/sik`), baud, downlink rate, LiDAR enable |
+| `[robot_detector]` | Hailo-10H YOLOv8n robot detector — enabled, model HEF path, conf, iou |
 | `[navigator]` | ArUco gate navigator tuning + `track_file` path |
 | `[gps_navigator]` | GPS waypoint navigator tuning |
 | `[output]` | Snapshot/video/data-log directories, recording limits |
