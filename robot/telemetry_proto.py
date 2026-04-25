@@ -27,6 +27,7 @@ Downlink packet types (robot → ground)
   0x06  LIDAR   var   1 Hz   distance array, zlib compressed
   0x07  ALARM   var   event  alarm_id, severity, message string
   0x08  TAGS    var   5 Hz   visible ArUco tags: id, cam, cx, cy, distance, bearing
+  0x09  MOD_TELEM 9 B 5 Hz  per-module: fl/fr/rl/rr temp(°C), current(A×10), faults(bits)
 
 Uplink packet types (ground → robot)
 --------------------------------------
@@ -61,6 +62,7 @@ TYPE_NAV    = 0x05
 TYPE_LIDAR  = 0x06
 TYPE_ALARM  = 0x07
 TYPE_TAGS   = 0x08
+TYPE_MOD_TELEM = 0x09  # per-module telemetry (4 × BigMotorModule)
 
 # Camera ID constants for TAGS packet
 CAM_FRONT_LEFT  = 0
@@ -391,6 +393,42 @@ def decode_telem(payload: bytes) -> dict:
         "heading":     None if hdg == NULL_U16 else hdg / 10.0,
         "pitch":       None if pit == NULL_I16 else pit / 10.0,
         "roll":        None if rol == NULL_I16 else rol / 10.0,
+    }
+
+
+# MOD_TELEM — 9 bytes
+# fl_temp:i8 fr_temp:i8 rl_temp:i8 rr_temp:i8
+# fl_curr:u8 fr_curr:u8 rl_curr:u8 rr_curr:u8  (|A| × 10, 0–25.5 A)
+# faults:u8  bit0=FL, bit1=FR, bit2=RL, bit3=RR
+_FMT_MOD_TELEM = struct.Struct('<bbbbBBBBB')
+
+def encode_mod_telem(fl_temp: float, fr_temp: float,
+                     rl_temp: float, rr_temp: float,
+                     fl_curr: float, fr_curr: float,
+                     rl_curr: float, rr_curr: float,
+                     fl_fault: bool, fr_fault: bool,
+                     rl_fault: bool, rr_fault: bool) -> bytes:
+    def _t(v): return max(-128, min(127, int(round(v))))
+    def _c(v): return max(0, min(255, int(round(abs(v) * 10))))
+    faults = ((1 if fl_fault else 0) | (2 if fr_fault else 0) |
+              (4 if rl_fault else 0) | (8 if rr_fault else 0))
+    return encode_frame(TYPE_MOD_TELEM, _FMT_MOD_TELEM.pack(
+        _t(fl_temp), _t(fr_temp), _t(rl_temp), _t(rr_temp),
+        _c(fl_curr), _c(fr_curr), _c(rl_curr), _c(rr_curr),
+        faults,
+    ))
+
+
+def decode_mod_telem(payload: bytes) -> dict:
+    ft_fl, ft_fr, ft_rl, ft_rr, fc_fl, fc_fr, fc_rl, fc_rr, faults = (
+        _FMT_MOD_TELEM.unpack(payload[:_FMT_MOD_TELEM.size]))
+    return {
+        "fl_temp":  float(ft_fl), "fr_temp":  float(ft_fr),
+        "rl_temp":  float(ft_rl), "rr_temp":  float(ft_rr),
+        "fl_current": fc_fl / 10.0, "fr_current": fc_fr / 10.0,
+        "rl_current": fc_rl / 10.0, "rr_current": fc_rr / 10.0,
+        "fl_fault": bool(faults & 1), "fr_fault": bool(faults & 2),
+        "rl_fault": bool(faults & 4), "rr_fault": bool(faults & 8),
     }
 
 

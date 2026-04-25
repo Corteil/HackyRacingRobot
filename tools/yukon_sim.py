@@ -93,8 +93,21 @@ RESP_HEADING    = 7
 RESP_PITCH      = 8
 RESP_ROLL       = 9
 RESP_FW_VERSION = 12
+# Per-module telemetry (SLOT1=RR, SLOT2=FR, SLOT3=FL, SLOT4=RL)
+RESP_TEMP_RR  = 13
+RESP_TEMP_FR  = 14
+RESP_TEMP_FL  = 15
+RESP_TEMP_RL  = 16
+RESP_CURR_RR  = 17
+RESP_CURR_FR  = 18
+RESP_CURR_FL  = 19
+RESP_CURR_RL  = 20
+RESP_FAULT_RR = 21
+RESP_FAULT_FR = 22
+RESP_FAULT_FL = 23
+RESP_FAULT_RL = 24
 
-SIM_FW_VERSION  = 3   # matches FIRMWARE_VERSION in main.py
+SIM_FW_VERSION  = 4   # matches FIRMWARE_VERSION in main.py
 
 # iBUS constants (match main.py)
 IBUS_CH_THROTTLE = 2
@@ -138,8 +151,12 @@ _state = {
     'imu_roll'            : 0.0,
     'bearing_target'      : None,
     'last_imu_tick'       : 0.0,
-    'fault_l'             : False,
-    'fault_r'             : False,
+    'fault_l'             : False,   # OR(FL, RL) — derived, not set directly
+    'fault_r'             : False,   # OR(FR, RR) — derived, not set directly
+    'fault_rr'            : False,   # SLOT1 rear-right
+    'fault_fr'            : False,   # SLOT2 front-right
+    'fault_fl'            : False,   # SLOT3 front-left
+    'fault_rl'            : False,   # SLOT4 rear-left
     'bench_enabled'       : True,
     'bench_fault'         : False,
     'strip_pixels'        : [(0, 0, 0)] * NUM_LEDS,
@@ -345,9 +362,16 @@ def _tick_strip():
         _state['strip_pat_dir'] = direction
 
 
+def _update_aggregate_faults():
+    """Recompute fault_l/fault_r from per-module faults. Call while holding _lock."""
+    _state['fault_l'] = _state.get('fault_fl', False) or _state.get('fault_rl', False)
+    _state['fault_r'] = _state.get('fault_fr', False) or _state.get('fault_rr', False)
+
+
 def set_fault_leds():
     with _lock:
-        any_fault = _state.get('fault_l', False) or _state.get('fault_r', False)
+        any_fault = (_state.get('fault_fl', False) or _state.get('fault_rl', False) or
+                     _state.get('fault_fr', False) or _state.get('fault_rr', False))
         if any_fault:
             _state['strip_pattern']    = 6
             _state['strip_colour_idx'] = 1
@@ -477,16 +501,30 @@ def yukon_server(master_fd):
                         imu_heading = _state['imu_heading']
                         imu_pitch   = _state['imu_pitch']
                         imu_roll    = _state['imu_roll']
-                        fault_l     = _state.get('fault_l', False)
-                        fault_r     = _state.get('fault_r', False)
+                        fault_fl    = _state.get('fault_fl', False)
+                        fault_rl    = _state.get('fault_rl', False)
+                        fault_fr    = _state.get('fault_fr', False)
+                        fault_rr    = _state.get('fault_rr', False)
                         bench_fault = _state.get('bench_fault', False)
                     _send_sensor_packet(master_fd, RESP_VOLTAGE, SIM_VOLTAGE  * 10)
                     _send_sensor_packet(master_fd, RESP_CURRENT, SIM_CURRENT  * 100)
                     _send_sensor_packet(master_fd, RESP_TEMP,    SIM_TEMP     * 3)
                     _send_sensor_packet(master_fd, RESP_TEMP_L,  SIM_TEMP_MOD * 3)
                     _send_sensor_packet(master_fd, RESP_TEMP_R,  SIM_TEMP_MOD * 3)
-                    _send_sensor_packet(master_fd, RESP_FAULT_L, int(fault_l))
-                    _send_sensor_packet(master_fd, RESP_FAULT_R, int(fault_r))
+                    _send_sensor_packet(master_fd, RESP_FAULT_L, int(fault_fl or fault_rl))
+                    _send_sensor_packet(master_fd, RESP_FAULT_R, int(fault_fr or fault_rr))
+                    _send_sensor_packet(master_fd, RESP_TEMP_RR, SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_TEMP_FR, SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_TEMP_FL, SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_TEMP_RL, SIM_TEMP_MOD * 3)
+                    _send_sensor_packet(master_fd, RESP_CURR_RR, int(SIM_CURRENT * 10))
+                    _send_sensor_packet(master_fd, RESP_CURR_FR, int(SIM_CURRENT * 10))
+                    _send_sensor_packet(master_fd, RESP_CURR_FL, int(SIM_CURRENT * 10))
+                    _send_sensor_packet(master_fd, RESP_CURR_RL, int(SIM_CURRENT * 10))
+                    _send_sensor_packet(master_fd, RESP_FAULT_RR, int(fault_rr))
+                    _send_sensor_packet(master_fd, RESP_FAULT_FR, int(fault_fr))
+                    _send_sensor_packet(master_fd, RESP_FAULT_FL, int(fault_fl))
+                    _send_sensor_packet(master_fd, RESP_FAULT_RL, int(fault_rl))
                     _send_sensor_packet(master_fd, RESP_BENCH_TEMP,  SIM_TEMP_MOD * 3)
                     _send_sensor_packet(master_fd, RESP_BENCH_FAULT, int(bench_fault))
                     if imu_present:
@@ -599,6 +637,10 @@ def _draw_headless(yukon_path):
         bearing_tgt   = _state['bearing_target']
         bench_enabled = _state.get('bench_enabled', False)
         bench_fault   = _state.get('bench_fault', False)
+        fault_fl      = _state.get('fault_fl', False)
+        fault_rl      = _state.get('fault_rl', False)
+        fault_fr      = _state.get('fault_fr', False)
+        fault_rr      = _state.get('fault_rr', False)
         strip_pixels  = list(_state['strip_pixels'])
         strip_pat     = _state['strip_pattern']
 
@@ -650,6 +692,10 @@ def _draw_headless(yukon_path):
         f'  Cmds rx: {cmds}',
         f'  Bench  : {"ON " if bench_enabled else "OFF"}'
         f'{"  FAULT" if bench_fault else ""}',
+        f'  Motors : FL{"[FAULT]" if fault_fl else "[OK]"}'
+        f'  RL{"[FAULT]" if fault_rl else "[OK]"}'
+        f'  FR{"[FAULT]" if fault_fr else "[OK]"}'
+        f'  RR{"[FAULT]" if fault_rr else "[OK]"}',
         '--- LED Strip ' + '-' * 48,
         '  ' + ''.join(
             f'\033[48;2;{r};{g};{b}m  \033[0m' for r, g, b in strip_pixels
@@ -905,8 +951,10 @@ def run_gui(yukon_path):
                           C_CYAN,   "Pitch  [ nose down   ] nose up", "{:+.1f}°")
     roll_slider  = Slider((0, 0, 100, 22), -180.0, 180.0, 0.0,
                           C_CYAN,   "Roll   ; left   ' right", "{:+.1f}°")
-    fault_left  = False
-    fault_right = False
+    fault_fl = False
+    fault_rl = False
+    fault_fr = False
+    fault_rr = False
     comp_cx, comp_cy, comp_r = 180, 302, 140
 
     running = True
@@ -984,15 +1032,19 @@ def run_gui(yukon_path):
                         _state['imu_present'] = not _state['imu_present']
                         if not _state['imu_present']:
                             _state['bearing_target'] = None
-                fault_l_rect = pygame.Rect(632, 292, 121, 36)
-                fault_r_rect = pygame.Rect(757, 292, 121, 36)
-                reset_f_rect = pygame.Rect(632, 340, 246, 36)
-                if fault_l_rect.collidepoint(mx, my):
-                    fault_left  = not fault_left
-                if fault_r_rect.collidepoint(mx, my):
-                    fault_right = not fault_right
+                # 4 fault buttons in 2×2 grid: FL FR / RL RR
+                bw = (246 - 4) // 2
+                fault_fl_rect = pygame.Rect(632,        292,     bw, 36)
+                fault_fr_rect = pygame.Rect(632+bw+4,   292,     bw, 36)
+                fault_rl_rect = pygame.Rect(632,        292+40,  bw, 36)
+                fault_rr_rect = pygame.Rect(632+bw+4,  292+40,  bw, 36)
+                reset_f_rect  = pygame.Rect(632,        292+84,  246, 32)
+                if fault_fl_rect.collidepoint(mx, my): fault_fl = not fault_fl
+                if fault_fr_rect.collidepoint(mx, my): fault_fr = not fault_fr
+                if fault_rl_rect.collidepoint(mx, my): fault_rl = not fault_rl
+                if fault_rr_rect.collidepoint(mx, my): fault_rr = not fault_rr
                 if reset_f_rect.collidepoint(mx, my):
-                    fault_left = fault_right = False
+                    fault_fl = fault_rl = fault_fr = fault_rr = False
 
         global SIM_VOLTAGE, SIM_CURRENT
         SIM_VOLTAGE = volt_slider.value
@@ -1006,11 +1058,17 @@ def run_gui(yukon_path):
             else:
                 pitch_slider.value = 0.0
                 roll_slider.value  = 0.0
-            prev_fl = _state.get('fault_l', False)
-            prev_fr = _state.get('fault_r', False)
-            _state['fault_l'] = fault_left
-            _state['fault_r'] = fault_right
-        if fault_left != prev_fl or fault_right != prev_fr:
+            prev_fl = _state.get('fault_fl', False)
+            prev_fr = _state.get('fault_fr', False)
+            prev_rl = _state.get('fault_rl', False)
+            prev_rr = _state.get('fault_rr', False)
+            _state['fault_fl'] = fault_fl
+            _state['fault_fr'] = fault_fr
+            _state['fault_rl'] = fault_rl
+            _state['fault_rr'] = fault_rr
+            _update_aggregate_faults()
+        if (fault_fl != prev_fl or fault_fr != prev_fr or
+                fault_rl != prev_rl or fault_rr != prev_rr):
             set_fault_leds()
 
         with _lock:
@@ -1031,6 +1089,11 @@ def run_gui(yukon_path):
             bench_fault   = _state.get('bench_fault', False)
             strip_pixels  = list(_state['strip_pixels'])
             strip_pat    = _state['strip_pattern']
+            # read per-module fault state for display
+            disp_fault_fl = _state.get('fault_fl', False)
+            disp_fault_rl = _state.get('fault_rl', False)
+            disp_fault_fr = _state.get('fault_fr', False)
+            disp_fault_rr = _state.get('fault_rr', False)
 
         rx_l = _decode_speed(lb)
         rx_r = _decode_speed(rb)
@@ -1089,17 +1152,21 @@ def run_gui(yukon_path):
         _label(screen, f"Cmds rx: {cmds}", mid_panel.x + 12, mid_panel.bottom - 22)
 
         # Sim values panel
-        stat_panel = pygame.Rect(370, 352, 240, 155)
+        stat_panel = pygame.Rect(370, 352, 240, 175)
         _panel(screen, stat_panel, "Sim Values")
         _label(screen, f"Voltage : {volt_slider.value:.1f} V", stat_panel.x+12, stat_panel.y+26, C_YELLOW)
         _label(screen, f"Current : {curr_slider.value:.2f} A", stat_panel.x+12, stat_panel.y+50, C_ORANGE)
-        fl_col = C_RED if fault_left  else C_GRAY
-        fr_col = C_RED if fault_right else C_GRAY
-        _label(screen, f"Fault L : {'YES' if fault_left  else 'no'}", stat_panel.x+12, stat_panel.y+74, fl_col)
-        _label(screen, f"Fault R : {'YES' if fault_right else 'no'}", stat_panel.x+12, stat_panel.y+98, fr_col)
         bench_col = (C_RED if bench_fault else C_GREEN) if bench_enabled else C_GRAY
         bench_str = ('ON' + (' FAULT' if bench_fault else '')) if bench_enabled else 'OFF'
-        _label(screen, f"Bench   : {bench_str}", stat_panel.x+12, stat_panel.y+122, bench_col)
+        _label(screen, f"Bench   : {bench_str}", stat_panel.x+12, stat_panel.y+74, bench_col)
+        for ii, (lbl, fv) in enumerate([
+            ('FL·S3', disp_fault_fl), ('FR·S2', disp_fault_fr),
+            ('RL·S4', disp_fault_rl), ('RR·S1', disp_fault_rr),
+        ]):
+            col = C_RED if fv else C_GRAY
+            _label(screen, f"{lbl}: {'FAULT' if fv else 'ok'}",
+                   stat_panel.x + 12 + (ii % 2) * 110,
+                   stat_panel.y + 98 + (ii // 2) * 22, col)
 
         # IMU pitch/roll  (y=515 keeps clear of stat_panel which ends at y=507)
         imu_panel = pygame.Rect(370, 515, 240, 85)
@@ -1110,8 +1177,8 @@ def run_gui(yukon_path):
         _label(screen, (f"Roll:  {imu_roll:+.1f}°"  if imu_present else "Roll:  ---"),
                imu_panel.x+12, imu_panel.y+52, imu_col)
 
-        # Controls  (height=470 to fit pitch/roll sliders)
-        ctrl_panel = pygame.Rect(620, 82, 270, 470)
+        # Controls  (height=520 to fit 4-fault buttons + pitch/roll sliders)
+        ctrl_panel = pygame.Rect(620, 82, 270, 520)
         _panel(screen, ctrl_panel, "Controls")
         volt_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+40,  ctrl_panel.width-24, 22)
         curr_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+100, ctrl_panel.width-24, 22)
@@ -1121,19 +1188,25 @@ def run_gui(yukon_path):
         imu_col2  = C_GREEN if imu_present else C_RED
         _button(screen, imu_btn_r, f"IMU: {'PRESENT' if imu_present else 'ABSENT'}",
                 imu_col2, active=imu_present)
-        fault_l_r = pygame.Rect(ctrl_panel.x+12,   ctrl_panel.y+210, (ctrl_panel.width-28)//2, 36)
-        fault_r_r = pygame.Rect(fault_l_r.right+4, ctrl_panel.y+210, (ctrl_panel.width-28)//2, 36)
-        reset_f_r = pygame.Rect(ctrl_panel.x+12,   ctrl_panel.y+258, ctrl_panel.width-24, 36)
-        _button(screen, fault_l_r, "Fault L", C_RED,  active=fault_left)
-        _button(screen, fault_r_r, "Fault R", C_RED,  active=fault_right)
-        _button(screen, reset_f_r, "Clear Faults", C_GRAY)
-        _label(screen, "Heading", ctrl_panel.x+12, ctrl_panel.y+302, C_GRAY)
-        hl = pygame.Rect(ctrl_panel.x+12,        ctrl_panel.y+318, 80, 32)
-        hr = pygame.Rect(ctrl_panel.right-12-80, ctrl_panel.y+318, 80, 32)
+        # 4 fault buttons in 2×2 grid (FL FR / RL RR)
+        bw = (ctrl_panel.width - 28) // 2
+        fault_fl_r = pygame.Rect(ctrl_panel.x+12,      ctrl_panel.y+210, bw, 36)
+        fault_fr_r = pygame.Rect(fault_fl_r.right+4,   ctrl_panel.y+210, bw, 36)
+        fault_rl_r = pygame.Rect(ctrl_panel.x+12,      ctrl_panel.y+250, bw, 36)
+        fault_rr_r = pygame.Rect(fault_fl_r.right+4,   ctrl_panel.y+250, bw, 36)
+        reset_f_r  = pygame.Rect(ctrl_panel.x+12,      ctrl_panel.y+298, ctrl_panel.width-24, 32)
+        _button(screen, fault_fl_r, "FL·S3", C_RED, active=disp_fault_fl)
+        _button(screen, fault_fr_r, "FR·S2", C_RED, active=disp_fault_fr)
+        _button(screen, fault_rl_r, "RL·S4", C_RED, active=disp_fault_rl)
+        _button(screen, fault_rr_r, "RR·S1", C_RED, active=disp_fault_rr)
+        _button(screen, reset_f_r,  "Clear Faults", C_GRAY)
+        _label(screen, "Heading", ctrl_panel.x+12, ctrl_panel.y+342, C_GRAY)
+        hl = pygame.Rect(ctrl_panel.x+12,        ctrl_panel.y+358, 80, 32)
+        hr = pygame.Rect(ctrl_panel.right-12-80, ctrl_panel.y+358, 80, 32)
         _button(screen, hl, "< -5°", C_CYAN)
         _button(screen, hr, "+5° >", C_CYAN)
-        pitch_slider.rect = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+376, ctrl_panel.width-24, 22)
-        roll_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+430, ctrl_panel.width-24, 22)
+        pitch_slider.rect = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+416, ctrl_panel.width-24, 22)
+        roll_slider.rect  = pygame.Rect(ctrl_panel.x+12, ctrl_panel.y+470, ctrl_panel.width-24, 22)
         if not imu_present:
             pitch_slider.value = 0.0
             roll_slider.value  = 0.0
@@ -1200,6 +1273,10 @@ def _build_web_app():
             'bearing_target': s.get('bearing_target'),
             'fault_l'       : s.get('fault_l', False),
             'fault_r'       : s.get('fault_r', False),
+            'fault_fl'      : s.get('fault_fl', False),
+            'fault_fr'      : s.get('fault_fr', False),
+            'fault_rl'      : s.get('fault_rl', False),
+            'fault_rr'      : s.get('fault_rr', False),
             'bench_enabled' : s.get('bench_enabled', False),
             'bench_fault'   : s.get('bench_fault', False),
             'voltage'       : round(SIM_VOLTAGE, 2),
@@ -1267,18 +1344,30 @@ def _build_web_app():
             SIM_VOLTAGE = max(8.0, min(15.0, float(val)))
         elif cmd == 'set_current':
             SIM_CURRENT = max(0.0, min(5.0, float(val)))
+        elif cmd in ('fault_fl', 'fault_fr', 'fault_rl', 'fault_rr'):
+            with _lock:
+                _state[cmd] = not _state.get(cmd, False)
+                _update_aggregate_faults()
+            set_fault_leds()
         elif cmd == 'fault_l':
             with _lock:
-                _state['fault_l'] = not _state.get('fault_l', False)
+                new = not _state.get('fault_fl', False)
+                _state['fault_fl'] = new
+                _state['fault_rl'] = new
+                _update_aggregate_faults()
             set_fault_leds()
         elif cmd == 'fault_r':
             with _lock:
-                _state['fault_r'] = not _state.get('fault_r', False)
+                new = not _state.get('fault_fr', False)
+                _state['fault_fr'] = new
+                _state['fault_rr'] = new
+                _update_aggregate_faults()
             set_fault_leds()
         elif cmd == 'clear_faults':
             with _lock:
-                _state['fault_l'] = False
-                _state['fault_r'] = False
+                _state['fault_fl'] = _state['fault_fr'] = False
+                _state['fault_rl'] = _state['fault_rr'] = False
+                _update_aggregate_faults()
             set_fault_leds()
         else:
             return jsonify({'ok': False, 'error': f'Unknown cmd: {cmd}'}), 400
@@ -1433,10 +1522,14 @@ button.active{background:#1a2a1a}
       <span class="badge" id="bdg-mode">Mode: --</span>
       <span class="badge" id="bdg-nm" style="display:none">NO-MOTORS</span>
       <span class="badge" id="bdg-cmds">Cmds: 0</span>
-      <span class="badge" id="bdg-fl">Fault L: --</span>
-      <span class="badge" id="bdg-fr">Fault R: --</span>
       <span class="badge" id="bdg-bench">Bench: OFF</span>
       <span class="badge" id="bdg-hold">Hold: off</span>
+    </div>
+    <div class="badges" style="margin-top:4px">
+      <span class="badge" id="bdg-fl">FL·S3: --</span>
+      <span class="badge" id="bdg-rl">RL·S4: --</span>
+      <span class="badge" id="bdg-fr">FR·S2: --</span>
+      <span class="badge" id="bdg-rr">RR·S1: --</span>
     </div>
     <h2 style="margin-top:14px">Sim Values</h2>
     <div class="badges">
@@ -1462,9 +1555,15 @@ button.active{background:#1a2a1a}
     </div>
     <h2 style="margin-top:4px">Fault Injection</h2>
     <div class="btn-row">
-      <button class="btn-red" id="btn-fl" onclick="sendCmd('fault_l')">Fault L</button>
-      <button class="btn-red" id="btn-fr" onclick="sendCmd('fault_r')">Fault R</button>
-      <button onclick="sendCmd('clear_faults')">Clear</button>
+      <button class="btn-red" id="btn-fl" onclick="sendCmd('fault_fl')">FL·S3</button>
+      <button class="btn-red" id="btn-fr" onclick="sendCmd('fault_fr')">FR·S2</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn-red" id="btn-rl" onclick="sendCmd('fault_rl')">RL·S4</button>
+      <button class="btn-red" id="btn-rr" onclick="sendCmd('fault_rr')">RR·S1</button>
+    </div>
+    <div class="btn-row">
+      <button onclick="sendCmd('clear_faults')">Clear All</button>
     </div>
     <h2 style="margin-top:8px">Heading</h2>
     <p style="font-size:.7rem;color:var(--gray);margin-bottom:8px">
@@ -1582,12 +1681,16 @@ function applyState(s) {
     container.children[i].style.background=lit?`radial-gradient(ellipse at center,${bright} 40%,${dim} 100%)`:dim;
     container.children[i].style.borderColor=lit?bright:'var(--border)';
   });
-  setBadge('bdg-fl',`Fault L: ${s.fault_l?'YES':'no'}`,s.fault_l?'err':'');
-  setBadge('bdg-fr',`Fault R: ${s.fault_r?'YES':'no'}`,s.fault_r?'err':'');
+  setBadge('bdg-fl',`FL·S3: ${s.fault_fl?'FAULT':'ok'}`,s.fault_fl?'err':'ok');
+  setBadge('bdg-rl',`RL·S4: ${s.fault_rl?'FAULT':'ok'}`,s.fault_rl?'err':'ok');
+  setBadge('bdg-fr',`FR·S2: ${s.fault_fr?'FAULT':'ok'}`,s.fault_fr?'err':'ok');
+  setBadge('bdg-rr',`RR·S1: ${s.fault_rr?'FAULT':'ok'}`,s.fault_rr?'err':'ok');
   setBadge('bdg-bench',`Bench: ${s.bench_enabled?(s.bench_fault?'ON FAULT':'ON'):'OFF'}`,
            s.bench_enabled?(s.bench_fault?'err':'ok'):'');
-  el('btn-fl').className='btn-red'+(s.fault_l?' active':'');
-  el('btn-fr').className='btn-red'+(s.fault_r?' active':'');
+  el('btn-fl').className='btn-red'+(s.fault_fl?' active':'');
+  el('btn-fr').className='btn-red'+(s.fault_fr?' active':'');
+  el('btn-rl').className='btn-red'+(s.fault_rl?' active':'');
+  el('btn-rr').className='btn-red'+(s.fault_rr?' active':'');
   setBadge('bdg-volt',`${s.voltage.toFixed(1)} V`,'info');
   setBadge('bdg-curr',`${s.current.toFixed(2)} A`,'info');
   if(s.imu_present){

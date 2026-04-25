@@ -249,6 +249,12 @@ def test_telemetry(robot):
            f"got {t.board_temp}")
     _check("left_fault = False",  t.left_fault  is False)
     _check("right_fault = False", t.right_fault is False)
+    _check("fl_fault = False",    t.fl_fault is False)
+    _check("fr_fault = False",    t.fr_fault is False)
+    _check("rl_fault = False",    t.rl_fault is False)
+    _check("rr_fault = False",    t.rr_fault is False)
+    _check("fl_temp present",     t.fl_temp >= 0.0)
+    _check("fr_temp present",     t.fr_temp >= 0.0)
     _check("telemetry timestamp set", t.timestamp > 0)
 
 

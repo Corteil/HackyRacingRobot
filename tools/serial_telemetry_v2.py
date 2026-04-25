@@ -58,7 +58,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from robot.telemetry_proto import (
     FrameDecoder,
-    encode_state, encode_telem, encode_gps, encode_sys, encode_nav,
+    encode_state, encode_telem, encode_mod_telem, encode_gps, encode_sys, encode_nav,
     encode_lidar, encode_alarm, encode_tags, encode_cmd, encode_rtcm,
     decode_cmd,
     state_flags, lidar_to_step_array,
@@ -327,6 +327,14 @@ class TelemetryBridgeV2:
                     heading     = t.heading,
                     pitch       = t.pitch,
                     roll        = t.roll,
+                ))
+                self._send(encode_mod_telem(
+                    fl_temp  = t.fl_temp,  fr_temp  = t.fr_temp,
+                    rl_temp  = t.rl_temp,  rr_temp  = t.rr_temp,
+                    fl_curr  = t.fl_current, fr_curr = t.fr_current,
+                    rl_curr  = t.rl_current, rr_curr = t.rr_current,
+                    fl_fault = t.fl_fault, fr_fault  = t.fr_fault,
+                    rl_fault = t.rl_fault, rr_fault  = t.rr_fault,
                 ))
 
                 # ── Alarm check (fires only on transition) ────────────────

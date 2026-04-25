@@ -25,7 +25,7 @@ def _pio_uart_rx():
 # Hardware constants
 LED_A = 'A'
 LED_B = 'B'
-FIRMWARE_VERSION = 3   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
+FIRMWARE_VERSION = 4   # increment each time main.py changes (reported via CMD_SENSOR RESP_FW_VERSION=12)
 UPDATES      = 50
 SENSOR_PERIOD = 1000   # ms between periodic sensor log lines
 MAX_CONSECUTIVE_FAULTS = 5     # give up recovery after this many in a row
@@ -92,6 +92,19 @@ RESP_ROLL        = 9   # IMU roll   (side tilt),   encoded (roll+180)*254/360, 2
 RESP_BENCH_TEMP  = 10  # Dual power switch module temp x 3 (e.g. 22.5 degC -> 67)
 RESP_BENCH_FAULT = 11  # Dual power switch power-good fault (0 or 1)
 RESP_FW_VERSION  = 12  # Firmware version (FIRMWARE_VERSION constant; 0 = unknown)
+# Per-module telemetry (4 × BigMotorModule: SLOT1=RR, SLOT2=FR, SLOT3=FL, SLOT4=RL)
+RESP_TEMP_RR  = 13  # rear-right  (SLOT1) temp × 3
+RESP_TEMP_FR  = 14  # front-right (SLOT2) temp × 3
+RESP_TEMP_FL  = 15  # front-left  (SLOT3) temp × 3
+RESP_TEMP_RL  = 16  # rear-left   (SLOT4) temp × 3
+RESP_CURR_RR  = 17  # rear-right  |current| × 10 (amps, 0–25.5 A)
+RESP_CURR_FR  = 18
+RESP_CURR_FL  = 19
+RESP_CURR_RL  = 20
+RESP_FAULT_RR = 21  # rear-right  fault (0 or 1)
+RESP_FAULT_FR = 22
+RESP_FAULT_FL = 23
+RESP_FAULT_RL = 24
 
 # ── Shared state (protected by _lock) ────────────────────────────────────────
 
@@ -684,6 +697,18 @@ try:
                                        int(mod_fl.read_fault() or mod_rl.read_fault()))
                             _send_data(RESP_FAULT_R,
                                        int(mod_fr.read_fault() or mod_rr.read_fault()))
+                            _send_data(RESP_TEMP_RR,  mod_rr.read_temperature() * 3)
+                            _send_data(RESP_TEMP_FR,  mod_fr.read_temperature() * 3)
+                            _send_data(RESP_TEMP_FL,  mod_fl.read_temperature() * 3)
+                            _send_data(RESP_TEMP_RL,  mod_rl.read_temperature() * 3)
+                            _send_data(RESP_CURR_RR,  int(abs(mod_rr.read_current()) * 10))
+                            _send_data(RESP_CURR_FR,  int(abs(mod_fr.read_current()) * 10))
+                            _send_data(RESP_CURR_FL,  int(abs(mod_fl.read_current()) * 10))
+                            _send_data(RESP_CURR_RL,  int(abs(mod_rl.read_current()) * 10))
+                            _send_data(RESP_FAULT_RR, int(mod_rr.read_fault()))
+                            _send_data(RESP_FAULT_FR, int(mod_fr.read_fault()))
+                            _send_data(RESP_FAULT_FL, int(mod_fl.read_fault()))
+                            _send_data(RESP_FAULT_RL, int(mod_rl.read_fault()))
                         except Exception as se:
                             print("Sensor error:", se)
                             _nak()

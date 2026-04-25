@@ -38,7 +38,7 @@ Response: `ACK` (`0x06`) on success, `NAK` (`0x15`) on any framing or checksum e
 | `CMD_LEFT`       | 2    | Motor speed byte (see below) — **only applied in AUTO mode** |
 | `CMD_RIGHT`      | 3    | Motor speed byte — **only applied in AUTO mode** |
 | `CMD_KILL`       | 4    | Ignored — zeros both motors and disables bearing hold |
-| `CMD_SENSOR`     | 5    | Ignored — device replies with 13 sensor data packets then ACK |
+| `CMD_SENSOR`     | 5    | Ignored — device replies with 25 sensor data packets then ACK |
 | `CMD_BEARING`    | 6    | 0–254 = target bearing in degrees (see below); 255 = disable bearing hold |
 | `CMD_STRIP`      | 7    | Colour preset index (0=off 1=red 2=green 3=blue 4=orange 5=yellow 6=cyan 7=magenta 8=white) — stops any active pattern |
 | `CMD_PIXEL_SET`  | 8    | High nibble = LED index (0–15), low nibble = colour index (0–15) — stages pixel, no hardware update |
@@ -98,7 +98,7 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 
 ## Sensor response (Device → Host)
 
-`CMD_SENSOR` triggers 13 data packets followed by ACK. Each data packet uses the same 5-byte wire format with `RESP_TYPE` replacing `CMD`:
+`CMD_SENSOR` triggers 25 data packets followed by ACK. Each data packet uses the same 5-byte wire format with `RESP_TYPE` replacing `CMD`:
 
 | ID | Name              | Scale factor / encoding                              | Unit |
 |----|-------------------|------------------------------------------------------|------|
@@ -115,8 +115,20 @@ Correction formula: `correction = BEARING_KP × (error_degrees / 180)`, clamped 
 | 10 | Dual power switch temp  | raw ÷ 3                                        | °C   |
 | 11 | Dual power switch fault | 0 or 1                                         | —    |
 | 12 | Firmware version  | `FIRMWARE_VERSION` constant from `main.py`; 0 = old firmware (pre-versioning) | — |
+| 13 | RR temp (SLOT1)   | rear-right  BigMotorModule temp ÷ 3                  | °C   |
+| 14 | FR temp (SLOT2)   | front-right BigMotorModule temp ÷ 3                  | °C   |
+| 15 | FL temp (SLOT3)   | front-left  BigMotorModule temp ÷ 3                  | °C   |
+| 16 | RL temp (SLOT4)   | rear-left   BigMotorModule temp ÷ 3                  | °C   |
+| 17 | RR current (SLOT1)| `abs(current) × 10`; decode ÷ 10                    | A    |
+| 18 | FR current (SLOT2)| `abs(current) × 10`; decode ÷ 10                    | A    |
+| 19 | FL current (SLOT3)| `abs(current) × 10`; decode ÷ 10                    | A    |
+| 20 | RL current (SLOT4)| `abs(current) × 10`; decode ÷ 10                    | A    |
+| 21 | RR fault (SLOT1)  | 0 or 1                                               | —    |
+| 22 | FR fault (SLOT2)  | 0 or 1                                               | —    |
+| 23 | FL fault (SLOT3)  | 0 or 1                                               | —    |
+| 24 | RL fault (SLOT4)  | 0 or 1                                               | —    |
 
-`RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x39`).
+`RESP_TYPE` encoding: `resp_id + 0x30` (range `0x30–0x48`).
 
 **Note on ID overlap with CMD_RC_QUERY:** `CMD_RC_QUERY` response IDs start at 8 (`RESP_RC_BASE`). The host disambiguates by queue: `CMD_SENSOR` responses always start with ID 0 (Voltage), which routes to the sensor queue; `CMD_RC_QUERY` responses start with ID 8 (channel 0), which routes to the RC queue.
 

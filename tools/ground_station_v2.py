@@ -66,9 +66,10 @@ try:
     from robot.telemetry_proto import (
         FrameDecoder,
         TYPE_STATE, TYPE_TELEM, TYPE_GPS, TYPE_SYS, TYPE_NAV, TYPE_LIDAR, TYPE_ALARM, TYPE_TAGS,
+        TYPE_MOD_TELEM,
         TYPE_CMD, TYPE_RTCM, TYPE_PING,
         decode_state, decode_telem, decode_gps, decode_sys, decode_nav,
-        decode_lidar, decode_alarm, decode_tags,
+        decode_lidar, decode_alarm, decode_tags, decode_mod_telem,
         encode_cmd, encode_rtcm, encode_ping,
         CMD_ESTOP, CMD_RESET_ESTOP, CMD_SET_MODE,
         CMD_DATA_LOG_TOGGLE, CMD_GPS_BOOKMARK,
@@ -77,7 +78,7 @@ try:
         CMD_NAV_RESET, CMD_NAV_PAUSE_TOGGLE,
         MODE_MANUAL, MODE_AUTO,
         # fake generator encoders
-        encode_state, encode_telem, encode_gps, encode_sys, encode_nav,
+        encode_state, encode_telem, encode_mod_telem, encode_gps, encode_sys, encode_nav,
         encode_lidar, encode_alarm, encode_tags,
         CAM_FRONT_LEFT, CAM_FRONT_RIGHT, CAM_REAR,
         state_flags,
@@ -161,6 +162,9 @@ class _GsState:
             "board_temp": None, "left_temp": None, "right_temp": None,
             "left_fault": False, "right_fault": False,
             "heading": None, "pitch": None, "roll": None,
+            "fl_temp": 0.0, "fr_temp": 0.0, "rl_temp": 0.0, "rr_temp": 0.0,
+            "fl_current": 0.0, "fr_current": 0.0, "rl_current": 0.0, "rr_current": 0.0,
+            "fl_fault": False, "fr_fault": False, "rl_fault": False, "rr_fault": False,
         }
         self._gps = {
             "latitude": None, "longitude": None, "altitude": None,
@@ -212,6 +216,11 @@ class _GsState:
             self._touch()
 
     def handle_telem(self, d: dict):
+        with self._lock:
+            self._telem.update(d)
+            self._touch()
+
+    def handle_mod_telem(self, d: dict):
         with self._lock:
             self._telem.update(d)
             self._touch()
@@ -428,14 +437,15 @@ _gs = _GsState()
 def _dispatch(ptype: int, payload: bytes):
     _gs.record_packet_type(ptype)
     try:
-        if   ptype == TYPE_STATE:  _gs.handle_state(decode_state(payload))
-        elif ptype == TYPE_TELEM:  _gs.handle_telem(decode_telem(payload))
-        elif ptype == TYPE_GPS:    _gs.handle_gps(decode_gps(payload))
-        elif ptype == TYPE_SYS:    _gs.handle_sys(decode_sys(payload))
-        elif ptype == TYPE_NAV:    _gs.handle_nav(decode_nav(payload))
-        elif ptype == TYPE_LIDAR:  _gs.handle_lidar(decode_lidar(payload))
-        elif ptype == TYPE_ALARM:  _gs.handle_alarm(decode_alarm(payload))
-        elif ptype == TYPE_TAGS:   _gs.handle_tags(decode_tags(payload))
+        if   ptype == TYPE_STATE:     _gs.handle_state(decode_state(payload))
+        elif ptype == TYPE_TELEM:     _gs.handle_telem(decode_telem(payload))
+        elif ptype == TYPE_MOD_TELEM: _gs.handle_mod_telem(decode_mod_telem(payload))
+        elif ptype == TYPE_GPS:       _gs.handle_gps(decode_gps(payload))
+        elif ptype == TYPE_SYS:       _gs.handle_sys(decode_sys(payload))
+        elif ptype == TYPE_NAV:       _gs.handle_nav(decode_nav(payload))
+        elif ptype == TYPE_LIDAR:     _gs.handle_lidar(decode_lidar(payload))
+        elif ptype == TYPE_ALARM:     _gs.handle_alarm(decode_alarm(payload))
+        elif ptype == TYPE_TAGS:      _gs.handle_tags(decode_tags(payload))
         else:
             log.debug("Unknown downlink frame type 0x%02X (%d B)", ptype, len(payload))
     except Exception as e:
@@ -772,9 +782,10 @@ class FakeLinkV2(_LinkBase):
 
             # ── STATE + TELEM every tick ──────────────────────────────────
             frames.append(encode_state(mode, drv_left, drv_right, flags, 0.5))
+            mod_curr = round(abs(drv_left + drv_right) * 4, 2)
             frames.append(encode_telem(
                 voltage_v   = voltage,
-                current_a   = round(abs(drv_left + drv_right) * 8, 2),
+                current_a   = round(mod_curr * 4, 2),
                 board_temp  = 38.0,
                 left_temp   = 32.0,
                 right_temp  = 31.5,
@@ -783,6 +794,16 @@ class FakeLinkV2(_LinkBase):
                 heading     = round(heading, 1),
                 pitch       = round(math.sin(t * 0.3) * 4, 1),
                 roll        = round(math.cos(t * 0.4) * 3, 1),
+            ))
+            frames.append(encode_mod_telem(
+                fl_temp  = round(30.0 + math.sin(t * 0.07) * 3, 1),
+                fr_temp  = round(31.0 + math.sin(t * 0.09) * 3, 1),
+                rl_temp  = round(29.5 + math.sin(t * 0.11) * 3, 1),
+                rr_temp  = round(30.5 + math.sin(t * 0.13) * 3, 1),
+                fl_curr  = mod_curr, fr_curr = mod_curr,
+                rl_curr  = mod_curr, rr_curr = mod_curr,
+                fl_fault = False, fr_fault = False,
+                rl_fault = False, rr_fault = False,
             ))
 
             # ── Low voltage alarm ─────────────────────────────────────────

@@ -119,10 +119,10 @@ class Telemetry:
     voltage:     float          = 0.0
     current:     float          = 0.0
     board_temp:  float          = 0.0
-    left_temp:   float          = 0.0
-    right_temp:  float          = 0.0
-    left_fault:  bool           = False
-    right_fault: bool           = False
+    left_temp:   float          = 0.0   # max(FL, RL) — backward compat aggregate
+    right_temp:  float          = 0.0   # max(FR, RR) — backward compat aggregate
+    left_fault:  bool           = False  # OR(FL, RL)
+    right_fault: bool           = False  # OR(FR, RR)
     bench_temp:  float          = 0.0
     bench_fault: bool           = False
     heading:     Optional[float] = None   # IMU heading in degrees (None = IMU absent)
@@ -130,6 +130,19 @@ class Telemetry:
     roll:        Optional[float] = None   # IMU roll   in degrees, +ve = right down
     firmware_version: Optional[int] = None  # Yukon firmware version (None = old firmware)
     timestamp:   float          = 0.0
+    # Per-module telemetry (SLOT1=RR, SLOT2=FR, SLOT3=FL, SLOT4=RL)
+    rr_temp:    float = 0.0
+    fr_temp:    float = 0.0
+    fl_temp:    float = 0.0
+    rl_temp:    float = 0.0
+    rr_current: float = 0.0
+    fr_current: float = 0.0
+    fl_current: float = 0.0
+    rl_current: float = 0.0
+    rr_fault:   bool  = False
+    fr_fault:   bool  = False
+    fl_fault:   bool  = False
+    rl_fault:   bool  = False
 
 
 @dataclass
@@ -276,7 +289,7 @@ class _YukonLink:
     CMD_RC_QUERY = 12  # value: ignored — Yukon replies with 14 channel packets + validity then ACK
     CMD_BENCH    = 13  # value: 0=disable dual power switch output, 1=enable
 
-    RESP_IDS     = range(13)  # 0..12 sensor IDs (7=heading, 8=pitch, 9=roll, 10=bench_temp, 11=bench_fault, 12=fw_version)
+    RESP_IDS     = range(25)  # 0..24 sensor IDs (13-16=per-mod temps, 17-20=per-mod currents, 21-24=per-mod faults)
     RESP_RC_BASE = 8          # IDs 8-21 = channels 0-13; ID 22 = RC validity flag
     # Note: RESP_RC_BASE (8) overlaps RESP_PITCH (8) and RESP_ROLL (9) by ID number,
     # but they are never mixed in the same response batch. Routing is safe because
@@ -356,7 +369,7 @@ class _YukonLink:
                 if len(pkt) == 5:
                     in_pkt = False
                     rtype, v_high, v_low, chk = pkt[1], pkt[2], pkt[3], pkt[4]
-                    if (0x30 <= rtype <= 0x46 and
+                    if (0x30 <= rtype <= 0x48 and
                             0x40 <= v_high <= 0x4F and
                             0x50 <= v_low  <= 0x5F and
                             chk == (rtype ^ v_high ^ v_low)):
@@ -424,6 +437,18 @@ class _YukonLink:
             roll             = roll,
             firmware_version = fw_raw if fw_raw else None,
             timestamp        = time.monotonic(),
+            rr_temp          = raw.get(13, 0) / 3.0,
+            fr_temp          = raw.get(14, 0) / 3.0,
+            fl_temp          = raw.get(15, 0) / 3.0,
+            rl_temp          = raw.get(16, 0) / 3.0,
+            rr_current       = raw.get(17, 0) / 10.0,
+            fr_current       = raw.get(18, 0) / 10.0,
+            fl_current       = raw.get(19, 0) / 10.0,
+            rl_current       = raw.get(20, 0) / 10.0,
+            rr_fault         = bool(raw.get(21, 0)),
+            fr_fault         = bool(raw.get(22, 0)),
+            fl_fault         = bool(raw.get(23, 0)),
+            rl_fault         = bool(raw.get(24, 0)),
         )
 
     # ── protocol helpers ─────────────────────────────────────────────────────

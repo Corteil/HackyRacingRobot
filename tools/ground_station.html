@@ -91,6 +91,17 @@ button:active{background:#2a2a42}
 /* Telemetry */
 .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:5px 8px}
 .tgrid.three{grid-template-columns:1fr 1fr 1fr}
+/* Motor module grid */
+.mod-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px 8px}
+.mod-cell{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;transition:border-color .3s}
+.mod-cell.fault{border-color:var(--red);background:#1a0808}
+.mod-name{font-size:9px;color:var(--gray);letter-spacing:.5px;margin-bottom:2px;font-weight:bold}
+.mod-vals{display:flex;gap:6px;font-size:11px;margin-bottom:2px}
+.mod-tmp{color:var(--yellow)}
+.mod-amp{color:var(--orange)}
+.mod-status{font-size:10px;font-weight:bold}
+.mod-status.ok{color:var(--green)}
+.mod-status.err{color:var(--red)}
 /* Telemetry instruments */
 .telem-instruments{flex:1;min-height:0;display:flex;gap:4px;padding:4px}
 .telem-inst-wrap{flex:1;display:flex;flex-direction:column;align-items:center;min-width:0}
@@ -303,10 +314,31 @@ button:active{background:#2a2a42}
           <div class="field"><label>Voltage</label><span id="mob-volt">--</span></div>
           <div class="field"><label>Current</label><span id="mob-curr">--</span></div>
         </div>
-        <div class="tgrid three">
+        <div class="tgrid">
           <div class="field"><label>Board</label><span id="mob-board">--</span></div>
-          <div class="field"><label>Left</label><span id="mob-ltmp">--</span></div>
-          <div class="field"><label>Right</label><span id="mob-rtmp">--</span></div>
+          <div class="field"><label>Faults</label><span id="mob-fault" style="color:var(--green)">OK</span></div>
+        </div>
+        <div class="mod-grid">
+          <div class="mod-cell" id="mob-mod-fl">
+            <div class="mod-name">FL·S3</div>
+            <div class="mod-vals"><span class="mod-tmp" id="mob-fl-temp">--</span><span class="mod-amp" id="mob-fl-curr">--</span></div>
+            <span class="mod-status ok" id="mob-fl-fault">OK</span>
+          </div>
+          <div class="mod-cell" id="mob-mod-fr">
+            <div class="mod-name">FR·S2</div>
+            <div class="mod-vals"><span class="mod-tmp" id="mob-fr-temp">--</span><span class="mod-amp" id="mob-fr-curr">--</span></div>
+            <span class="mod-status ok" id="mob-fr-fault">OK</span>
+          </div>
+          <div class="mod-cell" id="mob-mod-rl">
+            <div class="mod-name">RL·S4</div>
+            <div class="mod-vals"><span class="mod-tmp" id="mob-rl-temp">--</span><span class="mod-amp" id="mob-rl-curr">--</span></div>
+            <span class="mod-status ok" id="mob-rl-fault">OK</span>
+          </div>
+          <div class="mod-cell" id="mob-mod-rr">
+            <div class="mod-name">RR·S1</div>
+            <div class="mod-vals"><span class="mod-tmp" id="mob-rr-temp">--</span><span class="mod-amp" id="mob-rr-curr">--</span></div>
+            <span class="mod-status ok" id="mob-rr-fault">OK</span>
+          </div>
         </div>
         <div class="tgrid">
           <div class="field">
@@ -316,7 +348,6 @@ button:active{background:#2a2a42}
               <span id="mob-hdg-text" style="font-size:13px;color:var(--cyan)">---</span>
             </div>
           </div>
-          <div class="field"><label>Faults</label><span id="mob-fault" style="color:var(--green)">OK</span></div>
         </div>
         <div class="tgrid">
           <div class="field"><label>Pitch</label><span id="mob-pitch" style="color:var(--gray)">---</span></div>
@@ -483,16 +514,28 @@ function htmlMotor(i) {
         <span class="mval" id="q${i}-val-r">+0.00</span></div></div>`;
 }
 function htmlTelemetry(i) {
+  const mods = [
+    ['fl', 'FL·S3'], ['fr', 'FR·S2'],
+    ['rl', 'RL·S4'], ['rr', 'RR·S1'],
+  ];
+  const modCells = mods.map(([k, lbl]) => `
+    <div class="mod-cell" id="q${i}-mod-${k}">
+      <div class="mod-name">${lbl}</div>
+      <div class="mod-vals">
+        <span class="mod-tmp" id="q${i}-${k}-temp">--</span>
+        <span class="mod-amp" id="q${i}-${k}-curr">--</span>
+      </div>
+      <span class="mod-status ok" id="q${i}-${k}-fault">OK</span>
+    </div>`).join('');
   return `
     <div class="tgrid">
       <div class="field"><label>Voltage</label><span id="q${i}-volt">--</span></div>
       <div class="field"><label>Current</label><span id="q${i}-curr">--</span></div>
     </div>
-    <div class="tgrid three" style="padding-top:0">
+    <div class="tgrid" style="padding-top:0">
       <div class="field"><label>Board</label><span id="q${i}-board">--</span></div>
-      <div class="field"><label>Left</label><span id="q${i}-ltmp">--</span></div>
-      <div class="field"><label>Right</label><span id="q${i}-rtmp">--</span></div>
     </div>
+    <div class="mod-grid">${modCells}</div>
     <div class="telem-instruments">
       <div class="telem-inst-wrap">
         <canvas class="telem-inst-canvas" id="q${i}-compass-large"></canvas>
@@ -818,8 +861,6 @@ function updateTelemPanel(i, s) {
   se(`q${i}-volt`,  fmt(t.voltage,1,' V'));
   se(`q${i}-curr`,  fmt(t.current,2,' A'));
   se(`q${i}-board`, fmt(t.board_temp,0,'°C'));
-  se(`q${i}-ltmp`,  fmt(t.left_temp,0,'°C'));
-  se(`q${i}-rtmp`,  fmt(t.right_temp,0,'°C'));
   const fault = t.left_fault||t.right_fault;
   const fEl = el(`q${i}-fault`);
   if (fEl){ fEl.textContent=(t.left_fault?'FAULT-L ':'')+(t.right_fault?'FAULT-R':'')||'OK';
@@ -832,6 +873,19 @@ function updateTelemPanel(i, s) {
                     t.roll!=null  ? C.cyan : C.gray);
   drawCompassLarge(el(`q${i}-compass-large`), t.heading);
   drawArtificialHorizon(el(`q${i}-horizon`), t.pitch, t.roll);
+  for (const [k, fk, tk, ak] of [
+    ['fl','fl_fault','fl_temp','fl_current'],
+    ['fr','fr_fault','fr_temp','fr_current'],
+    ['rl','rl_fault','rl_temp','rl_current'],
+    ['rr','rr_fault','rr_temp','rr_current'],
+  ]) {
+    const f = t[fk]; const cell = el(`q${i}-mod-${k}`);
+    if (cell) cell.className = 'mod-cell' + (f ? ' fault' : '');
+    const fs = el(`q${i}-${k}-fault`);
+    if (fs) { fs.textContent = f ? 'FAULT' : 'OK'; fs.className = 'mod-status '+(f?'err':'ok'); }
+    se(`q${i}-${k}-temp`, t[tk]!=null ? t[tk].toFixed(0)+'°C' : '--');
+    se(`q${i}-${k}-curr`, t[ak]!=null ? t[ak].toFixed(1)+' A' : '--');
+  }
 }
 
 // ── SNR colour helper ─────────────────────────────────────────────────────────
@@ -1591,10 +1645,21 @@ function updateMobile(s) {
   se('mob-volt',  fmt(t.voltage,1,' V'));
   se('mob-curr',  fmt(t.current,2,' A'));
   se('mob-board', fmt(t.board_temp,0,'°C'));
-  se('mob-ltmp',  fmt(t.left_temp,0,'°C'));
-  se('mob-rtmp',  fmt(t.right_temp,0,'°C'));
   const fault=t.left_fault||t.right_fault;
   se('mob-fault',(t.left_fault?'FAULT-L ':'')+(t.right_fault?'FAULT-R':'')||'OK',fault?C.red:C.green);
+  for (const [k, fk, tk, ak] of [
+    ['fl','fl_fault','fl_temp','fl_current'],
+    ['fr','fr_fault','fr_temp','fr_current'],
+    ['rl','rl_fault','rl_temp','rl_current'],
+    ['rr','rr_fault','rr_temp','rr_current'],
+  ]) {
+    const f = t[fk]; const cell = el(`mob-mod-${k}`);
+    if (cell) cell.className = 'mod-cell' + (f ? ' fault' : '');
+    const fs = el(`mob-${k}-fault`);
+    if (fs) { fs.textContent = f ? 'FAULT' : 'OK'; fs.className = 'mod-status '+(f?'err':'ok'); }
+    se(`mob-${k}-temp`, t[tk]!=null ? t[tk].toFixed(0)+'°C' : '--');
+    se(`mob-${k}-curr`, t[ak]!=null ? t[ak].toFixed(1)+' A' : '--');
+  }
   se('mob-hdg-text',t.heading!=null?t.heading.toFixed(1)+'°':'---',t.heading!=null?C.cyan:C.gray);
   drawCompass(el('mob-compass'),t.heading);
   se('mob-pitch',t.pitch!=null?(t.pitch>=0?'+':'')+t.pitch.toFixed(1)+'°':'---',t.pitch!=null?C.cyan:C.gray);
