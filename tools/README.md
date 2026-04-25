@@ -302,6 +302,55 @@ Tests all state transitions (IDLE → SEARCHING → ALIGNING → APPROACHING →
 
 ---
 
+### test_footage.py
+
+Play back recorded MP4 footage through the ArUco detector and/or the Hailo-10H robot detector, with a live annotated window showing bounding boxes and detection stats.  Useful for tuning detector settings, verifying detection modules against real race footage, and building intuition about what the robot sees before a run.
+
+```
+python3 tools/test_footage.py FOOTAGE.mp4 [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--aruco` | off | Enable ArUco marker detection |
+| `--aruco-dict NAME` | `DICT_4X4_250` | ArUco dictionary to use |
+| `--aruco-calib PATH` | none | Camera calibration `.npz` for pose estimation |
+| `--robot-detector HEF` | off | Enable robot detector; path to compiled `.hef` model |
+| `--conf FLOAT` | `0.45` | Robot detector confidence threshold |
+| `--iou FLOAT` | `0.45` | Robot detector NMS IoU threshold |
+| `--save OUTPUT.mp4` | off | Save annotated video to file |
+| `--start SECONDS` | `0` | Start playback at this timestamp |
+
+**Controls**
+
+| Key | Action |
+|-----|--------|
+| `Space` | Pause / resume |
+| `→` / `←` | Step one frame (when paused) |
+| `+` / `-` | Cycle speed: 0.1× → 0.25× → 0.5× → 1× → 2× → 4× → 8× |
+| `S` | Save snapshot JPEG of current frame |
+| `Q` / `Esc` | Quit |
+
+**Examples**
+```bash
+# ArUco only (no Hailo required)
+python3 tools/test_footage.py race.mp4 --aruco
+
+# Robot detector only (requires trained HEF on Pi)
+python3 tools/test_footage.py race.mp4 --robot-detector models/robot_detector.hef
+
+# Both detectors together
+python3 tools/test_footage.py race.mp4 --aruco --robot-detector models/robot_detector.hef
+
+# Start 30 s in, slow to half speed for a tricky section
+python3 tools/test_footage.py race.mp4 --aruco --start 30
+
+# Save annotated video
+python3 tools/test_footage.py race.mp4 --aruco --save annotated.mp4
+```
+
+---
+
 ### test_gps_navigator.py
 
 Unit tests for `robot/gps_navigator.py` using synthetic GPS fixes and a mock Yukon — no hardware, radio, or GNSS receiver required.

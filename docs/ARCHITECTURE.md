@@ -64,6 +64,7 @@ Consumers of robot state:
 | `tools/nav_visualiser.py` | Real-time overhead navigation view — `--live`, `--sim`, or `--udp` modes |
 | `yukon_firmware_and_software/i2c_scan.py` | I2C bus scanner for the Yukon Qw/ST port |
 | `tools/test_gnss.py` | 57 unit tests for the `gnss/` package — no hardware required |
+| `tools/test_footage.py` | Replay MP4 footage through ArUco and/or robot detector with live annotated window; controls for pause, step, and speed |
 | `tools/test_*.py` | Unit tests and live-display tools for iBUS, LiDAR, protocol, GPS, BNO085, ArUco, robot integration |
 
 ---

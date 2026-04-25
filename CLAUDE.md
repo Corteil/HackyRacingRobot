@@ -232,6 +232,10 @@ python3 tools/test_robot.py
 
 # ArUco detection (synthetic frames)
 python3 tools/test_aruco.py
+
+# Replay recorded footage through ArUco and/or robot detector (visual window)
+python3 tools/test_footage.py race.mp4 --aruco
+python3 tools/test_footage.py race.mp4 --aruco --robot-detector models/robot_detector.hef
 ```
 
 ### Yukon simulator
