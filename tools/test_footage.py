@@ -322,7 +322,11 @@ def main():
         print(f"Saved annotated video: {args.save}")
     if robot_det:
         robot_det.stop()
+    # Flush pending GTK events before destroying windows to avoid the harmless
+    # GLib-GObject-CRITICAL g_object_unref warning from OpenCV's GTK3 backend.
+    cv2.waitKey(1)
     cv2.destroyAllWindows()
+    cv2.waitKey(1)
 
 
 if __name__ == '__main__':
