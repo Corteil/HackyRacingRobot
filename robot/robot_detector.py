@@ -186,20 +186,32 @@ class RobotDetector:
         Confidence threshold (0–1).
     iou : float
         IoU threshold for NMS duplicate suppression.
+    persist : int
+        A detection must appear in this many consecutive frames before being
+        reported.  1 = report immediately (no filtering).  2 = require two
+        frames in a row (eliminates most single-frame background false
+        positives).  Higher values add more latency.
+    match_radius : int
+        Maximum centre-point distance in display pixels between consecutive
+        frames for two detections to be considered the same robot.
     draw : bool
         Annotate frames in-place with bounding boxes (default True).
     """
 
     def __init__(self,
-                 model_path: str,
-                 conf:       float = 0.45,
-                 iou:        float = 0.45,
-                 draw:       bool  = True):
-        self._model_path = model_path
-        self._conf       = conf
-        self._iou        = iou
-        self._draw       = draw
-        self._lock       = threading.Lock()
+                 model_path:   str,
+                 conf:         float = 0.45,
+                 iou:          float = 0.45,
+                 persist:      int   = 2,
+                 match_radius: int   = 60,
+                 draw:         bool  = True):
+        self._model_path   = model_path
+        self._conf         = conf
+        self._iou          = iou
+        self._persist      = max(1, persist)
+        self._match_radius = match_radius
+        self._draw         = draw
+        self._lock         = threading.Lock()
 
         self._device          = None
         self._infer_model     = None
@@ -212,6 +224,9 @@ class RobotDetector:
         self._anchor_pts      = None   # (N, 2) float32
         self._anchor_strides  = None   # (N,)   float32
         self._available       = False
+
+        # Temporal persistence tracking: list of (cx, cy, robot, hit_count)
+        self._candidates: List[tuple] = []
 
         self._t_prev = time.monotonic()
 
@@ -325,6 +340,7 @@ class RobotDetector:
             return None
 
         robots = self._decode(conf_buf, dfl_buf, fw, fh)
+        robots = self._persist_filter(robots)
 
         if self._draw:
             self._annotate(frame_rgb, robots)
@@ -333,6 +349,7 @@ class RobotDetector:
 
     def stop(self) -> None:
         """Release the Hailo device."""
+        self._candidates = []
         if self._configured_cm is not None:
             try:
                 self._configured_cm.__exit__(None, None, None)
@@ -347,6 +364,33 @@ class RobotDetector:
                 pass
             self._device = None
         self._available = False
+
+    # ── temporal persistence filter ──────────────────────────────────────────
+
+    def _persist_filter(self, robots: List[DetectedRobot]) -> List[DetectedRobot]:
+        """Suppress detections that do not persist across consecutive frames.
+
+        Matches each new detection to the nearest previous candidate within
+        _match_radius pixels.  A detection is only reported once it has been
+        seen in _persist consecutive frames.  Unmatched previous candidates are
+        dropped (robot left the frame or was a false positive).
+        """
+        if self._persist <= 1:
+            return robots
+
+        r2 = self._match_radius ** 2
+        new_candidates = []
+        for robot in robots:
+            best, best_d2 = None, r2 + 1
+            for prev_cx, prev_cy, _, hits in self._candidates:
+                d2 = (robot.center_x - prev_cx) ** 2 + (robot.center_y - prev_cy) ** 2
+                if d2 < best_d2:
+                    best, best_d2 = hits, d2
+            hits = (best + 1) if best is not None else 1
+            new_candidates.append((robot.center_x, robot.center_y, robot, hits))
+
+        self._candidates = new_candidates
+        return [robot for _, _, robot, hits in new_candidates if hits >= self._persist]
 
     # ── decoding ─────────────────────────────────────────────────────────────
 

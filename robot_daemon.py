@@ -807,11 +807,13 @@ class _Camera:
                  hfov:            float = 0.0,
                  max_rec_minutes:       float = 0.0,
                  rec_dir:               str   = '',
-                 enable_robot_detector: bool  = False,
-                 robot_det_model:       str   = '',
-                 robot_det_conf:        float = 0.45,
-                 robot_det_iou:         float = 0.45,
-                 name:                  str   = 'camera'):      # label for log messages
+                 enable_robot_detector:  bool  = False,
+                 robot_det_model:        str   = '',
+                 robot_det_conf:         float = 0.45,
+                 robot_det_iou:          float = 0.45,
+                 robot_det_persist:      int   = 2,
+                 robot_det_match_radius: int   = 60,
+                 name:                   str   = 'camera'):      # label for log messages
         self._driver         = driver.lower()
         self._camera_num     = camera_num
         self._device         = device
@@ -840,10 +842,12 @@ class _Camera:
         self._stop           = threading.Event()
         self._ok             = False
         self._aruco_ok       = False
-        self._robot_det_enabled = enable_robot_detector
-        self._robot_det_model   = robot_det_model
-        self._robot_det_conf    = robot_det_conf
-        self._robot_det_iou     = robot_det_iou
+        self._robot_det_enabled      = enable_robot_detector
+        self._robot_det_model        = robot_det_model
+        self._robot_det_conf         = robot_det_conf
+        self._robot_det_iou          = robot_det_iou
+        self._robot_det_persist      = robot_det_persist
+        self._robot_det_match_radius = robot_det_match_radius
         self._robot_det_state   = None   # RobotDetection or None
         self._robot_det_q       = queue.Queue(maxsize=1)
         self._robot_det_ok      = False
@@ -974,9 +978,11 @@ class _Camera:
             log.warning(f"{self._name}: robot_detector module unavailable")
             return
         det = RobotDetector(
-            model_path = self._robot_det_model,
-            conf       = self._robot_det_conf,
-            iou        = self._robot_det_iou,
+            model_path   = self._robot_det_model,
+            conf         = self._robot_det_conf,
+            iou          = self._robot_det_iou,
+            persist      = self._robot_det_persist,
+            match_radius = self._robot_det_match_radius,
         )
         if not det.available:
             log.warning(f"{self._name}: robot detector not available "
@@ -2122,8 +2128,10 @@ class Robot:
             os.path.dirname(os.path.abspath(__file__)),
             _ini_cam.get('robot_detector', 'model', fallback='models/robot_detector.hef').strip(),
         )
-        _rd_conf = _ini_cam.getfloat('robot_detector', 'conf', fallback=0.45)
-        _rd_iou  = _ini_cam.getfloat('robot_detector', 'iou',  fallback=0.45)
+        _rd_conf         = _ini_cam.getfloat('robot_detector', 'conf',         fallback=0.45)
+        _rd_iou          = _ini_cam.getfloat('robot_detector', 'iou',          fallback=0.45)
+        _rd_persist      = _ini_cam.getint  ('robot_detector', 'persist',      fallback=2)
+        _rd_match_radius = _ini_cam.getint  ('robot_detector', 'match_radius', fallback=60)
 
         def _make_camera(section, name):
             """Build a _Camera from a named [camera_*] ini section."""
@@ -2152,10 +2160,12 @@ class Robot:
                 enable_robot_detector = (
                     _rd_enabled and
                     _ini_cam.getboolean(section, 'robot_detector', fallback=False)),
-                robot_det_model = _rd_model,
-                robot_det_conf  = _rd_conf,
-                robot_det_iou   = _rd_iou,
-                name            = name,
+                robot_det_model        = _rd_model,
+                robot_det_conf         = _rd_conf,
+                robot_det_iou          = _rd_iou,
+                robot_det_persist      = _rd_persist,
+                robot_det_match_radius = _rd_match_radius,
+                name                   = name,
             )
 
         # Try triple-camera first; fall back to legacy [camera] section
