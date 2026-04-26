@@ -157,9 +157,16 @@ def main():
                              f'(default: {_RD_MATCH_RADIUS} from robot.ini)')
     parser.add_argument('--save',  default=None, metavar='OUTPUT.mp4',
                         help='Save annotated video to file')
+    parser.add_argument('--snapshot-dir', default=None, metavar='DIR',
+                        help='Directory for S-key snapshots '
+                             '(default: ~/Pictures/HackyRacingRobot)')
     parser.add_argument('--start', type=float, default=0.0,
                         help='Start time in seconds (default: 0)')
     args = parser.parse_args()
+
+    snapshot_dir = os.path.expanduser(
+        args.snapshot_dir if args.snapshot_dir else '~/Pictures/HackyRacingRobot')
+    os.makedirs(snapshot_dir, exist_ok=True)
 
     if not args.aruco and not args.robot_detector:
         parser.error("Specify at least one of --aruco or --robot-detector")
@@ -344,7 +351,7 @@ def main():
         elif key in (ord('-'), ord('_')):            # slow down
             speed_idx = max(speed_idx - 1, 0)
         elif key in (ord('s'), ord('S')):            # snapshot
-            snap_path = f"snapshot_{snapshot_num:04d}.jpg"
+            snap_path = os.path.join(snapshot_dir, f"snapshot_{snapshot_num:04d}.jpg")
             cv2.imwrite(snap_path, display_bgr)
             print(f"\n  Snapshot saved: {snap_path}")
             snapshot_num += 1
