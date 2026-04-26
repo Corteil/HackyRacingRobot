@@ -34,9 +34,19 @@ Controls
 import sys
 import os
 import argparse
+import configparser
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── Read robot.ini defaults for detector params ───────────────────────────────
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ini = configparser.ConfigParser(inline_comment_prefixes=('#',))
+_ini.read(os.path.join(_REPO_ROOT, 'robot.ini'))
+_RD_CONF         = _ini.getfloat('robot_detector', 'conf',         fallback=0.45)
+_RD_IOU          = _ini.getfloat('robot_detector', 'iou',          fallback=0.45)
+_RD_PERSIST      = _ini.getint  ('robot_detector', 'persist',      fallback=2)
+_RD_MATCH_RADIUS = _ini.getint  ('robot_detector', 'match_radius', fallback=60)
 
 import cv2
 import numpy as np
@@ -119,10 +129,16 @@ def main():
                         help='Path to camera calibration .npz (optional)')
     parser.add_argument('--robot-detector', default=None, metavar='HEF',
                         help='Enable robot detector; path to .hef model file')
-    parser.add_argument('--conf',  type=float, default=0.45,
-                        help='Robot detector confidence threshold (default: 0.45)')
-    parser.add_argument('--iou',   type=float, default=0.45,
-                        help='Robot detector NMS IoU threshold (default: 0.45)')
+    parser.add_argument('--conf',  type=float, default=_RD_CONF,
+                        help=f'Confidence threshold (default: {_RD_CONF} from robot.ini)')
+    parser.add_argument('--iou',   type=float, default=_RD_IOU,
+                        help=f'NMS IoU threshold (default: {_RD_IOU} from robot.ini)')
+    parser.add_argument('--persist', type=int, default=_RD_PERSIST,
+                        help=f'Consecutive frames required to confirm a detection '
+                             f'(default: {_RD_PERSIST} from robot.ini; 1=off)')
+    parser.add_argument('--match-radius', type=int, default=_RD_MATCH_RADIUS,
+                        help=f'Centre-point match radius in pixels between frames '
+                             f'(default: {_RD_MATCH_RADIUS} from robot.ini)')
     parser.add_argument('--save',  default=None, metavar='OUTPUT.mp4',
                         help='Save annotated video to file')
     parser.add_argument('--start', type=float, default=0.0,
@@ -169,13 +185,16 @@ def main():
         RobotDetector = _import_robot_detector()
         if RobotDetector:
             robot_det = RobotDetector(
-                model_path = args.robot_detector,
-                conf       = args.conf,
-                iou        = args.iou,
-                draw       = True,
+                model_path   = args.robot_detector,
+                conf         = args.conf,
+                iou          = args.iou,
+                persist      = args.persist,
+                match_radius = args.match_radius,
+                draw         = True,
             )
             status = "ready" if robot_det.available else "UNAVAILABLE (HEF missing or Hailo error)"
-            print(f"RobotDet: {args.robot_detector}  conf={args.conf}  [{status}]")
+            print(f"RobotDet: {args.robot_detector}  conf={args.conf}  "
+                  f"persist={args.persist}  [{status}]")
 
     # ── Output video writer ───────────────────────────────────────────────────
     writer = None
@@ -227,13 +246,13 @@ def main():
                 last_robots = robot_det.detect(frame_rgb)  # annotates in-place
 
         else:
-            # Paused — redraw last frame without running detectors again
+            # Paused — redraw last frame without re-running detectors
             if frame_cache is not None:
                 frame_rgb = frame_cache.copy()
                 if aruco_det is not None and last_aruco is not None:
-                    aruco_det.detect(frame_rgb)
-                if robot_det is not None and robot_det.available and last_robots is not None:
-                    robot_det.detect(frame_rgb)
+                    aruco_det.detect(frame_rgb)   # ArUco is stateless; safe to re-run
+                if robot_det is not None and last_robots is not None:
+                    robot_det._annotate(frame_rgb, last_robots.robots)
 
         # ── Build stats overlay ───────────────────────────────────────────────
         elapsed_s = frame_num / src_fps
