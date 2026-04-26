@@ -51,6 +51,22 @@ _RD_MATCH_RADIUS = _ini.getint  ('robot_detector', 'match_radius', fallback=60)
 import cv2
 import numpy as np
 
+# Suppress the harmless GLib-GObject-CRITICAL g_object_unref warning emitted
+# by OpenCV's GTK3 backend.  It fires during imshow/destroyAllWindows and
+# cannot be caught at the Python level.  Install a no-op GLib log handler for
+# that specific domain before any OpenCV window calls are made.
+try:
+    import ctypes, ctypes.util as _ctu
+    _glib = ctypes.CDLL(_ctu.find_library('glib-2.0'))
+    _GLogFunc = ctypes.CFUNCTYPE(
+        None, ctypes.c_char_p, ctypes.c_uint, ctypes.c_char_p, ctypes.c_void_p)
+    _noop_log = _GLogFunc(lambda *_: None)          # keep ref to prevent GC
+    _glib.g_log_set_handler(
+        b'GLib-GObject', ctypes.c_uint(1 << 3),    # G_LOG_LEVEL_CRITICAL
+        _noop_log, None)
+except Exception:
+    pass
+
 # ── Detector imports (both optional) ─────────────────────────────────────────
 
 def _import_aruco():
@@ -341,21 +357,9 @@ def main():
         print(f"Saved annotated video: {args.save}")
     if robot_det:
         robot_det.stop()
-    # GTK's GLib emits a harmless g_object_unref CRITICAL when OpenCV destroys
-    # its window.  waitKey() alone is not enough to flush it; redirect stderr at
-    # the file-descriptor level so the message never reaches the terminal.
-    import os as _os
-    _old_stderr = _os.dup(2)
-    _devnull    = _os.open('/dev/null', _os.O_WRONLY)
-    _os.dup2(_devnull, 2)
-    try:
-        cv2.waitKey(1)
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)
-    finally:
-        _os.dup2(_old_stderr, 2)
-        _os.close(_devnull)
-        _os.close(_old_stderr)
+    cv2.waitKey(1)
+    cv2.destroyAllWindows()
+    cv2.waitKey(1)
 
 
 if __name__ == '__main__':
