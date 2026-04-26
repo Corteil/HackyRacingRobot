@@ -63,8 +63,9 @@ _FONT         = cv2.FONT_HERSHEY_SIMPLEX
 _FONT_SCALE   = 0.5
 _THICKNESS    = 2
 
-_STRIDES = (8, 16, 32)   # YOLOv8 feature-pyramid strides
-_REG_MAX = 16             # DFL distribution bins
+_STRIDES      = (8, 16, 32)   # YOLOv8 feature-pyramid strides
+_REG_MAX      = 16            # DFL distribution bins
+_MIN_BOX_SIDE = 10            # minimum box width/height in model-input pixels
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -141,6 +142,33 @@ def _dfl_decode(dfl: np.ndarray, strides: np.ndarray) -> np.ndarray:
     # weighted sum → ltrb in grid-cell units → multiply by stride
     ltrb = (probs * weights[:, None, None]).sum(axis=0)  # (N, 4)
     return ltrb * strides[:, None]                        # (N, 4) pixels
+
+
+def _centre_nms(indices: list, boxes: list, scores: list) -> list:
+    """Second-pass suppression for multi-scale duplicates.
+
+    Standard IoU NMS misses the case where a large box fully contains a smaller
+    one (IoU is low because the union is dominated by the large box).
+    Here we additionally suppress any box whose centre point lies strictly
+    inside a higher-confidence surviving box.
+    """
+    # Sort surviving indices by score descending so we always keep the best one
+    order = sorted(indices, key=lambda i: -scores[i])
+    kept, suppressed = [], set()
+    for i in order:
+        if i in suppressed:
+            continue
+        kept.append(i)
+        bx, by, bw, bh = boxes[i]
+        rx1, ry1, rx2, ry2 = bx, by, bx + bw, by + bh
+        for j in order:
+            if j == i or j in suppressed:
+                continue
+            cx = boxes[j][0] + boxes[j][2] / 2
+            cy = boxes[j][1] + boxes[j][3] / 2
+            if rx1 < cx < rx2 and ry1 < cy < ry2:
+                suppressed.add(j)
+    return kept
 
 
 # ── Detector ──────────────────────────────────────────────────────────────────
@@ -351,7 +379,15 @@ class RobotDetector:
         x2 = np.clip(pts[:, 0] + ltrb[:, 2], 0, iw)
         y2 = np.clip(pts[:, 1] + ltrb[:, 3], 0, ih)
 
-        # NMS — cv2.dnn.NMSBoxes wants [x, y, w, h] top-left
+        # Drop boxes that are too small (artefacts from YOLO anchor edge cases)
+        w = x2 - x1
+        h = y2 - y1
+        valid = (w >= _MIN_BOX_SIDE) & (h >= _MIN_BOX_SIDE)
+        if not valid.any():
+            return []
+        x1, y1, x2, y2, conf = x1[valid], y1[valid], x2[valid], y2[valid], conf[valid]
+
+        # Pass 1 — standard IoU NMS
         boxes  = [(float(a), float(b), float(c - a), float(d - b))
                   for a, b, c, d in zip(x1, y1, x2, y2)]
         scores = conf.tolist()
@@ -359,7 +395,14 @@ class RobotDetector:
         indices = cv2.dnn.NMSBoxes(boxes, scores, self._conf, self._iou)
         if len(indices) == 0:
             return []
-        flat = indices.flatten() if hasattr(indices, 'flatten') else list(indices)
+        flat = list(indices.flatten() if hasattr(indices, 'flatten') else indices)
+
+        # Pass 2 — centre-containment suppression.
+        # When multi-scale anchors detect the same robot, a large stride-16 box
+        # often fully contains smaller stride-8 boxes with IoU too low for
+        # standard NMS.  Suppress any box whose centre lies inside a
+        # higher-confidence box.
+        flat = _centre_nms(flat, boxes, scores)
 
         # Scale from model input to display frame
         sx = frame_w / iw
