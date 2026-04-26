@@ -341,11 +341,21 @@ def main():
         print(f"Saved annotated video: {args.save}")
     if robot_det:
         robot_det.stop()
-    # Flush pending GTK events before destroying windows to avoid the harmless
-    # GLib-GObject-CRITICAL g_object_unref warning from OpenCV's GTK3 backend.
-    cv2.waitKey(1)
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
+    # GTK's GLib emits a harmless g_object_unref CRITICAL when OpenCV destroys
+    # its window.  waitKey() alone is not enough to flush it; redirect stderr at
+    # the file-descriptor level so the message never reaches the terminal.
+    import os as _os
+    _old_stderr = _os.dup(2)
+    _devnull    = _os.open('/dev/null', _os.O_WRONLY)
+    _os.dup2(_devnull, 2)
+    try:
+        cv2.waitKey(1)
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+    finally:
+        _os.dup2(_old_stderr, 2)
+        _os.close(_devnull)
+        _os.close(_old_stderr)
 
 
 if __name__ == '__main__':
