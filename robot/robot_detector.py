@@ -21,15 +21,19 @@ Graceful degradation
     silently disabled.
   - The camera thread falls back to ArUco-only mode when unavailable.
 
-Hailo output format note
-------------------------
-  YOLOv8n exported with ultralytics (opset=11, simplify=True) and compiled
-  with Hailo DFC produces one output tensor of shape (1, 5, N) or (1, N, 5)
-  where N = 8400 anchor proposals and 5 = [cx, cy, w, h, conf].  Coordinates
-  are in pixels at the model's input resolution (typically 640×640).
+Hailo output format (hailort 5.x, create_infer_model API)
+----------------------------------------------------------
+  The model compiled with Hailo DFC for HAILO10H produces two output tensors:
 
-  _decode_outputs() handles both orientations and logs the actual shape on
-  the first inference to help diagnose format mismatches.
+    ne_activation_activation1  float32  (1, N, 1)
+        Class confidence per anchor, already sigmoid'd on-chip.  N = 2100
+        for a 320×320 input (40×40 + 20×20 + 10×10 anchor grid).
+
+    depth_to_space1            float32  (16, N, 4)
+        DFL (Distribution Focal Loss) regression logits.  Axis 0 is the 16
+        distribution bins; axis 2 is the 4 ltrb coordinate groups.
+        Decode: softmax over axis 0 → weighted sum with [0..15] → ltrb in
+        grid-cell units → multiply by stride → pixel distances from anchor.
 """
 
 import logging
@@ -37,7 +41,7 @@ import time
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -46,10 +50,7 @@ log = logging.getLogger(__name__)
 
 # ── Hailo platform import (optional) ─────────────────────────────────────────
 try:
-    from hailo_platform import (
-        VDevice, HailoStreamInterface, ConfigureParams,
-        HailoSchedulingAlgorithm, FormatType, HEF, InferVStreams,
-    )
+    from hailo_platform import VDevice, FormatType
     _HAILO_AVAILABLE = True
 except ImportError:
     _HAILO_AVAILABLE = False
@@ -61,6 +62,9 @@ _LABEL_COLOUR = (255, 255, 255)   # white
 _FONT         = cv2.FONT_HERSHEY_SIMPLEX
 _FONT_SCALE   = 0.5
 _THICKNESS    = 2
+
+_STRIDES = (8, 16, 32)   # YOLOv8 feature-pyramid strides
+_REG_MAX = 16             # DFL distribution bins
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -96,20 +100,64 @@ class RobotDetection:
         return max(self.robots, key=lambda r: (r.x2 - r.x1) * (r.y2 - r.y1))
 
 
+# ── Anchor grid helpers ───────────────────────────────────────────────────────
+
+def _build_anchor_grid(img_h: int, img_w: int,
+                       strides: Tuple[int, ...] = _STRIDES
+                       ) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (anchor_points, stride_per_anchor) arrays of shape (N, 2) and (N,).
+
+    anchor_points[i] = (cx, cy) in pixels at the model input resolution.
+    stride_per_anchor[i] = the stride for anchor i.
+    """
+    pts, strd = [], []
+    for s in strides:
+        gh, gw = img_h // s, img_w // s
+        for gy in range(gh):
+            for gx in range(gw):
+                pts.append(((gx + 0.5) * s, (gy + 0.5) * s))
+                strd.append(s)
+    return (np.array(pts,  dtype=np.float32),
+            np.array(strd, dtype=np.float32))
+
+
+def _dfl_decode(dfl: np.ndarray, strides: np.ndarray) -> np.ndarray:
+    """Decode DFL regression tensor to pixel-space x1y1x2y2 boxes.
+
+    Parameters
+    ----------
+    dfl : (reg_max, N, 4)  — raw DFL logits from the model
+    strides : (N,)         — stride for each anchor
+
+    Returns
+    -------
+    boxes : (N, 4) float32 — ltrb distances in pixels from anchor centre
+    """
+    # softmax over the reg_max axis (axis 0)
+    e = np.exp(dfl - dfl.max(axis=0, keepdims=True))
+    probs = e / e.sum(axis=0, keepdims=True)          # (16, N, 4)
+
+    weights = np.arange(_REG_MAX, dtype=np.float32)   # (16,)
+    # weighted sum → ltrb in grid-cell units → multiply by stride
+    ltrb = (probs * weights[:, None, None]).sum(axis=0)  # (N, 4)
+    return ltrb * strides[:, None]                        # (N, 4) pixels
+
+
 # ── Detector ──────────────────────────────────────────────────────────────────
 
 class RobotDetector:
     """YOLOv8n robot detector running on the Hailo-10H.
 
+    Uses the hailort 5.x create_infer_model / ConfiguredInferModel API.
+
     Parameters
     ----------
     model_path : str
-        Path to the compiled .hef file (built via tools/robot_detector_training.html).
+        Path to the compiled .hef file.
     conf : float
-        Confidence threshold (0–1).  Detections below this are discarded.
-        Lower = more sensitive but more false positives.
+        Confidence threshold (0–1).
     iou : float
-        IoU threshold for NMS.  Overlapping boxes above this are merged.
+        IoU threshold for NMS duplicate suppression.
     draw : bool
         Annotate frames in-place with bounding boxes (default True).
     """
@@ -124,13 +172,18 @@ class RobotDetector:
         self._iou        = iou
         self._draw       = draw
         self._lock       = threading.Lock()
-        self._device     = None
-        self._network_group          = None
-        self._input_vstreams_params  = None
-        self._output_vstreams_params = None
-        self._input_wh: Optional[tuple] = None   # (W, H) for cv2.resize
-        self._available  = False
-        self._shape_logged = False   # log output shape on first inference
+
+        self._device          = None
+        self._infer_model     = None
+        self._configured      = None   # ConfiguredInferModel (kept open)
+        self._configured_cm   = None   # the context manager object
+        self._input_name      = None
+        self._conf_name       = None   # confidence output tensor name
+        self._dfl_name        = None   # DFL regression output tensor name
+        self._input_wh        = None   # (W, H) for cv2.resize
+        self._anchor_pts      = None   # (N, 2) float32
+        self._anchor_strides  = None   # (N,)   float32
+        self._available       = False
 
         self._t_prev = time.monotonic()
 
@@ -149,37 +202,46 @@ class RobotDetector:
             )
             return
         try:
-            hef    = HEF(self._model_path)
             params = VDevice.create_params()
             self._device = VDevice(params)
+            self._infer_model = self._device.create_infer_model(self._model_path)
 
-            configure_params = ConfigureParams.create_from_hef(
-                hef, interface=HailoStreamInterface.PCIe)
-            network_groups = self._device.configure(hef, configure_params)
-            self._network_group = network_groups[0]
+            # Request float32 I/O; hailort handles uint8↔float32 conversion
+            self._infer_model.input().set_format_type(FormatType.FLOAT32)
+            for out in self._infer_model.outputs:
+                out.set_format_type(FormatType.FLOAT32)
 
-            self._input_vstreams_params = (
-                self._network_group.make_input_vstream_params(
-                    False, FormatType.FLOAT32,
-                    HailoSchedulingAlgorithm.ROUND_ROBIN))
-            self._output_vstreams_params = (
-                self._network_group.make_output_vstream_params(
-                    False, FormatType.FLOAT32,
-                    HailoSchedulingAlgorithm.ROUND_ROBIN))
+            self._input_name = self._infer_model.input_names[0]
 
-            info  = hef.get_input_vstream_infos()[0]
-            shape = info.shape   # typically (H, W, C)
-            if len(shape) == 3:
-                self._input_wh = (int(shape[1]), int(shape[0]))   # (W, H) for cv2
-            else:
-                log.warning("RobotDetector: unexpected input shape %s — defaulting to 640×640", shape)
-                self._input_wh = (640, 640)
+            # Identify confidence and DFL outputs by shape heuristic:
+            #   confidence  → last dim == 1   e.g. (1, 2100, 1)
+            #   DFL         → first dim == 16 e.g. (16, 2100, 4)
+            for out in self._infer_model.outputs:
+                shape = tuple(out.shape)
+                if shape[-1] == 1:
+                    self._conf_name = out.name
+                elif shape[0] == _REG_MAX:
+                    self._dfl_name = out.name
+            if not self._conf_name or not self._dfl_name:
+                raise RuntimeError(
+                    f"Cannot identify conf/DFL outputs from shapes: "
+                    f"{[(o.name, tuple(o.shape)) for o in self._infer_model.outputs]}"
+                )
+
+            inp_shape = tuple(self._infer_model.input().shape)  # (H, W, C)
+            ih, iw = inp_shape[0], inp_shape[1]
+            self._input_wh = (iw, ih)
+
+            self._anchor_pts, self._anchor_strides = _build_anchor_grid(ih, iw)
+
+            # Enter the configured context once and hold it open for the lifetime
+            self._configured_cm = self._infer_model.configure()
+            self._configured = self._configured_cm.__enter__()
 
             self._available = True
             log.info(
                 "RobotDetector: loaded %s, input %dx%d, conf=%.2f, iou=%.2f",
-                self._model_path, self._input_wh[0], self._input_wh[1],
-                self._conf, self._iou,
+                self._model_path, iw, ih, self._conf, self._iou,
             )
         except Exception as e:
             log.warning("RobotDetector: Hailo init failed (%s) — robot detection disabled", e)
@@ -204,8 +266,6 @@ class RobotDetector:
         -------
         RobotDetection with detected robots (may be empty list).
         None if Hailo is unavailable or inference fails.
-
-        The frame is annotated in-place when draw=True.
         """
         if not self._available:
             return None
@@ -218,23 +278,25 @@ class RobotDetector:
         iw, ih = self._input_wh
 
         resized = cv2.resize(frame_rgb, (iw, ih), interpolation=cv2.INTER_LINEAR)
-        tensor  = (resized.astype(np.float32) / 255.0)[np.newaxis]   # (1, H, W, 3)
+        # Model expects uint8 0-255 range; pass as float32 (hailort quantises it)
+        tensor = resized.astype(np.float32)
+
+        conf_buf = np.empty(self._infer_model.output(self._conf_name).shape, dtype=np.float32)
+        dfl_buf  = np.empty(self._infer_model.output(self._dfl_name).shape,  dtype=np.float32)
 
         try:
             with self._lock:
-                with self._network_group.activate(self._network_group.create_params()):
-                    in_name = self._network_group.get_input_vstream_infos()[0].name
-                    with InferVStreams(
-                        self._network_group,
-                        self._input_vstreams_params,
-                        self._output_vstreams_params,
-                    ) as pipeline:
-                        results = pipeline.infer({in_name: tensor})
+                bindings = self._configured.create_bindings(
+                    input_buffers  = {self._input_name: tensor},
+                    output_buffers = {self._conf_name: conf_buf,
+                                      self._dfl_name:  dfl_buf},
+                )
+                self._configured.run([bindings], timeout=1000)
         except Exception as e:
             log.warning("RobotDetector: inference error: %s", e)
             return None
 
-        robots = self._decode_outputs(results, fw, fh)
+        robots = self._decode(conf_buf, dfl_buf, fw, fh)
 
         if self._draw:
             self._annotate(frame_rgb, robots)
@@ -243,6 +305,13 @@ class RobotDetector:
 
     def stop(self) -> None:
         """Release the Hailo device."""
+        if self._configured_cm is not None:
+            try:
+                self._configured_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._configured_cm = None
+            self._configured = None
         if self._device is not None:
             try:
                 self._device.release()
@@ -251,97 +320,50 @@ class RobotDetector:
             self._device = None
         self._available = False
 
-    # ── output decoding ───────────────────────────────────────────────────────
+    # ── decoding ─────────────────────────────────────────────────────────────
 
-    def _decode_outputs(self,
-                        results: dict,
-                        frame_w: int,
-                        frame_h: int) -> List[DetectedRobot]:
-        """Decode Hailo output tensors to a list of DetectedRobot objects.
+    def _decode(self,
+                conf_raw: np.ndarray,
+                dfl_raw:  np.ndarray,
+                frame_w:  int,
+                frame_h:  int) -> List[DetectedRobot]:
+        """Decode model outputs to DetectedRobot list.
 
-        Handles the two most common YOLOv8n output layouts from Hailo DFC:
-          (batch, 5, N)   — channels-first  [cx, cy, w, h, conf]
-          (batch, N, 5)   — channels-last
-
-        For multi-output models the tensors are concatenated along the anchor
-        axis before decoding.
-
-        Coordinates are in pixels at the model input resolution and are scaled
-        to the display frame size before returning.
+        conf_raw : (1, N, 1) — per-anchor confidence, already sigmoid'd
+        dfl_raw  : (16, N, 4) — DFL logits
         """
-        # Log output tensor shapes once to help diagnose format issues
-        if not self._shape_logged:
-            for name, tensor in results.items():
-                log.info("RobotDetector: output '%s' shape %s dtype %s",
-                         name, tensor.shape, tensor.dtype)
-            self._shape_logged = True
-
-        tensors = list(results.values())
-
-        # ── Consolidate to a single (5, N) tensor ─────────────────────────────
-        if len(tensors) == 1:
-            raw = tensors[0]
-            if raw.ndim == 3:
-                raw = raw[0]   # remove batch dim → (5, N) or (N, 5)
-        else:
-            # Multiple output heads — strip batch dim, normalise to (5, N), concatenate
-            parts = []
-            for t in tensors:
-                if t.ndim == 3:
-                    t = t[0]
-                if t.ndim == 2 and t.shape[0] < t.shape[1]:
-                    parts.append(t)          # already (5, N)
-                elif t.ndim == 2:
-                    parts.append(t.T)        # was (N, 5) — transpose
-                else:
-                    log.debug("RobotDetector: unexpected tensor ndim %d — skipping", t.ndim)
-            if not parts:
-                return []
-            raw = np.concatenate(parts, axis=1)
-
-        # Ensure (5, N) — if first dim is larger it's (N, 5), transpose
-        if raw.ndim == 2 and raw.shape[0] > raw.shape[1]:
-            raw = raw.T
-
-        if raw.shape[0] < 5:
-            log.warning("RobotDetector: output shape %s has fewer than 5 channels — "
-                        "check model export and compilation", raw.shape)
-            return []
-
-        cx   = raw[0]
-        cy   = raw[1]
-        w    = raw[2]
-        h    = raw[3]
-        conf = raw[4]   # for a 1-class model; multi-class would need argmax
-
-        # Confidence filter
+        conf = conf_raw.squeeze()                    # (N,)
         mask = conf >= self._conf
         if not mask.any():
             return []
 
-        cx, cy, w, h, conf = cx[mask], cy[mask], w[mask], h[mask], conf[mask]
+        iw, ih = self._input_wh
 
-        # cx,cy,w,h → x1,y1,x2,y2 at model input resolution
-        mw, mh = self._input_wh
-        x1 = np.clip(cx - w / 2, 0, mw).astype(np.float32)
-        y1 = np.clip(cy - h / 2, 0, mh).astype(np.float32)
-        x2 = np.clip(cx + w / 2, 0, mw).astype(np.float32)
-        y2 = np.clip(cy + h / 2, 0, mh).astype(np.float32)
+        # Decode DFL → ltrb pixel distances, then filter
+        ltrb_all = _dfl_decode(dfl_raw, self._anchor_strides)  # (N, 4)
+        ltrb = ltrb_all[mask]                                    # (M, 4)
+        pts  = self._anchor_pts[mask]                            # (M, 2) cx,cy
+        conf = conf[mask]                                        # (M,)
 
-        # NMS — cv2.dnn.NMSBoxes expects [x, y, w, h] with x,y = top-left
-        boxes  = [(float(x), float(y), float(x2-x), float(y2-y))
-                  for x, y, x2, y2 in zip(x1, y1, x2, y2)]
+        # ltrb → xyxy at model input resolution
+        x1 = np.clip(pts[:, 0] - ltrb[:, 0], 0, iw)
+        y1 = np.clip(pts[:, 1] - ltrb[:, 1], 0, ih)
+        x2 = np.clip(pts[:, 0] + ltrb[:, 2], 0, iw)
+        y2 = np.clip(pts[:, 1] + ltrb[:, 3], 0, ih)
+
+        # NMS — cv2.dnn.NMSBoxes wants [x, y, w, h] top-left
+        boxes  = [(float(a), float(b), float(c - a), float(d - b))
+                  for a, b, c, d in zip(x1, y1, x2, y2)]
         scores = conf.tolist()
 
         indices = cv2.dnn.NMSBoxes(boxes, scores, self._conf, self._iou)
         if len(indices) == 0:
             return []
-
         flat = indices.flatten() if hasattr(indices, 'flatten') else list(indices)
 
-        # Scale factors from model input to display frame
-        sx = frame_w / mw
-        sy = frame_h / mh
+        # Scale from model input to display frame
+        sx = frame_w / iw
+        sy = frame_h / ih
 
         robots = []
         for i in flat:
