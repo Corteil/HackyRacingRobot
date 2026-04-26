@@ -162,7 +162,7 @@ Key sections:
 | `[ntrip]` | NTRIP caster host/port/mount/credentials |
 | `[rtcm]` | Serial RTCM correction input (alternative to NTRIP) |
 | `[telemetry_radio]` | SiK radio port (`/dev/sik`), baud, downlink rate, LiDAR enable |
-| `[robot_detector]` | Hailo-10H YOLOv8n robot detector — enabled, model HEF path, conf, iou |
+| `[robot_detector]` | Hailo-10H YOLOv8n robot detector — enabled, model HEF path, conf, iou, persist, match_radius |
 | `[navigator]` | ArUco gate navigator tuning + `track_file` path |
 | `[gps_navigator]` | GPS waypoint navigator tuning |
 | `[output]` | Snapshot/video/data-log directories, recording limits |
@@ -236,6 +236,8 @@ python3 tools/test_aruco.py
 # Replay recorded footage through ArUco and/or robot detector (visual window)
 python3 tools/test_footage.py race.mp4 --aruco
 python3 tools/test_footage.py race.mp4 --aruco --robot-detector models/robot_detector.hef
+# conf/iou/persist/match-radius default from robot.ini; override on CLI:
+python3 tools/test_footage.py race.mp4 --robot-detector models/robot_detector.hef --persist 1
 ```
 
 ### Yukon simulator

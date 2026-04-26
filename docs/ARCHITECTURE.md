@@ -48,7 +48,7 @@ Consumers of robot state:
 | `drivers/ibus.py` | FlySky iBUS reader library (32-byte packets, 14 channels) |
 | `drivers/ld06.py` | LD06 LiDAR driver (47-byte packets, CRC8, `LidarScan` dataclass) |
 | `robot/aruco_detector.py` | OpenCV ArUco wrapper (corners, ID, distance, bearing) |
-| `robot/robot_detector.py` | YOLOv8n robot detector running on the Hailo-10H AI HAT+ 2; returns `RobotDetection` with bounding boxes and confidence scores |
+| `robot/robot_detector.py` | YOLOv8n robot detector on the Hailo-10H via hailort 5.x `create_infer_model` API; DFL decode + centre-containment NMS + temporal persistence filter; returns `RobotDetection` with bounding boxes and confidence scores |
 | `robot/camera_controls.py` | Shared camera constants, helpers, and `CalibrationMaps` class used by `camera_monitor.py` and `camera_web.py` |
 | `robot/aruco_navigator.py` | Autonomous gate navigator — state machine (SEARCHING → ALIGNING → APPROACHING → PASSING → COMPLETE, RECOVERING on gate loss) with IMU heading hold |
 | `robot/gps_navigator.py` | GPS waypoint navigator |

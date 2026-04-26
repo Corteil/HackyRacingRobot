@@ -506,24 +506,50 @@ configured in `[robot_detector] model` in `robot.ini`, then enable per camera:
 
 ```ini
 [robot_detector]
-enabled = true
-model   = models/robot_detector.hef
-conf    = 0.45   # confidence threshold
-iou     = 0.45   # NMS IoU threshold
+enabled      = true
+model        = models/robot_detector.hef
+conf         = 0.6    # confidence threshold — raise to cut false positives
+iou          = 0.3    # NMS IoU threshold for duplicate suppression
+persist      = 2      # consecutive frames a detection must appear before being reported
+match_radius = 60     # display-pixel radius for frame-to-frame candidate matching
 
 [camera_front_left]
 robot_detector = true
 ```
 
+The detector uses the **hailort 5.x `create_infer_model` API** (not the legacy
+`VDevice.configure` + `InferVStreams` path, which returns `HAILO_NOT_IMPLEMENTED`
+on HAILO10H with hailort ≥ 5.0).
+
+Post-processing pipeline per frame:
+
+1. **Confidence filter** — anchors below `conf` are dropped.
+2. **DFL decode** — the `depth_to_space1 (16, N, 4)` output is decoded via softmax
+   + weighted sum to produce ltrb pixel distances, then projected onto the anchor grid.
+3. **Minimum box filter** — boxes smaller than 10 × 10 px in model space are dropped.
+4. **IoU NMS** — `cv2.dnn.NMSBoxes` at threshold `iou`.
+5. **Centre-containment pass** — suppresses any surviving box whose centre lies inside
+   a higher-confidence box (catches multi-scale stride-8 / stride-16 duplicates that
+   have low IoU but the same robot).
+6. **Temporal persistence filter** — a detection is only reported once it has matched
+   a candidate in the previous frame (within `match_radius` pixels) for `persist`
+   consecutive frames; eliminates single-frame background false positives.
+
 ```python
 from robot.robot_detector import RobotDetector, RobotDetection, DetectedRobot
 
-det = RobotDetector(model_path='models/robot_detector.hef', conf=0.45)
+det = RobotDetector(
+    model_path   = 'models/robot_detector.hef',
+    conf         = 0.6,
+    iou          = 0.3,
+    persist      = 2,     # require 2 consecutive frames
+    match_radius = 60,    # pixels
+)
 if det.available:
     result = det.detect(frame)      # annotates frame in-place; returns RobotDetection
-    print(result.count)             # number of robots detected
+    print(result.count)             # number of confirmed robots
     if result.nearest:
-        r = result.nearest          # DetectedRobot with largest bounding box
+        r = result.nearest          # DetectedRobot with largest bounding-box area
         print(r.center_x, r.center_y, r.confidence)
 det.stop()                          # release Hailo device
 ```
@@ -621,7 +647,7 @@ comment in the file.  Key sections:
 | `[camera_front_left]` | IMX296 CSI CAM0 — resolution, fps, rotation (180°), ArUco, robot_detector, calibration file |
 | `[camera_front_right]` | IMX296 CSI CAM1 — resolution, fps, rotation (180°), ArUco, robot_detector, calibration file |
 | `[camera_rear]` | IMX477 USB/UVC — resolution, fps, rotation (0°), mirror, ArUco, robot_detector, calibration file |
-| `[robot_detector]` | Hailo-10H YOLOv8n robot detector — enabled, model HEF path, conf, iou |
+| `[robot_detector]` | Hailo-10H YOLOv8n robot detector — enabled, model HEF path, conf, iou, persist, match_radius |
 | `[stereo]` | Hardware XVS sync GPIO for front stereo pair |
 | `[aruco]` | Detection dict, calibration file template, tag size |
 | `[camera_calibrations]` | Target resolutions for `derive_calibrations.py` |
